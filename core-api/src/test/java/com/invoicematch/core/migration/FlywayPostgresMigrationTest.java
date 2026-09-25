@@ -133,9 +133,29 @@ class FlywayPostgresMigrationTest extends AbstractPostgresIntegrationTest {
     void rejectsEvidenceBundleDraftFromAnotherCase() {
         UUID caseId = seedCase("SUBMITTED");
         UUID otherCaseId = seedCase("DRAFT");
-        UUID draftOfOtherCase = seedOpenDraft(otherCaseId, 1);
+        UUID sealedDraftOfOtherCase = seedSealedDraft(otherCaseId, 1);
 
-        assertThatThrownBy(() -> seedBundle(caseId, draftOfOtherCase, 1))
+        assertThatThrownBy(() -> seedBundle(caseId, sealedDraftOfOtherCase, 1))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void rejectsEvidenceBundleFromSameCaseOpenDraft() {
+        UUID caseId = seedCase("SUBMITTED");
+        UUID openDraftId = seedOpenDraft(caseId, 1);
+
+        assertThatThrownBy(() -> seedBundle(caseId, openDraftId, 1))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void rejectsReopeningReferencedSealedDraft() {
+        UUID caseId = seedCase("SUBMITTED");
+        UUID sealedDraftId = seedSealedDraft(caseId, 1);
+        seedBundle(caseId, sealedDraftId, 1);
+
+        assertThatThrownBy(() -> jdbc.update(
+                        "update draft_revision set status = 'OPEN', sealed_at = null where id = ?", sealedDraftId))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
@@ -176,6 +196,17 @@ class FlywayPostgresMigrationTest extends AbstractPostgresIntegrationTest {
         UUID matchResultOfOtherCase = insertMatchResult(otherCaseId, null);
 
         assertThatThrownBy(() -> insertSnapshot(caseId, bundleId, matchResultOfOtherCase, 1, "hash"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void rejectsReviewSnapshotMatchResultFromDifferentBundleVersion() {
+        UUID caseId = seedCase("REVIEW_PENDING");
+        UUID bundleV1 = seedBundle(caseId, seedSealedDraft(caseId, 1), 1);
+        UUID bundleV2 = seedBundle(caseId, seedSealedDraft(caseId, 2), 2);
+        UUID matchResultOnV1 = insertMatchResult(caseId, bundleV1);
+
+        assertThatThrownBy(() -> insertSnapshot(caseId, bundleV2, matchResultOnV1, 2, "hash"))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 

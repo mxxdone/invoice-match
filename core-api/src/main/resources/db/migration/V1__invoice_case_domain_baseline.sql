@@ -43,7 +43,8 @@ CREATE TABLE draft_revision (
         (status = 'OPEN' AND sealed_at IS NULL)
         OR (status = 'SEALED' AND sealed_at IS NOT NULL)),
     CONSTRAINT ux_draft_revision_number UNIQUE (invoice_case_id, revision_number),
-    CONSTRAINT ux_draft_revision_id_case UNIQUE (id, invoice_case_id)
+    CONSTRAINT ux_draft_revision_id_case UNIQUE (id, invoice_case_id),
+    CONSTRAINT ux_draft_revision_id_case_status UNIQUE (id, invoice_case_id, status)
 );
 
 -- Only one draft revision may be edited at a time for a claim.
@@ -75,20 +76,28 @@ CREATE TABLE invoice_line (
         FOREIGN KEY (draft_revision_id, invoice_case_id) REFERENCES draft_revision (id, invoice_case_id)
 );
 
+-- A frozen bundle points at the sealed draft revision it froze in the same
+-- claim. The constant SEALED discriminator plus the CHECK and the composite FK
+-- referencing draft_revision (id, invoice_case_id, status) make it impossible
+-- to freeze an OPEN revision, and PostgreSQL rejects any attempt to move a
+-- referenced revision from SEALED back to OPEN.
 CREATE TABLE evidence_bundle (
     id uuid PRIMARY KEY,
     invoice_case_id uuid NOT NULL REFERENCES invoice_case (id),
     draft_revision_id uuid NOT NULL,
+    draft_revision_status varchar(16) NOT NULL DEFAULT 'SEALED',
     version_number integer NOT NULL,
     payload_hash varchar(128) NOT NULL,
     payload jsonb NOT NULL,
     submitted_at timestamptz NOT NULL,
     CONSTRAINT ck_evidence_bundle_version CHECK (version_number > 0),
+    CONSTRAINT ck_evidence_bundle_draft_sealed CHECK (draft_revision_status = 'SEALED'),
     CONSTRAINT ux_evidence_bundle_version UNIQUE (invoice_case_id, version_number),
     CONSTRAINT ux_evidence_bundle_id_case UNIQUE (id, invoice_case_id),
     CONSTRAINT ux_evidence_bundle_id_case_version UNIQUE (id, invoice_case_id, version_number),
-    CONSTRAINT fk_evidence_bundle_draft_same_case
-        FOREIGN KEY (draft_revision_id, invoice_case_id) REFERENCES draft_revision (id, invoice_case_id)
+    CONSTRAINT fk_evidence_bundle_sealed_draft_same_case
+        FOREIGN KEY (draft_revision_id, invoice_case_id, draft_revision_status)
+        REFERENCES draft_revision (id, invoice_case_id, status)
 );
 
 CREATE TABLE match_result (
@@ -98,7 +107,7 @@ CREATE TABLE match_result (
     result_hash varchar(128) NOT NULL,
     payload jsonb NOT NULL,
     created_at timestamptz NOT NULL,
-    CONSTRAINT ux_match_result_id_case UNIQUE (id, invoice_case_id),
+    CONSTRAINT ux_match_result_id_case_bundle UNIQUE (id, invoice_case_id, evidence_bundle_id),
     CONSTRAINT fk_match_result_bundle_same_case
         FOREIGN KEY (evidence_bundle_id, invoice_case_id) REFERENCES evidence_bundle (id, invoice_case_id)
 );
@@ -119,8 +128,9 @@ CREATE TABLE review_snapshot (
     CONSTRAINT fk_review_snapshot_bundle_version
         FOREIGN KEY (evidence_bundle_id, invoice_case_id, target_evidence_bundle_version)
         REFERENCES evidence_bundle (id, invoice_case_id, version_number),
-    CONSTRAINT fk_review_snapshot_match_same_case
-        FOREIGN KEY (match_result_id, invoice_case_id) REFERENCES match_result (id, invoice_case_id)
+    CONSTRAINT fk_review_snapshot_match_same_bundle
+        FOREIGN KEY (match_result_id, invoice_case_id, evidence_bundle_id)
+        REFERENCES match_result (id, invoice_case_id, evidence_bundle_id)
 );
 
 CREATE TABLE review_decision (
