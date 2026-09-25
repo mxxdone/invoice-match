@@ -111,9 +111,13 @@ class InvoiceCasePersistenceTest extends AbstractPostgresIntegrationTest {
     void persistsImmutableEvidenceSnapshotAndDecision() {
         InvoiceCase invoiceCase = invoiceCases.save(newCase());
         UUID caseId = invoiceCase.id().value();
+        DraftRevision sealedDraft = DraftRevision.open(caseId, 1, T0);
+        sealedDraft.seal(T0.plusSeconds(1));
+        draftRevisions.save(sealedDraft);
 
         EvidenceBundle bundle = evidenceBundles.save(EvidenceBundle.freeze(
-                UUID.randomUUID(), caseId, 1, "bundle-hash", "{\"lines\":[]}", T0.plusSeconds(1)));
+                UUID.randomUUID(), caseId, sealedDraft.id(), 1, "bundle-hash", "{\"lines\":[]}",
+                T0.plusSeconds(1)));
         ReviewSnapshot snapshot = reviewSnapshots.save(ReviewSnapshot.freeze(
                 UUID.randomUUID(), caseId, bundle.id(), null, 0L, 1, "snapshot-hash", "{\"total\":0}",
                 T0.plusSeconds(2)));
@@ -125,6 +129,10 @@ class InvoiceCasePersistenceTest extends AbstractPostgresIntegrationTest {
                 .get()
                 .extracting(EvidenceBundle::payloadHash)
                 .isEqualTo("bundle-hash");
+        assertThat(evidenceBundles.findById(bundle.id()))
+                .get()
+                .extracting(EvidenceBundle::draftRevisionId)
+                .isEqualTo(sealedDraft.id());
         assertThat(reviewSnapshots.findById(snapshot.id()))
                 .get()
                 .extracting(ReviewSnapshot::targetEvidenceBundleVersion)

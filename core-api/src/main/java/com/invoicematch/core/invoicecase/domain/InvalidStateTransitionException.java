@@ -6,7 +6,11 @@ package com.invoicematch.core.invoicecase.domain;
  */
 public class InvalidStateTransitionException extends RuntimeException {
 
+    public InvalidStateTransitionException(String message) {
+        super(message);
+    }
+
     public InvalidStateTransitionException(InvoiceCaseId caseId, InvoiceCaseStatus from, InvoiceCaseStatus to) {
-        super("InvoiceCase " + caseId + " cannot transition from " + from + " to " + to);
+        this("InvoiceCase " + caseId + " cannot transition from " + from + " to " + to);
     }
 }

@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
@@ -99,6 +100,25 @@ class InvoiceCaseStateTransitionTest {
 
         assertThat(invoiceCase.submittedAt()).isEqualTo(submittedAt);
         assertThat(invoiceCase.updatedAt()).isEqualTo(submittedAt);
+    }
+
+    @ParameterizedTest
+    @EnumSource(InvoiceCaseStatus.class)
+    void attachesDraftRevisionOnlyWhileEditable(InvoiceCaseStatus status) {
+        InvoiceCase invoiceCase = caseIn(status);
+        UUID draftRevisionId = UUID.randomUUID();
+        Instant attachedAt = T0.plusSeconds(100);
+
+        if (status == InvoiceCaseStatus.DRAFT || status == InvoiceCaseStatus.SUPPLEMENT_REQUIRED) {
+            invoiceCase.attachDraftRevision(draftRevisionId, attachedAt);
+
+            assertThat(invoiceCase.currentDraftRevisionId()).isEqualTo(draftRevisionId);
+            assertThat(invoiceCase.updatedAt()).isEqualTo(attachedAt);
+        } else {
+            assertThatThrownBy(() -> invoiceCase.attachDraftRevision(draftRevisionId, attachedAt))
+                    .isInstanceOf(InvalidStateTransitionException.class);
+            assertThat(invoiceCase.currentDraftRevisionId()).isNull();
+        }
     }
 
     @Test

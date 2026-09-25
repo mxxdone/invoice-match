@@ -116,11 +116,17 @@ public class InvoiceCase {
     }
 
     /**
-     * Points the case at the draft revision currently being edited. Sealing the
-     * revision and freezing it into an {@code EvidenceBundle} belongs to the
-     * submission ticket.
+     * Points the case at the draft revision currently being edited. A draft can
+     * only be attached while the case is editable ({@link InvoiceCaseStatus#DRAFT}
+     * or {@link InvoiceCaseStatus#SUPPLEMENT_REQUIRED}); the database enforces
+     * that the revision belongs to this case. Sealing the revision and freezing
+     * it into an {@code EvidenceBundle} belongs to the submission ticket.
      */
     public void attachDraftRevision(UUID draftRevisionId, Instant occurredAt) {
+        if (status != InvoiceCaseStatus.DRAFT && status != InvoiceCaseStatus.SUPPLEMENT_REQUIRED) {
+            throw new InvalidStateTransitionException(
+                    "InvoiceCase " + id() + " cannot attach a draft revision while " + status);
+        }
         this.currentDraftRevisionId = Objects.requireNonNull(draftRevisionId, "draftRevisionId");
         this.updatedAt = Objects.requireNonNull(occurredAt, "occurredAt");
     }

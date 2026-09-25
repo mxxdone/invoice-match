@@ -15,8 +15,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * Proves the P1-01 Flyway baseline applies to a real PostgreSQL instance and
- * that the foundational constraints and optimistic version column exist where
- * the domain relies on them.
+ * that the foundational constraints, cross-case referential integrity,
+ * optimistic version column and append-only protection exist where the domain
+ * relies on them.
  */
 class FlywayPostgresMigrationTest extends AbstractPostgresIntegrationTest {
 
@@ -54,10 +55,8 @@ class FlywayPostgresMigrationTest extends AbstractPostgresIntegrationTest {
 
     @Test
     void rejectsNonPositiveQuantity() {
-        UUID caseId = UUID.randomUUID();
-        UUID draftId = UUID.randomUUID();
-        insertCase(caseId, "DRAFT");
-        insertOpenDraft(caseId, draftId, 1);
+        UUID caseId = seedCase("DRAFT");
+        UUID draftId = seedOpenDraft(caseId, 1);
 
         assertThatThrownBy(() -> insertLine(caseId, draftId, 1, 0, 1000))
                 .isInstanceOf(DataIntegrityViolationException.class);
@@ -65,10 +64,8 @@ class FlywayPostgresMigrationTest extends AbstractPostgresIntegrationTest {
 
     @Test
     void rejectsNegativeUnitPrice() {
-        UUID caseId = UUID.randomUUID();
-        UUID draftId = UUID.randomUUID();
-        insertCase(caseId, "DRAFT");
-        insertOpenDraft(caseId, draftId, 1);
+        UUID caseId = seedCase("DRAFT");
+        UUID draftId = seedOpenDraft(caseId, 1);
 
         assertThatThrownBy(() -> insertLine(caseId, draftId, 1, 1, -1))
                 .isInstanceOf(DataIntegrityViolationException.class);
@@ -76,75 +73,222 @@ class FlywayPostgresMigrationTest extends AbstractPostgresIntegrationTest {
 
     @Test
     void rejectsPhaseTwoAnalysisStatus() {
-        assertThatThrownBy(() -> insertCase(UUID.randomUUID(), "ANALYZING"))
-                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> seedCase("ANALYZING")).isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
     void rejectsDuplicateEvidenceBundleVersion() {
-        UUID caseId = UUID.randomUUID();
-        insertCase(caseId, "SUBMITTED");
-        insertBundle(caseId, UUID.randomUUID(), 1);
+        UUID caseId = seedCase("SUBMITTED");
+        UUID draftId = seedSealedDraft(caseId, 1);
+        seedBundle(caseId, draftId, 1);
 
-        assertThatThrownBy(() -> insertBundle(caseId, UUID.randomUUID(), 1))
+        assertThatThrownBy(() -> seedBundle(caseId, draftId, 1))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
     void allowsOnlyOneOpenDraftRevisionPerCase() {
-        UUID caseId = UUID.randomUUID();
-        insertCase(caseId, "DRAFT");
-        insertOpenDraft(caseId, UUID.randomUUID(), 1);
+        UUID caseId = seedCase("DRAFT");
+        seedOpenDraft(caseId, 1);
 
-        assertThatThrownBy(() -> insertOpenDraft(caseId, UUID.randomUUID(), 2))
+        assertThatThrownBy(() -> seedOpenDraft(caseId, 2)).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void allowsCurrentDraftRevisionOfSameCase() {
+        UUID caseId = seedCase("DRAFT");
+        UUID draftId = seedOpenDraft(caseId, 1);
+
+        jdbc.update("update invoice_case set current_draft_revision_id = ? where id = ?", draftId, caseId);
+
+        UUID current = jdbc.queryForObject(
+                "select current_draft_revision_id from invoice_case where id = ?", UUID.class, caseId);
+        assertThat(current).isEqualTo(draftId);
+    }
+
+    @Test
+    void rejectsCurrentDraftRevisionFromAnotherCase() {
+        UUID caseId = seedCase("DRAFT");
+        UUID otherCaseId = seedCase("DRAFT");
+        UUID draftOfOtherCase = seedOpenDraft(otherCaseId, 1);
+
+        assertThatThrownBy(() -> jdbc.update(
+                        "update invoice_case set current_draft_revision_id = ? where id = ?",
+                        draftOfOtherCase,
+                        caseId))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void rejectsInvoiceLineDraftFromAnotherCase() {
+        UUID caseId = seedCase("DRAFT");
+        UUID otherCaseId = seedCase("DRAFT");
+        UUID draftOfOtherCase = seedOpenDraft(otherCaseId, 1);
+
+        assertThatThrownBy(() -> insertLine(caseId, draftOfOtherCase, 1, 1, 1000))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void rejectsEvidenceBundleDraftFromAnotherCase() {
+        UUID caseId = seedCase("SUBMITTED");
+        UUID otherCaseId = seedCase("DRAFT");
+        UUID draftOfOtherCase = seedOpenDraft(otherCaseId, 1);
+
+        assertThatThrownBy(() -> seedBundle(caseId, draftOfOtherCase, 1))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void rejectsMatchResultBundleFromAnotherCase() {
+        UUID caseId = seedCase("SUBMITTED");
+        UUID bundleId = seedBundle(caseId, seedSealedDraft(caseId, 1), 1);
+        UUID otherCaseId = seedCase("SUBMITTED");
+
+        assertThatThrownBy(() -> insertMatchResult(otherCaseId, bundleId))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void rejectsReviewSnapshotBundleFromAnotherCase() {
+        UUID caseId = seedCase("REVIEW_PENDING");
+        UUID otherCaseId = seedCase("SUBMITTED");
+        UUID bundleOfOtherCase = seedBundle(otherCaseId, seedSealedDraft(otherCaseId, 1), 1);
+
+        assertThatThrownBy(() -> insertSnapshot(caseId, bundleOfOtherCase, null, 1, "hash"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void rejectsReviewSnapshotWrongBundleVersion() {
+        UUID caseId = seedCase("REVIEW_PENDING");
+        UUID bundleId = seedBundle(caseId, seedSealedDraft(caseId, 1), 1);
+
+        assertThatThrownBy(() -> insertSnapshot(caseId, bundleId, null, 2, "hash"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void rejectsReviewSnapshotMatchResultFromAnotherCase() {
+        UUID caseId = seedCase("REVIEW_PENDING");
+        UUID bundleId = seedBundle(caseId, seedSealedDraft(caseId, 1), 1);
+        UUID otherCaseId = seedCase("SUBMITTED");
+        UUID matchResultOfOtherCase = insertMatchResult(otherCaseId, null);
+
+        assertThatThrownBy(() -> insertSnapshot(caseId, bundleId, matchResultOfOtherCase, 1, "hash"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void rejectsReviewDecisionSnapshotFromAnotherCase() {
+        UUID caseId = seedCase("REVIEW_PENDING");
+        UUID bundleId = seedBundle(caseId, seedSealedDraft(caseId, 1), 1);
+        UUID snapshotId = insertSnapshot(caseId, bundleId, null, 1, "snap-hash");
+        UUID otherCaseId = seedCase("REVIEW_PENDING");
+
+        assertThatThrownBy(() -> insertDecision(otherCaseId, snapshotId, "snap-hash"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void rejectsReviewDecisionHashMismatch() {
+        UUID caseId = seedCase("REVIEW_PENDING");
+        UUID bundleId = seedBundle(caseId, seedSealedDraft(caseId, 1), 1);
+        UUID snapshotId = insertSnapshot(caseId, bundleId, null, 1, "snap-hash");
+
+        assertThatThrownBy(() -> insertDecision(caseId, snapshotId, "other-hash"))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
     void evidenceBundleRowsAreAppendOnly() {
-        UUID caseId = UUID.randomUUID();
-        UUID bundleId = UUID.randomUUID();
-        insertCase(caseId, "SUBMITTED");
-        insertBundle(caseId, bundleId, 1);
+        UUID caseId = seedCase("SUBMITTED");
+        UUID bundleId = seedBundle(caseId, seedSealedDraft(caseId, 1), 1);
 
-        assertThatThrownBy(() ->
-                        jdbc.update("update evidence_bundle set payload_hash = 'tampered' where id = ?", bundleId))
-                .isInstanceOf(DataAccessException.class)
-                .hasMessageContaining("append-only");
+        assertThatRejected(
+                () -> jdbc.update("update evidence_bundle set payload_hash = 'tampered' where id = ?", bundleId));
+        assertThatRejected(() -> jdbc.update("delete from evidence_bundle where id = ?", bundleId));
+    }
+
+    @Test
+    void matchResultRowsAreAppendOnly() {
+        UUID caseId = seedCase("SUBMITTED");
+        UUID bundleId = seedBundle(caseId, seedSealedDraft(caseId, 1), 1);
+        UUID matchResultId = insertMatchResult(caseId, bundleId);
+
+        assertThatRejected(() -> jdbc.update("delete from match_result where id = ?", matchResultId));
+    }
+
+    @Test
+    void reviewSnapshotRowsAreAppendOnly() {
+        UUID caseId = seedCase("REVIEW_PENDING");
+        UUID bundleId = seedBundle(caseId, seedSealedDraft(caseId, 1), 1);
+        UUID snapshotId = insertSnapshot(caseId, bundleId, null, 1, "snap-hash");
+
+        assertThatRejected(() -> jdbc.update("delete from review_snapshot where id = ?", snapshotId));
     }
 
     @Test
     void reviewDecisionRowsAreAppendOnly() {
-        UUID caseId = UUID.randomUUID();
-        UUID bundleId = UUID.randomUUID();
-        UUID snapshotId = UUID.randomUUID();
-        UUID decisionId = UUID.randomUUID();
-        insertCase(caseId, "REVIEW_PENDING");
-        insertBundle(caseId, bundleId, 1);
-        insertSnapshot(caseId, bundleId, snapshotId);
-        insertDecision(caseId, snapshotId, decisionId);
+        UUID caseId = seedCase("REVIEW_PENDING");
+        UUID bundleId = seedBundle(caseId, seedSealedDraft(caseId, 1), 1);
+        UUID snapshotId = insertSnapshot(caseId, bundleId, null, 1, "snap-hash");
+        UUID decisionId = insertDecision(caseId, snapshotId, "snap-hash");
 
-        assertThatThrownBy(() -> jdbc.update("update review_decision set reason = 'tampered' where id = ?", decisionId))
+        assertThatRejected(() -> jdbc.update("update review_decision set reason = 'tampered' where id = ?", decisionId));
+        assertThatRejected(() -> jdbc.update("delete from review_decision where id = ?", decisionId));
+    }
+
+    private static void assertThatRejected(Runnable statement) {
+        assertThatThrownBy(statement::run)
                 .isInstanceOf(DataAccessException.class)
                 .hasMessageContaining("append-only");
     }
 
-    private void insertCase(UUID id, String status) {
+    private UUID seedCase(String status) {
+        UUID caseId = UUID.randomUUID();
         jdbc.update(
                 "insert into invoice_case (id, supplier_id, purchase_order_id, invoice_number, "
                         + "normalized_invoice_number, status, version, created_at, updated_at) "
                         + "values (?, 'SUP-1', 'PO-1', 'INV-1', 'INV1', ?, 0, now(), now())",
-                id,
+                caseId,
                 status);
+        return caseId;
     }
 
-    private void insertOpenDraft(UUID caseId, UUID draftId, int revisionNumber) {
+    private UUID seedOpenDraft(UUID caseId, int revisionNumber) {
+        UUID draftId = UUID.randomUUID();
         jdbc.update(
                 "insert into draft_revision (id, invoice_case_id, revision_number, status, created_at) "
                         + "values (?, ?, ?, 'OPEN', now())",
                 draftId,
                 caseId,
                 revisionNumber);
+        return draftId;
+    }
+
+    private UUID seedSealedDraft(UUID caseId, int revisionNumber) {
+        UUID draftId = UUID.randomUUID();
+        jdbc.update(
+                "insert into draft_revision (id, invoice_case_id, revision_number, status, created_at, sealed_at) "
+                        + "values (?, ?, ?, 'SEALED', now(), now())",
+                draftId,
+                caseId,
+                revisionNumber);
+        return draftId;
+    }
+
+    private UUID seedBundle(UUID caseId, UUID draftRevisionId, int versionNumber) {
+        UUID bundleId = UUID.randomUUID();
+        jdbc.update(
+                "insert into evidence_bundle (id, invoice_case_id, draft_revision_id, version_number, "
+                        + "payload_hash, payload, submitted_at) values (?, ?, ?, ?, ?, '{}'::jsonb, now())",
+                bundleId,
+                caseId,
+                draftRevisionId,
+                versionNumber,
+                "hash-" + versionNumber);
+        return bundleId;
     }
 
     private void insertLine(UUID caseId, UUID draftId, int lineNumber, int quantity, long unitPrice) {
@@ -160,32 +304,43 @@ class FlywayPostgresMigrationTest extends AbstractPostgresIntegrationTest {
                 unitPrice);
     }
 
-    private void insertBundle(UUID caseId, UUID bundleId, int versionNumber) {
+    private UUID insertMatchResult(UUID caseId, UUID evidenceBundleId) {
+        UUID matchResultId = UUID.randomUUID();
         jdbc.update(
-                "insert into evidence_bundle (id, invoice_case_id, version_number, payload_hash, payload, submitted_at) "
+                "insert into match_result (id, invoice_case_id, evidence_bundle_id, result_hash, payload, created_at) "
                         + "values (?, ?, ?, ?, '{}'::jsonb, now())",
-                bundleId,
+                matchResultId,
                 caseId,
-                versionNumber,
-                "hash-" + versionNumber);
+                evidenceBundleId,
+                "result-hash");
+        return matchResultId;
     }
 
-    private void insertSnapshot(UUID caseId, UUID bundleId, UUID snapshotId) {
+    private UUID insertSnapshot(
+            UUID caseId, UUID evidenceBundleId, UUID matchResultId, int targetBundleVersion, String payloadHash) {
+        UUID snapshotId = UUID.randomUUID();
         jdbc.update(
                 "insert into review_snapshot (id, invoice_case_id, evidence_bundle_id, match_result_id, "
                         + "target_case_version, target_evidence_bundle_version, payload_hash, payload, created_at) "
-                        + "values (?, ?, ?, null, 0, 1, 'snap-hash', '{}'::jsonb, now())",
+                        + "values (?, ?, ?, ?, 0, ?, ?, '{}'::jsonb, now())",
                 snapshotId,
                 caseId,
-                bundleId);
+                evidenceBundleId,
+                matchResultId,
+                targetBundleVersion,
+                payloadHash);
+        return snapshotId;
     }
 
-    private void insertDecision(UUID caseId, UUID snapshotId, UUID decisionId) {
+    private UUID insertDecision(UUID caseId, UUID snapshotId, String payloadHash) {
+        UUID decisionId = UUID.randomUUID();
         jdbc.update(
                 "insert into review_decision (id, invoice_case_id, review_snapshot_id, decision, decided_by, "
-                        + "payload_hash, decided_at) values (?, ?, ?, 'APPROVED', 'approver-1', 'snap-hash', now())",
+                        + "payload_hash, decided_at) values (?, ?, ?, 'APPROVED', 'approver-1', ?, now())",
                 decisionId,
                 caseId,
-                snapshotId);
+                snapshotId,
+                payloadHash);
+        return decisionId;
     }
 }

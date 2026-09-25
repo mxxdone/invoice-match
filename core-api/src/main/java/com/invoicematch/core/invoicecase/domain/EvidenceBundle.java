@@ -15,8 +15,9 @@ import org.hibernate.type.SqlTypes;
 /**
  * A submitted version of the evidence behind a claim. The manual input or
  * document set is frozen at submission time and can never be modified; a
- * correction creates the next version instead. {@code payloadHash} binds the
- * frozen JSON payload to later review and approval checks.
+ * correction creates the next version instead. It records the sealed draft
+ * revision it froze as its source, and {@code payloadHash} binds the frozen
+ * JSON payload to later review and approval checks.
  */
 @Entity
 @Table(name = "evidence_bundle")
@@ -29,6 +30,9 @@ public class EvidenceBundle {
 
     @Column(name = "invoice_case_id", nullable = false, updatable = false)
     private UUID invoiceCaseId;
+
+    @Column(name = "draft_revision_id", nullable = false, updatable = false)
+    private UUID draftRevisionId;
 
     @Column(name = "version_number", nullable = false, updatable = false)
     private int versionNumber;
@@ -47,7 +51,13 @@ public class EvidenceBundle {
     }
 
     private EvidenceBundle(
-            UUID id, UUID invoiceCaseId, int versionNumber, String payloadHash, String payload, Instant submittedAt) {
+            UUID id,
+            UUID invoiceCaseId,
+            UUID draftRevisionId,
+            int versionNumber,
+            String payloadHash,
+            String payload,
+            Instant submittedAt) {
         if (versionNumber <= 0) {
             throw new DomainValidationException("Evidence bundle version must be positive: " + versionNumber);
         }
@@ -56,6 +66,7 @@ public class EvidenceBundle {
         }
         this.id = Objects.requireNonNull(id, "id");
         this.invoiceCaseId = Objects.requireNonNull(invoiceCaseId, "invoiceCaseId");
+        this.draftRevisionId = Objects.requireNonNull(draftRevisionId, "draftRevisionId");
         this.versionNumber = versionNumber;
         this.payloadHash = payloadHash;
         this.payload = Objects.requireNonNull(payload, "payload");
@@ -63,8 +74,15 @@ public class EvidenceBundle {
     }
 
     public static EvidenceBundle freeze(
-            UUID id, UUID invoiceCaseId, int versionNumber, String payloadHash, String payload, Instant submittedAt) {
-        return new EvidenceBundle(id, invoiceCaseId, versionNumber, payloadHash, payload, submittedAt);
+            UUID id,
+            UUID invoiceCaseId,
+            UUID draftRevisionId,
+            int versionNumber,
+            String payloadHash,
+            String payload,
+            Instant submittedAt) {
+        return new EvidenceBundle(
+                id, invoiceCaseId, draftRevisionId, versionNumber, payloadHash, payload, submittedAt);
     }
 
     public UUID id() {
@@ -73,6 +91,10 @@ public class EvidenceBundle {
 
     public UUID invoiceCaseId() {
         return invoiceCaseId;
+    }
+
+    public UUID draftRevisionId() {
+        return draftRevisionId;
     }
 
     public int versionNumber() {
