@@ -12,9 +12,10 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * A purchase order line within the current local snapshot. It is replaced
- * together with its parent snapshot and keeps the stable external line id that
- * receipt lines reference.
+ * A purchase order line within the current local snapshot. The row is keyed by
+ * the stable external line id and updated in place; when the line is absent
+ * from a newer snapshot it is deactivated instead of deleted, so its identity
+ * stays stable for future references.
  */
 @Entity
 @Table(name = "purchase_order_line_snapshot")
@@ -42,6 +43,9 @@ public class PurchaseOrderLineSnapshot {
     @Column(name = "unit_price", nullable = false)
     private Money unitPrice;
 
+    @Column(name = "active", nullable = false)
+    private boolean active = true;
+
     protected PurchaseOrderLineSnapshot() {
     }
 
@@ -60,6 +64,7 @@ public class PurchaseOrderLineSnapshot {
         this.itemName = requireText(itemName, "itemName");
         this.orderedQuantity = Objects.requireNonNull(orderedQuantity, "orderedQuantity");
         this.unitPrice = Objects.requireNonNull(unitPrice, "unitPrice");
+        this.active = true;
     }
 
     public static PurchaseOrderLineSnapshot create(UUID id, String purchaseOrderId, PurchaseOrderLineFacts facts) {
@@ -71,6 +76,22 @@ public class PurchaseOrderLineSnapshot {
                 facts.itemName(),
                 facts.orderedQuantity(),
                 facts.unitPrice());
+    }
+
+    /**
+     * Updates the mutable facts of this line and marks it active again. The row
+     * id and external line id are never changed.
+     */
+    public void updateFrom(PurchaseOrderLineFacts facts) {
+        this.itemId = requireText(facts.itemId(), "itemId");
+        this.itemName = requireText(facts.itemName(), "itemName");
+        this.orderedQuantity = Objects.requireNonNull(facts.orderedQuantity(), "orderedQuantity");
+        this.unitPrice = Objects.requireNonNull(facts.unitPrice(), "unitPrice");
+        this.active = true;
+    }
+
+    public void deactivate() {
+        this.active = false;
     }
 
     private static String requireText(String value, String field) {
@@ -106,6 +127,10 @@ public class PurchaseOrderLineSnapshot {
 
     public Money unitPrice() {
         return unitPrice;
+    }
+
+    public boolean isActive() {
+        return active;
     }
 
     @Override

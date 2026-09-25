@@ -173,6 +173,109 @@ class HttpPurchasingSystemClientTest {
     }
 
     @Test
+    void rejectsNegativeReceiptVersion() {
+        stub.respond(
+                200,
+                PurchasingPayloads.confirmedPartialReceipt()
+                        .clearReceipts()
+                        .addReceipt(
+                                "RCV-BAD",
+                                "CONFIRMED",
+                                "2026-01-06",
+                                -1,
+                                PurchasingPayloads.receiptLine("RCL-BAD", 1, "POL-1001-1", 10))
+                        .toJson());
+
+        assertThatThrownBy(() -> client.fetch(PurchaseOrderId.of("PO-1001")))
+                .isInstanceOf(InvalidExternalFactException.class);
+    }
+
+    @Test
+    void rejectsNegativeReceiptLineVersion() {
+        stub.respond(
+                200,
+                PurchasingPayloads.confirmedPartialReceipt()
+                        .clearReceipts()
+                        .addReceipt(
+                                "RCV-BAD",
+                                "CONFIRMED",
+                                "2026-01-06",
+                                1,
+                                PurchasingPayloads.receiptLine("RCL-BAD", -1, "POL-1001-1", 10))
+                        .toJson());
+
+        assertThatThrownBy(() -> client.fetch(PurchaseOrderId.of("PO-1001")))
+                .isInstanceOf(InvalidExternalFactException.class);
+    }
+
+    @Test
+    void rejectsNullPurchaseOrderLineElement() {
+        stub.respond(200, "{\"snapshotVersion\":1,\"purchaseOrder\":{\"purchaseOrderId\":\"PO-1001\","
+                + "\"status\":\"CONFIRMED\",\"version\":1,\"supplier\":{\"supplierId\":\"SUP-1\",\"name\":\"S\"},"
+                + "\"lines\":[null]},\"receipts\":[]}");
+
+        assertThatThrownBy(() -> client.fetch(PurchaseOrderId.of("PO-1001")))
+                .isInstanceOf(InvalidExternalFactException.class);
+    }
+
+    @Test
+    void rejectsNullReceiptElement() {
+        stub.respond(200, "{\"snapshotVersion\":1,\"purchaseOrder\":{\"purchaseOrderId\":\"PO-1001\","
+                + "\"status\":\"CONFIRMED\",\"version\":1,\"supplier\":{\"supplierId\":\"SUP-1\",\"name\":\"S\"},"
+                + "\"lines\":[]},\"receipts\":[null]}");
+
+        assertThatThrownBy(() -> client.fetch(PurchaseOrderId.of("PO-1001")))
+                .isInstanceOf(InvalidExternalFactException.class);
+    }
+
+    @Test
+    void rejectsNullReceiptLineElement() {
+        stub.respond(200, "{\"snapshotVersion\":1,\"purchaseOrder\":{\"purchaseOrderId\":\"PO-1001\","
+                + "\"status\":\"CONFIRMED\",\"version\":1,\"supplier\":{\"supplierId\":\"SUP-1\",\"name\":\"S\"},"
+                + "\"lines\":[]},\"receipts\":[{\"receiptId\":\"RCV-1\",\"status\":\"CONFIRMED\","
+                + "\"receiptDate\":\"2026-01-05\",\"version\":1,\"lines\":[null]}]}");
+
+        assertThatThrownBy(() -> client.fetch(PurchaseOrderId.of("PO-1001")))
+                .isInstanceOf(InvalidExternalFactException.class);
+    }
+
+    @Test
+    void rejectsOverlongItemName() {
+        stub.respond(
+                200,
+                PurchasingPayloads.confirmedPartialReceipt()
+                        .addLine("POL-LONG", "ITEM", "x".repeat(501), 1, 1000)
+                        .toJson());
+
+        assertThatThrownBy(() -> client.fetch(PurchaseOrderId.of("PO-1001")))
+                .isInstanceOf(InvalidExternalFactException.class);
+    }
+
+    @Test
+    void rejectsOverlongSupplierName() {
+        stub.respond(
+                200,
+                PurchasingPayloads.confirmedPartialReceipt()
+                        .supplierName("x".repeat(201))
+                        .toJson());
+
+        assertThatThrownBy(() -> client.fetch(PurchaseOrderId.of("PO-1001")))
+                .isInstanceOf(InvalidExternalFactException.class);
+    }
+
+    @Test
+    void rejectsOverlongIdentifier() {
+        stub.respond(
+                200,
+                PurchasingPayloads.confirmedPartialReceipt()
+                        .purchaseOrderId("x".repeat(65))
+                        .toJson());
+
+        assertThatThrownBy(() -> client.fetch(PurchaseOrderId.of("PO-1001")))
+                .isInstanceOf(InvalidExternalFactException.class);
+    }
+
+    @Test
     void rejectsUnknownStatus() {
         stub.respond(200, PurchasingPayloads.confirmedPartialReceipt().status("CANCELLED").toJson());
 

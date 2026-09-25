@@ -15,7 +15,9 @@ import java.util.UUID;
 
 /**
  * A receipt within the current local snapshot, with its own external version
- * and reference to its parent purchase order snapshot.
+ * and reference to its parent purchase order snapshot. The row is keyed by the
+ * stable external receipt id and deactivated instead of deleted when it leaves
+ * a newer snapshot.
  */
 @Entity
 @Table(name = "receipt_snapshot")
@@ -38,8 +40,11 @@ public class ReceiptSnapshot {
     @Column(name = "receipt_date", nullable = false)
     private LocalDate receiptDate;
 
-    @Column(name = "external_version", nullable = false)
-    private long externalVersion;
+    @Column(name = "receipt_version", nullable = false)
+    private long receiptVersion;
+
+    @Column(name = "active", nullable = false)
+    private boolean active = true;
 
     protected ReceiptSnapshot() {
     }
@@ -50,16 +55,14 @@ public class ReceiptSnapshot {
             String receiptId,
             ReceiptStatus status,
             LocalDate receiptDate,
-            long externalVersion) {
-        if (externalVersion < 0) {
-            throw new DomainValidationException("externalVersion must not be negative: " + externalVersion);
-        }
+            long receiptVersion) {
         this.id = Objects.requireNonNull(id, "id");
         this.purchaseOrderId = requireText(purchaseOrderId, "purchaseOrderId");
         this.receiptId = requireText(receiptId, "receiptId");
         this.status = Objects.requireNonNull(status, "status");
         this.receiptDate = Objects.requireNonNull(receiptDate, "receiptDate");
-        this.externalVersion = externalVersion;
+        this.receiptVersion = requireNonNegative(receiptVersion, "receiptVersion");
+        this.active = true;
     }
 
     public static ReceiptSnapshot create(UUID id, String purchaseOrderId, ReceiptFacts facts) {
@@ -67,9 +70,31 @@ public class ReceiptSnapshot {
                 id, purchaseOrderId, facts.receiptId(), facts.status(), facts.receiptDate(), facts.version());
     }
 
+    /**
+     * Updates the mutable facts of this receipt and marks it active again. The
+     * row id and external receipt id are never changed.
+     */
+    public void updateFrom(ReceiptFacts facts) {
+        this.status = Objects.requireNonNull(facts.status(), "status");
+        this.receiptDate = Objects.requireNonNull(facts.receiptDate(), "receiptDate");
+        this.receiptVersion = requireNonNegative(facts.version(), "receiptVersion");
+        this.active = true;
+    }
+
+    public void deactivate() {
+        this.active = false;
+    }
+
     private static String requireText(String value, String field) {
         if (value == null || value.isBlank()) {
             throw new DomainValidationException(field + " must not be blank");
+        }
+        return value;
+    }
+
+    private static long requireNonNegative(long value, String field) {
+        if (value < 0) {
+            throw new DomainValidationException(field + " must not be negative: " + value);
         }
         return value;
     }
@@ -94,8 +119,12 @@ public class ReceiptSnapshot {
         return receiptDate;
     }
 
-    public long externalVersion() {
-        return externalVersion;
+    public long receiptVersion() {
+        return receiptVersion;
+    }
+
+    public boolean isActive() {
+        return active;
     }
 
     @Override

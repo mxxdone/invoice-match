@@ -4,11 +4,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static com.invoicematch.core.support.PurchasingPayloads.receiptLine;
 
+import com.invoicematch.core.purchasingreference.application.PurchaseOrderSnapshotReader;
 import com.invoicematch.core.purchasingreference.application.PurchasingReferenceService;
 import com.invoicematch.core.purchasingreference.application.RefreshPurchaseOrderCommand;
 import com.invoicematch.core.purchasingreference.domain.ExternalFactUnconfirmedException;
 import com.invoicematch.core.purchasingreference.domain.ExternalReferenceMismatchException;
 import com.invoicematch.core.purchasingreference.domain.ExternalSnapshotConflictException;
+import com.invoicematch.core.purchasingreference.domain.PurchaseOrderAggregate;
 import com.invoicematch.core.purchasingreference.domain.RefreshOutcome;
 import com.invoicematch.core.purchasingreference.domain.RefreshResult;
 import com.invoicematch.core.shared.domain.PurchaseOrderId;
@@ -18,6 +20,14 @@ import com.invoicematch.core.support.PurchasingPayloads;
 import com.invoicematch.core.support.StubPurchasingServer;
 import java.io.IOException;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,7 +39,7 @@ import org.springframework.test.context.DynamicPropertySource;
 /**
  * Boots the full refresh path against a real PostgreSQL instance and a real
  * HTTP stub for the external purchasing system, proving the V2 snapshot,
- * version and hash semantics end to end.
+ * version, hash, stable-identity and concurrency semantics end to end.
  */
 class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest {
 
@@ -60,6 +70,9 @@ class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest
     private PurchasingReferenceService service;
 
     @Autowired
+    private PurchaseOrderSnapshotReader reader;
+
+    @Autowired
     private JdbcTemplate jdbc;
 
     @BeforeEach
@@ -71,7 +84,7 @@ class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest
     }
 
     @Test
-    void firstRefreshCreatesSnapshot() {
+    void firstRefreshCreatesSnapshotWithSeparateVersions() {
         STUB.respond(200, PurchasingPayloads.confirmedPartialReceipt().toJson());
 
         RefreshResult result = service.refresh(command());
@@ -79,15 +92,18 @@ class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest
         assertThat(result.outcome()).isEqualTo(RefreshOutcome.CREATED);
         assertThat(result.storedVersion()).isEqualTo(5);
         assertThat(snapshotVersion()).isEqualTo(5L);
-        assertThat(count("purchase_order_line_snapshot")).isEqualTo(2);
-        assertThat(count("receipt_snapshot")).isEqualTo(1);
-        assertThat(count("receipt_line_snapshot")).isEqualTo(2);
+        assertThat(purchaseOrderVersion()).isEqualTo(3L);
+        assertThat(receiptVersion("RCV-1001-1")).isEqualTo(2L);
+        assertThat(receiptLineVersion("RCL-1001-1-1")).isEqualTo(2L);
+        assertThat(activeCount("purchase_order_line_snapshot")).isEqualTo(2);
+        assertThat(activeCount("receipt_snapshot")).isEqualTo(1);
+        assertThat(activeCount("receipt_line_snapshot")).isEqualTo(2);
         assertThat(confirmedQuantity("RCL-1001-1-1")).isEqualTo(60);
         assertThat(payloadHash()).isNotBlank();
     }
 
     @Test
-    void newerVersionReplacesSnapshotWithoutLeavingStaleChildren() {
+    void newerVersionUpdatesInPlaceWithoutLeavingStaleChildren() {
         STUB.respond(200, PurchasingPayloads.confirmedPartialReceipt().toJson());
         service.refresh(command());
 
@@ -97,10 +113,57 @@ class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest
         assertThat(result.outcome()).isEqualTo(RefreshOutcome.UPDATED);
         assertThat(result.storedVersion()).isEqualTo(6);
         assertThat(snapshotVersion()).isEqualTo(6L);
-        assertThat(count("purchase_order_line_snapshot")).isEqualTo(2);
-        assertThat(count("receipt_snapshot")).isEqualTo(1);
-        assertThat(count("receipt_line_snapshot")).isEqualTo(2);
+        assertThat(activeCount("purchase_order_line_snapshot")).isEqualTo(2);
+        assertThat(activeCount("receipt_snapshot")).isEqualTo(1);
+        assertThat(activeCount("receipt_line_snapshot")).isEqualTo(2);
         assertThat(confirmedQuantity("RCL-1001-1-1")).isEqualTo(70);
+    }
+
+    @Test
+    void retainedRowsKeepUuidAndRemovedRowsAreDeactivatedNotDeleted() {
+        STUB.respond(200, PurchasingPayloads.confirmedPartialReceipt().toJson());
+        service.refresh(command());
+
+        UUID line1Id = uuidOf("purchase_order_line_snapshot", "purchase_order_line_id", "POL-1001-1");
+        UUID line2Id = uuidOf("purchase_order_line_snapshot", "purchase_order_line_id", "POL-1001-2");
+        UUID receiptId = uuidOf("receipt_snapshot", "receipt_id", "RCV-1001-1");
+        UUID receiptLine1Id = uuidOf("receipt_line_snapshot", "receipt_line_id", "RCL-1001-1-1");
+        UUID receiptLine2Id = uuidOf("receipt_line_snapshot", "receipt_line_id", "RCL-1001-1-2");
+
+        STUB.respond(200, versionDroppingSecondLineAndReceiptLine().toJson());
+        RefreshResult result = service.refresh(command());
+
+        assertThat(result.outcome()).isEqualTo(RefreshOutcome.UPDATED);
+        assertThat(uuidOf("purchase_order_line_snapshot", "purchase_order_line_id", "POL-1001-1"))
+                .isEqualTo(line1Id);
+        assertThat(uuidOf("receipt_snapshot", "receipt_id", "RCV-1001-1")).isEqualTo(receiptId);
+        assertThat(uuidOf("receipt_line_snapshot", "receipt_line_id", "RCL-1001-1-1"))
+                .isEqualTo(receiptLine1Id);
+
+        assertThat(uuidOf("purchase_order_line_snapshot", "purchase_order_line_id", "POL-1001-2"))
+                .isEqualTo(line2Id);
+        assertThat(uuidOf("receipt_line_snapshot", "receipt_line_id", "RCL-1001-1-2"))
+                .isEqualTo(receiptLine2Id);
+        assertThat(active("purchase_order_line_snapshot", "purchase_order_line_id", "POL-1001-2"))
+                .isFalse();
+        assertThat(active("receipt_line_snapshot", "receipt_line_id", "RCL-1001-1-2"))
+                .isFalse();
+        assertThat(count("purchase_order_line_snapshot")).isEqualTo(2);
+        assertThat(count("receipt_line_snapshot")).isEqualTo(2);
+
+        PurchaseOrderAggregate current = reader.findCurrent(command().purchaseOrderId()).orElseThrow();
+        assertThat(current.snapshotVersion()).isEqualTo(6);
+        assertThat(current.purchaseOrder().version()).isEqualTo(4);
+        assertThat(current.purchaseOrder().lines()).hasSize(1);
+        assertThat(current.receipts()).hasSize(1);
+        assertThat(current.receipts().get(0).lines()).hasSize(1);
+        assertThat(current.receipts().get(0).lines().get(0).receiptLineId()).isEqualTo("RCL-1001-1-1");
+        assertThat(current.receipts().get(0).lines().get(0).confirmedQuantity().value()).isEqualTo(70);
+    }
+
+    @Test
+    void readerReturnsEmptyWhenNoSnapshotExists() {
+        assertThat(reader.findCurrent(command().purchaseOrderId())).isEmpty();
     }
 
     @Test
@@ -148,7 +211,7 @@ class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest
         assertThat(payloadHash()).isEqualTo(hashBefore);
         assertThat(updatedAt()).isEqualTo(updatedBefore);
         assertThat(confirmedQuantity("RCL-1001-1-1")).isEqualTo(60);
-        assertThat(count("receipt_line_snapshot")).isEqualTo(2);
+        assertThat(activeCount("receipt_line_snapshot")).isEqualTo(2);
     }
 
     @Test
@@ -182,6 +245,38 @@ class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest
         assertThat(count("receipt_line_snapshot")).isZero();
     }
 
+    @Test
+    void concurrentFirstRefreshIsSerializedWithoutIntegrityLeak() throws Exception {
+        STUB.respond(200, PurchasingPayloads.confirmedPartialReceipt().toJson());
+
+        int threads = 2;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CyclicBarrier barrier = new CyclicBarrier(threads);
+        try {
+            List<Future<RefreshResult>> futures = new ArrayList<>();
+            for (int i = 0; i < threads; i++) {
+                futures.add(pool.submit(() -> {
+                    barrier.await(5, TimeUnit.SECONDS);
+                    return service.refresh(command());
+                }));
+            }
+
+            List<RefreshOutcome> outcomes = new ArrayList<>();
+            for (Future<RefreshResult> future : futures) {
+                outcomes.add(future.get(20, TimeUnit.SECONDS).outcome());
+            }
+
+            assertThat(snapshotCount()).isEqualTo(1);
+            assertThat(activeCount("receipt_line_snapshot")).isEqualTo(2);
+            assertThat(outcomes)
+                    .allSatisfy(outcome -> assertThat(outcome)
+                            .isIn(RefreshOutcome.CREATED, RefreshOutcome.UNCHANGED));
+            assertThat(outcomes).contains(RefreshOutcome.CREATED);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
     private RefreshPurchaseOrderCommand command() {
         return new RefreshPurchaseOrderCommand(PurchaseOrderId.of(PO_ID), SupplierId.of("SUP-1"));
     }
@@ -200,9 +295,43 @@ class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest
                 .toJson();
     }
 
+    private static PurchasingPayloads versionDroppingSecondLineAndReceiptLine() {
+        return PurchasingPayloads.confirmedPartialReceipt()
+                .snapshotVersion(6)
+                .purchaseOrderVersion(4)
+                .clearLines()
+                .addLine("POL-1001-1", "ITEM-A4-80", "Premium Copy Paper A4 80g", 100, 2500)
+                .clearReceipts()
+                .addReceipt(
+                        "RCV-1001-1",
+                        "CONFIRMED",
+                        "2026-01-05",
+                        2,
+                        receiptLine("RCL-1001-1-1", 2, "POL-1001-1", 70));
+    }
+
     private long snapshotVersion() {
         return jdbc.queryForObject(
-                "select external_version from purchase_order_snapshot where purchase_order_id = ?", Long.class, PO_ID);
+                "select snapshot_version from purchase_order_snapshot where purchase_order_id = ?", Long.class, PO_ID);
+    }
+
+    private long purchaseOrderVersion() {
+        return jdbc.queryForObject(
+                "select purchase_order_version from purchase_order_snapshot where purchase_order_id = ?",
+                Long.class,
+                PO_ID);
+    }
+
+    private long receiptVersion(String receiptId) {
+        return jdbc.queryForObject(
+                "select receipt_version from receipt_snapshot where receipt_id = ?", Long.class, receiptId);
+    }
+
+    private long receiptLineVersion(String receiptLineId) {
+        return jdbc.queryForObject(
+                "select receipt_line_version from receipt_line_snapshot where receipt_line_id = ?",
+                Long.class,
+                receiptLineId);
     }
 
     private String payloadHash() {
@@ -224,8 +353,22 @@ class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest
                 receiptLineId);
     }
 
+    private UUID uuidOf(String table, String keyColumn, String key) {
+        return jdbc.queryForObject(
+                "select id from " + table + " where " + keyColumn + " = ?", UUID.class, key);
+    }
+
+    private boolean active(String table, String keyColumn, String key) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "select active from " + table + " where " + keyColumn + " = ?", Boolean.class, key));
+    }
+
     private int count(String table) {
         return jdbc.queryForObject("select count(*) from " + table, Integer.class);
+    }
+
+    private int activeCount(String table) {
+        return jdbc.queryForObject("select count(*) from " + table + " where active", Integer.class);
     }
 
     private int snapshotCount() {

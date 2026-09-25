@@ -41,6 +41,11 @@ public class HttpPurchasingSystemClient implements PurchasingSystemClient {
 
     private static final String AGGREGATE_PATH = "/api/purchase-orders/{purchaseOrderId}";
 
+    // Must match the varchar lengths of the V2 snapshot tables.
+    private static final int MAX_ID_LENGTH = 64;
+    private static final int MAX_SUPPLIER_NAME_LENGTH = 200;
+    private static final int MAX_ITEM_NAME_LENGTH = 500;
+
     private final RestClient restClient;
     private final ObjectMapper objectMapper;
 
@@ -98,23 +103,31 @@ public class HttpPurchasingSystemClient implements PurchasingSystemClient {
             long snapshotVersion = requiredLong(wire.snapshotVersion(), "snapshotVersion");
 
             ExternalPurchaseOrder purchaseOrder = required(wire.purchaseOrder(), "purchaseOrder");
-            PurchaseOrderId purchaseOrderId = PurchaseOrderId.of(
-                    requiredText(purchaseOrder.purchaseOrderId(), "purchaseOrder.purchaseOrderId"));
+            PurchaseOrderId purchaseOrderId = PurchaseOrderId.of(requiredText(
+                    purchaseOrder.purchaseOrderId(), "purchaseOrder.purchaseOrderId", MAX_ID_LENGTH));
             long purchaseOrderVersion = requiredLong(purchaseOrder.version(), "purchaseOrder.version");
             PurchaseOrderStatus status = purchaseOrderStatus(purchaseOrder.status());
 
             ExternalSupplier supplier = required(purchaseOrder.supplier(), "purchaseOrder.supplier");
-            SupplierId supplierId = SupplierId.of(requiredText(supplier.supplierId(), "supplier.supplierId"));
-            String supplierName = requiredText(supplier.name(), "supplier.name");
+            SupplierId supplierId = SupplierId.of(
+                    requiredText(supplier.supplierId(), "supplier.supplierId", MAX_ID_LENGTH));
+            String supplierName =
+                    requiredText(supplier.name(), "supplier.name", MAX_SUPPLIER_NAME_LENGTH);
 
             List<ExternalPurchaseOrderLine> wireLines =
                     required(purchaseOrder.lines(), "purchaseOrder.lines");
             List<PurchaseOrderLineFacts> lines = new ArrayList<>(wireLines.size());
             for (ExternalPurchaseOrderLine line : wireLines) {
+                if (line == null) {
+                    throw new InvalidExternalFactException("purchaseOrder.lines contains a null element");
+                }
                 lines.add(new PurchaseOrderLineFacts(
-                        requiredText(line.purchaseOrderLineId(), "purchaseOrderLine.purchaseOrderLineId"),
-                        requiredText(line.itemId(), "purchaseOrderLine.itemId"),
-                        requiredText(line.itemName(), "purchaseOrderLine.itemName"),
+                        requiredText(
+                                line.purchaseOrderLineId(),
+                                "purchaseOrderLine.purchaseOrderLineId",
+                                MAX_ID_LENGTH),
+                        requiredText(line.itemId(), "purchaseOrderLine.itemId", MAX_ID_LENGTH),
+                        requiredText(line.itemName(), "purchaseOrderLine.itemName", MAX_ITEM_NAME_LENGTH),
                         Quantity.of(requiredInt(line.orderedQuantity(), "purchaseOrderLine.orderedQuantity")),
                         Money.of(requiredLong(line.unitPrice(), "purchaseOrderLine.unitPrice"))));
             }
@@ -122,6 +135,9 @@ public class HttpPurchasingSystemClient implements PurchasingSystemClient {
             List<ExternalReceipt> wireReceipts = required(wire.receipts(), "receipts");
             List<ReceiptFacts> receipts = new ArrayList<>(wireReceipts.size());
             for (ExternalReceipt receipt : wireReceipts) {
+                if (receipt == null) {
+                    throw new InvalidExternalFactException("receipts contains a null element");
+                }
                 receipts.add(toReceiptFacts(receipt));
             }
 
@@ -134,7 +150,7 @@ public class HttpPurchasingSystemClient implements PurchasingSystemClient {
     }
 
     private ReceiptFacts toReceiptFacts(ExternalReceipt receipt) {
-        String receiptId = requiredText(receipt.receiptId(), "receipt.receiptId");
+        String receiptId = requiredText(receipt.receiptId(), "receipt.receiptId", MAX_ID_LENGTH);
         ReceiptStatus status = receiptStatus(receipt.status());
         if (receipt.receiptDate() == null) {
             throw new InvalidExternalFactException("receipt.receiptDate is required for " + receiptId);
@@ -144,17 +160,20 @@ public class HttpPurchasingSystemClient implements PurchasingSystemClient {
         List<ExternalReceiptLine> wireLines = required(receipt.lines(), "receipt.lines");
         List<ReceiptLineFacts> lines = new ArrayList<>(wireLines.size());
         for (ExternalReceiptLine line : wireLines) {
+            if (line == null) {
+                throw new InvalidExternalFactException("receipt.lines contains a null element for " + receiptId);
+            }
             lines.add(new ReceiptLineFacts(
-                    requiredText(line.receiptLineId(), "receiptLine.receiptLineId"),
+                    requiredText(line.receiptLineId(), "receiptLine.receiptLineId", MAX_ID_LENGTH),
                     requiredLong(line.version(), "receiptLine.version"),
-                    requiredText(line.purchaseOrderLineId(), "receiptLine.purchaseOrderLineId"),
+                    requiredText(line.purchaseOrderLineId(), "receiptLine.purchaseOrderLineId", MAX_ID_LENGTH),
                     ConfirmedQuantity.of(requiredInt(line.confirmedQuantity(), "receiptLine.confirmedQuantity"))));
         }
         return new ReceiptFacts(receiptId, status, receipt.receiptDate(), version, lines);
     }
 
     private PurchaseOrderStatus purchaseOrderStatus(String value) {
-        String status = requiredText(value, "purchaseOrder.status");
+        String status = requiredText(value, "purchaseOrder.status", MAX_ID_LENGTH);
         try {
             return PurchaseOrderStatus.valueOf(status);
         } catch (IllegalArgumentException e) {
@@ -163,7 +182,7 @@ public class HttpPurchasingSystemClient implements PurchasingSystemClient {
     }
 
     private ReceiptStatus receiptStatus(String value) {
-        String status = requiredText(value, "receipt.status");
+        String status = requiredText(value, "receipt.status", MAX_ID_LENGTH);
         try {
             return ReceiptStatus.valueOf(status);
         } catch (IllegalArgumentException e) {
@@ -178,9 +197,13 @@ public class HttpPurchasingSystemClient implements PurchasingSystemClient {
         return value;
     }
 
-    private static String requiredText(String value, String field) {
+    private static String requiredText(String value, String field, int maxLength) {
         if (value == null || value.isBlank()) {
             throw new InvalidExternalFactException(field + " must not be blank");
+        }
+        if (value.length() > maxLength) {
+            throw new InvalidExternalFactException(
+                    field + " exceeds the maximum length of " + maxLength + ": " + value.length());
         }
         return value;
     }

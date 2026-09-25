@@ -5,7 +5,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.invoicematch.core.support.AbstractPostgresIntegrationTest;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -13,12 +15,21 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * Proves the P1-02 Flyway V2 migration applies to a real PostgreSQL instance
- * and that the purchasing reference snapshot constraints hold.
+ * and that the purchasing reference snapshot constraints and version columns
+ * hold.
  */
 class PurchasingReferenceMigrationTest extends AbstractPostgresIntegrationTest {
 
     @Autowired
     private JdbcTemplate jdbc;
+
+    @BeforeEach
+    void cleanSnapshots() {
+        jdbc.update("delete from receipt_line_snapshot");
+        jdbc.update("delete from receipt_snapshot");
+        jdbc.update("delete from purchase_order_line_snapshot");
+        jdbc.update("delete from purchase_order_snapshot");
+    }
 
     @Test
     void appliesV2MigrationToRealPostgreSql() {
@@ -38,6 +49,44 @@ class PurchasingReferenceMigrationTest extends AbstractPostgresIntegrationTest {
     }
 
     @Test
+    void exposesSeparateQueryableVersionColumns() {
+        seedSnapshot("PO-1");
+        seedLine("PO-1", "POL-1");
+        seedReceipt("PO-1", "RCV-1");
+        insertReceiptLine("PO-1", "RCV-1", "RCL-1", "POL-1", 0);
+
+        assertThat(jdbc.queryForObject(
+                        "select snapshot_version from purchase_order_snapshot where purchase_order_id = 'PO-1'",
+                        Long.class))
+                .isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+                        "select purchase_order_version from purchase_order_snapshot where purchase_order_id = 'PO-1'",
+                        Long.class))
+                .isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+                        "select receipt_version from receipt_snapshot where receipt_id = 'RCV-1'", Long.class))
+                .isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+                        "select receipt_line_version from receipt_line_snapshot where receipt_line_id = 'RCL-1'",
+                        Long.class))
+                .isEqualTo(1L);
+    }
+
+    @Test
+    void activeDefaultsToTrue() {
+        seedSnapshot("PO-ACTIVE");
+        seedLine("PO-ACTIVE", "POL-1");
+        seedReceipt("PO-ACTIVE", "RCV-1");
+        insertReceiptLine("PO-ACTIVE", "RCV-1", "RCL-1", "POL-1", 1);
+
+        for (String table : List.of(
+                "purchase_order_line_snapshot", "receipt_snapshot", "receipt_line_snapshot")) {
+            Map<String, Object> row = jdbc.queryForMap("select active from " + table + " limit 1");
+            assertThat(row).containsEntry("active", true);
+        }
+    }
+
+    @Test
     void allowsZeroConfirmedQuantityAndRejectsNegativeOne() {
         seedSnapshot("PO-1");
         seedLine("PO-1", "POL-1");
@@ -54,56 +103,79 @@ class PurchasingReferenceMigrationTest extends AbstractPostgresIntegrationTest {
     }
 
     @Test
-    void rejectsNegativeExternalVersion() {
+    void rejectsNegativeSnapshotVersion() {
+        assertThatThrownBy(() -> insertSnapshot("PO-NEG-SNAPSHOT", -1, 1))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void rejectsNegativePurchaseOrderVersion() {
+        assertThatThrownBy(() -> insertSnapshot("PO-NEG-PO", 1, -1))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void rejectsNegativeReceiptLineVersion() {
+        seedSnapshot("PO-2");
+        seedLine("PO-2", "POL-1");
+        seedReceipt("PO-2", "RCV-1");
+
         assertThatThrownBy(() -> jdbc.update(
-                        "insert into purchase_order_snapshot (purchase_order_id, supplier_id, supplier_name, status, "
-                                + "external_version, payload_hash, payload, retrieved_at, updated_at) "
-                                + "values ('PO-NEG', 'SUP-1', 'S', 'CONFIRMED', -1, 'h', '{}'::jsonb, now(), now())"))
+                        "insert into receipt_line_snapshot (id, purchase_order_id, receipt_id, receipt_line_id, "
+                                + "purchase_order_line_id, receipt_line_version, confirmed_quantity) "
+                                + "values (?, 'PO-2', 'RCV-1', 'RCL-NEG', 'POL-1', -1, 1)",
+                        UUID.randomUUID()))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
     void rejectsNonPositiveOrderedQuantity() {
-        seedSnapshot("PO-2");
+        seedSnapshot("PO-3");
 
-        assertThatThrownBy(() -> seedLine("PO-2", "POL-BAD", 0, 1000))
+        assertThatThrownBy(() -> seedLine("PO-3", "POL-BAD", 0, 1000))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
     void rejectsDuplicateExternalPurchaseOrderLine() {
-        seedSnapshot("PO-3");
-        seedLine("PO-3", "POL-1");
+        seedSnapshot("PO-4");
+        seedLine("PO-4", "POL-1");
 
-        assertThatThrownBy(() -> seedLine("PO-3", "POL-1")).isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> seedLine("PO-4", "POL-1")).isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
     void rejectsReceiptLineReferencingUnknownPurchaseOrderLine() {
-        seedSnapshot("PO-4");
-        seedReceipt("PO-4", "RCV-1");
+        seedSnapshot("PO-5");
+        seedReceipt("PO-5", "RCV-1");
 
-        assertThatThrownBy(() -> insertReceiptLine("PO-4", "RCV-1", "RCL-1", "POL-MISSING", 5))
+        assertThatThrownBy(() -> insertReceiptLine("PO-5", "RCV-1", "RCL-1", "POL-MISSING", 5))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
     void rejectsReceiptLineFromAnotherPurchaseOrdersReceipt() {
-        seedSnapshot("PO-5");
         seedSnapshot("PO-6");
-        seedLine("PO-5", "POL-5");
-        seedReceipt("PO-6", "RCV-6");
+        seedSnapshot("PO-7");
+        seedLine("PO-6", "POL-6");
+        seedReceipt("PO-7", "RCV-7");
 
-        assertThatThrownBy(() -> insertReceiptLine("PO-5", "RCV-6", "RCL-1", "POL-5", 5))
+        assertThatThrownBy(() -> insertReceiptLine("PO-6", "RCV-7", "RCL-1", "POL-6", 5))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     private void seedSnapshot(String purchaseOrderId) {
+        insertSnapshot(purchaseOrderId, 1, 1);
+    }
+
+    private void insertSnapshot(String purchaseOrderId, long snapshotVersion, long purchaseOrderVersion) {
         jdbc.update(
                 "insert into purchase_order_snapshot (purchase_order_id, supplier_id, supplier_name, status, "
-                        + "external_version, payload_hash, payload, retrieved_at, updated_at) "
-                        + "values (?, 'SUP-1', 'Supplier', 'CONFIRMED', 1, 'hash', '{}'::jsonb, now(), now())",
-                purchaseOrderId);
+                        + "snapshot_version, purchase_order_version, payload_hash, payload, retrieved_at, updated_at) "
+                        + "values (?, 'SUP-1', 'Supplier', 'CONFIRMED', ?, ?, 'hash', '{}'::jsonb, now(), now())",
+                purchaseOrderId,
+                snapshotVersion,
+                purchaseOrderVersion);
     }
 
     private UUID seedLine(String purchaseOrderId, String purchaseOrderLineId) {
@@ -127,7 +199,7 @@ class PurchasingReferenceMigrationTest extends AbstractPostgresIntegrationTest {
         UUID id = UUID.randomUUID();
         jdbc.update(
                 "insert into receipt_snapshot (id, purchase_order_id, receipt_id, status, receipt_date, "
-                        + "external_version) values (?, ?, ?, 'CONFIRMED', date '2026-01-05', 1)",
+                        + "receipt_version) values (?, ?, ?, 'CONFIRMED', date '2026-01-05', 1)",
                 id,
                 purchaseOrderId,
                 receiptId);
@@ -138,7 +210,8 @@ class PurchasingReferenceMigrationTest extends AbstractPostgresIntegrationTest {
             String purchaseOrderId, String receiptId, String receiptLineId, String purchaseOrderLineId, int quantity) {
         jdbc.update(
                 "insert into receipt_line_snapshot (id, purchase_order_id, receipt_id, receipt_line_id, "
-                        + "purchase_order_line_id, external_version, confirmed_quantity) values (?, ?, ?, ?, ?, 1, ?)",
+                        + "purchase_order_line_id, receipt_line_version, confirmed_quantity) "
+                        + "values (?, ?, ?, ?, ?, 1, ?)",
                 UUID.randomUUID(),
                 purchaseOrderId,
                 receiptId,

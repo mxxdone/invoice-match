@@ -16,9 +16,12 @@ import com.invoicematch.core.purchasingreference.persistence.ReceiptLineSnapshot
 import com.invoicematch.core.purchasingreference.persistence.ReceiptSnapshot;
 import com.invoicematch.core.purchasingreference.persistence.ReceiptSnapshotRepository;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,6 +29,11 @@ import org.springframework.transaction.annotation.Transactional;
  * Applies one fetched external aggregate snapshot to the local current
  * snapshot inside a single transaction. The external HTTP call has already
  * completed before this store is invoked, so no lock is held during it.
+ *
+ * <p>Child rows are keyed by their stable external identifiers and updated in
+ * place, never deleted and re-created. New children are inserted and children
+ * missing from a newer snapshot are deactivated, preserving row identity for
+ * future foreign keys and row locks.
  *
  * <p>Version rules: a newer snapshot version replaces the stored data; a lower
  * version is ignored and reported as stale; the same version with an identical
@@ -39,41 +47,46 @@ public class PurchaseOrderSnapshotStore {
     private final PurchaseOrderLineSnapshotRepository lines;
     private final ReceiptSnapshotRepository receipts;
     private final ReceiptLineSnapshotRepository receiptLines;
+    private final JdbcTemplate jdbc;
 
     public PurchaseOrderSnapshotStore(
             PurchaseOrderSnapshotRepository snapshots,
             PurchaseOrderLineSnapshotRepository lines,
             ReceiptSnapshotRepository receipts,
-            ReceiptLineSnapshotRepository receiptLines) {
+            ReceiptLineSnapshotRepository receiptLines,
+            JdbcTemplate jdbc) {
         this.snapshots = snapshots;
         this.lines = lines;
         this.receipts = receipts;
         this.receiptLines = receiptLines;
+        this.jdbc = jdbc;
     }
 
     @Transactional
     public RefreshResult apply(
             PurchaseOrderAggregate aggregate, String canonicalPayload, String payloadHash, Instant retrievedAt) {
         String purchaseOrderId = aggregate.purchaseOrderId().value();
+        acquirePurchaseOrderLock(purchaseOrderId);
         var existing = snapshots.findForUpdate(purchaseOrderId);
 
+        PurchaseOrderFacts purchaseOrder = aggregate.purchaseOrder();
         if (existing.isEmpty()) {
-            PurchaseOrderFacts purchaseOrder = aggregate.purchaseOrder();
             snapshots.save(PurchaseOrderSnapshot.create(
                     purchaseOrderId,
                     purchaseOrder.supplierId().value(),
                     purchaseOrder.supplierName(),
                     purchaseOrder.status(),
                     aggregate.snapshotVersion(),
+                    purchaseOrder.version(),
                     payloadHash,
                     canonicalPayload,
                     retrievedAt));
-            replaceChildren(purchaseOrderId, aggregate);
+            upsertChildren(purchaseOrderId, aggregate);
             return RefreshResult.of(RefreshOutcome.CREATED, aggregate.snapshotVersion());
         }
 
         PurchaseOrderSnapshot snapshot = existing.get();
-        long storedVersion = snapshot.externalVersion();
+        long storedVersion = snapshot.snapshotVersion();
         long incomingVersion = aggregate.snapshotVersion();
 
         if (incomingVersion < storedVersion) {
@@ -86,47 +99,108 @@ public class PurchaseOrderSnapshotStore {
             throw new ExternalSnapshotConflictException(purchaseOrderId, storedVersion);
         }
 
-        PurchaseOrderFacts purchaseOrder = aggregate.purchaseOrder();
-        deleteChildren(purchaseOrderId);
         snapshot.replaceWith(
                 purchaseOrder.supplierId().value(),
                 purchaseOrder.supplierName(),
                 purchaseOrder.status(),
                 incomingVersion,
+                purchaseOrder.version(),
                 payloadHash,
                 canonicalPayload,
                 retrievedAt);
-        replaceChildren(purchaseOrderId, aggregate);
+        upsertChildren(purchaseOrderId, aggregate);
         return RefreshResult.of(RefreshOutcome.UPDATED, incomingVersion);
     }
 
-    private void deleteChildren(String purchaseOrderId) {
-        receiptLines.deleteByPurchaseOrderId(purchaseOrderId);
-        receipts.deleteByPurchaseOrderId(purchaseOrderId);
-        lines.deleteByPurchaseOrderId(purchaseOrderId);
+    /**
+     * Transaction-scoped advisory lock on the purchase order, so concurrent
+     * first refreshes with no row to lock are serialized and cannot leak a raw
+     * unique-constraint failure.
+     */
+    private void acquirePurchaseOrderLock(String purchaseOrderId) {
+        jdbc.queryForList("select pg_advisory_xact_lock(1, hashtext(?))", purchaseOrderId);
     }
 
-    private void replaceChildren(String purchaseOrderId, PurchaseOrderAggregate aggregate) {
-        List<PurchaseOrderLineSnapshot> lineRows = new ArrayList<>();
-        for (var line : aggregate.purchaseOrder().lines()) {
-            lineRows.add(PurchaseOrderLineSnapshot.create(UUID.randomUUID(), purchaseOrderId, line));
-        }
+    private void upsertChildren(String purchaseOrderId, PurchaseOrderAggregate aggregate) {
+        upsertLines(purchaseOrderId, aggregate);
+        upsertReceipts(purchaseOrderId, aggregate);
+        upsertReceiptLines(purchaseOrderId, aggregate);
+    }
 
-        List<ReceiptSnapshot> receiptRows = new ArrayList<>();
-        List<ReceiptLineSnapshot> receiptLineRows = new ArrayList<>();
-        for (ReceiptFacts receipt : aggregate.receipts()) {
-            receiptRows.add(ReceiptSnapshot.create(UUID.randomUUID(), purchaseOrderId, receipt));
-            for (ReceiptLineFacts line : receipt.lines()) {
-                receiptLineRows.add(
-                        ReceiptLineSnapshot.create(UUID.randomUUID(), purchaseOrderId, receipt.receiptId(), line));
+    private void upsertLines(String purchaseOrderId, PurchaseOrderAggregate aggregate) {
+        Map<String, PurchaseOrderLineSnapshot> existing = new HashMap<>();
+        for (PurchaseOrderLineSnapshot row : lines.findByPurchaseOrderId(purchaseOrderId)) {
+            existing.put(row.purchaseOrderLineId(), row);
+        }
+        Set<String> incoming = new HashSet<>();
+        for (var facts : aggregate.purchaseOrder().lines()) {
+            PurchaseOrderLineSnapshot row = existing.get(facts.purchaseOrderLineId());
+            if (row == null) {
+                lines.save(PurchaseOrderLineSnapshot.create(UUID.randomUUID(), purchaseOrderId, facts));
+            } else {
+                row.updateFrom(facts);
+            }
+            incoming.add(facts.purchaseOrderLineId());
+        }
+        for (PurchaseOrderLineSnapshot row : existing.values()) {
+            if (!incoming.contains(row.purchaseOrderLineId())) {
+                row.deactivate();
             }
         }
-
-        lines.saveAll(lineRows);
         lines.flush();
-        receipts.saveAll(receiptRows);
+    }
+
+    private void upsertReceipts(String purchaseOrderId, PurchaseOrderAggregate aggregate) {
+        Map<String, ReceiptSnapshot> existing = new HashMap<>();
+        for (ReceiptSnapshot row : receipts.findByPurchaseOrderId(purchaseOrderId)) {
+            existing.put(row.receiptId(), row);
+        }
+        Set<String> incoming = new HashSet<>();
+        for (ReceiptFacts facts : aggregate.receipts()) {
+            ReceiptSnapshot row = existing.get(facts.receiptId());
+            if (row == null) {
+                receipts.save(ReceiptSnapshot.create(UUID.randomUUID(), purchaseOrderId, facts));
+            } else {
+                row.updateFrom(facts);
+            }
+            incoming.add(facts.receiptId());
+        }
+        for (ReceiptSnapshot row : existing.values()) {
+            if (!incoming.contains(row.receiptId())) {
+                row.deactivate();
+            }
+        }
         receipts.flush();
-        receiptLines.saveAll(receiptLineRows);
+    }
+
+    private void upsertReceiptLines(String purchaseOrderId, PurchaseOrderAggregate aggregate) {
+        Map<String, ReceiptLineSnapshot> existing = new HashMap<>();
+        for (ReceiptLineSnapshot row : receiptLines.findByPurchaseOrderId(purchaseOrderId)) {
+            existing.put(receiptLineKey(row.receiptId(), row.receiptLineId()), row);
+        }
+        Set<String> incoming = new HashSet<>();
+        for (ReceiptFacts receipt : aggregate.receipts()) {
+            for (ReceiptLineFacts facts : receipt.lines()) {
+                String key = receiptLineKey(receipt.receiptId(), facts.receiptLineId());
+                ReceiptLineSnapshot row = existing.get(key);
+                if (row == null) {
+                    receiptLines.save(
+                            ReceiptLineSnapshot.create(UUID.randomUUID(), purchaseOrderId, receipt.receiptId(), facts));
+                } else {
+                    row.updateFrom(facts);
+                }
+                incoming.add(key);
+            }
+        }
+        for (ReceiptLineSnapshot row : existing.values()) {
+            if (!incoming.contains(receiptLineKey(row.receiptId(), row.receiptLineId()))) {
+                row.deactivate();
+            }
+        }
         receiptLines.flush();
+    }
+
+    private static String receiptLineKey(String receiptId, String receiptLineId) {
+        return receiptId + "|" + receiptLineId;
     }
 }

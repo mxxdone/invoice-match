@@ -15,9 +15,11 @@ import org.hibernate.type.SqlTypes;
 
 /**
  * Current local snapshot of one external purchase order. It is mutable by
- * design: a newer external aggregate snapshot version replaces it atomically.
- * The row keeps the external version and canonical payload hash that decide
- * whether an incoming refresh is newer, stale, unchanged or in conflict.
+ * design: a newer external aggregate snapshot version updates it in place.
+ * {@code snapshotVersion} is the aggregate-level version used to decide whether
+ * an incoming refresh is newer, stale, unchanged or in conflict;
+ * {@code purchaseOrderVersion} is the purchase order fact version stored
+ * separately for querying.
  */
 @Entity
 @Table(name = "purchase_order_snapshot")
@@ -37,8 +39,11 @@ public class PurchaseOrderSnapshot {
     @Column(name = "status", nullable = false, length = 32)
     private PurchaseOrderStatus status;
 
-    @Column(name = "external_version", nullable = false)
-    private long externalVersion;
+    @Column(name = "snapshot_version", nullable = false)
+    private long snapshotVersion;
+
+    @Column(name = "purchase_order_version", nullable = false)
+    private long purchaseOrderVersion;
 
     @Column(name = "payload_hash", nullable = false, length = 128)
     private String payloadHash;
@@ -61,18 +66,17 @@ public class PurchaseOrderSnapshot {
             String supplierId,
             String supplierName,
             PurchaseOrderStatus status,
-            long externalVersion,
+            long snapshotVersion,
+            long purchaseOrderVersion,
             String payloadHash,
             String payload,
             Instant retrievedAt) {
-        if (externalVersion < 0) {
-            throw new DomainValidationException("externalVersion must not be negative: " + externalVersion);
-        }
         this.purchaseOrderId = requireText(purchaseOrderId, "purchaseOrderId");
         this.supplierId = requireText(supplierId, "supplierId");
         this.supplierName = requireText(supplierName, "supplierName");
         this.status = Objects.requireNonNull(status, "status");
-        this.externalVersion = externalVersion;
+        this.snapshotVersion = requireNonNegative(snapshotVersion, "snapshotVersion");
+        this.purchaseOrderVersion = requireNonNegative(purchaseOrderVersion, "purchaseOrderVersion");
         this.payloadHash = requireText(payloadHash, "payloadHash");
         this.payload = Objects.requireNonNull(payload, "payload");
         this.retrievedAt = Objects.requireNonNull(retrievedAt, "retrievedAt");
@@ -84,34 +88,45 @@ public class PurchaseOrderSnapshot {
             String supplierId,
             String supplierName,
             PurchaseOrderStatus status,
-            long externalVersion,
+            long snapshotVersion,
+            long purchaseOrderVersion,
             String payloadHash,
             String payload,
             Instant retrievedAt) {
         return new PurchaseOrderSnapshot(
-                purchaseOrderId, supplierId, supplierName, status, externalVersion, payloadHash, payload, retrievedAt);
+                purchaseOrderId,
+                supplierId,
+                supplierName,
+                status,
+                snapshotVersion,
+                purchaseOrderVersion,
+                payloadHash,
+                payload,
+                retrievedAt);
     }
 
     /**
      * Replaces this snapshot with a newer external aggregate version. Children
-     * are replaced separately in the same transaction.
+     * are upserted separately in the same transaction.
      */
     public void replaceWith(
             String supplierId,
             String supplierName,
             PurchaseOrderStatus status,
-            long externalVersion,
+            long snapshotVersion,
+            long purchaseOrderVersion,
             String payloadHash,
             String payload,
             Instant retrievedAt) {
-        if (externalVersion < externalVersion()) {
+        if (snapshotVersion < this.snapshotVersion) {
             throw new DomainValidationException(
-                    "Cannot replace snapshot with older version " + externalVersion + " < " + externalVersion());
+                    "Cannot replace snapshot with older version " + snapshotVersion + " < " + this.snapshotVersion);
         }
         this.supplierId = requireText(supplierId, "supplierId");
         this.supplierName = requireText(supplierName, "supplierName");
         this.status = Objects.requireNonNull(status, "status");
-        this.externalVersion = externalVersion;
+        this.snapshotVersion = requireNonNegative(snapshotVersion, "snapshotVersion");
+        this.purchaseOrderVersion = requireNonNegative(purchaseOrderVersion, "purchaseOrderVersion");
         this.payloadHash = requireText(payloadHash, "payloadHash");
         this.payload = Objects.requireNonNull(payload, "payload");
         this.retrievedAt = Objects.requireNonNull(retrievedAt, "retrievedAt");
@@ -121,6 +136,13 @@ public class PurchaseOrderSnapshot {
     private static String requireText(String value, String field) {
         if (value == null || value.isBlank()) {
             throw new DomainValidationException(field + " must not be blank");
+        }
+        return value;
+    }
+
+    private static long requireNonNegative(long value, String field) {
+        if (value < 0) {
+            throw new DomainValidationException(field + " must not be negative: " + value);
         }
         return value;
     }
@@ -141,8 +163,12 @@ public class PurchaseOrderSnapshot {
         return status;
     }
 
-    public long externalVersion() {
-        return externalVersion;
+    public long snapshotVersion() {
+        return snapshotVersion;
+    }
+
+    public long purchaseOrderVersion() {
+        return purchaseOrderVersion;
     }
 
     public String payloadHash() {

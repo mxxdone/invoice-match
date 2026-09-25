@@ -13,7 +13,8 @@ import java.util.UUID;
 /**
  * A receipt line within the current local snapshot. {@code confirmedQuantity}
  * is the externally confirmed quantity and may be zero; it is not the local
- * allocation quantity.
+ * allocation quantity. The row is keyed by the stable external receipt line id
+ * and deactivated instead of deleted when it leaves a newer snapshot.
  */
 @Entity
 @Table(name = "receipt_line_snapshot")
@@ -35,11 +36,14 @@ public class ReceiptLineSnapshot {
     @Column(name = "purchase_order_line_id", nullable = false, updatable = false, length = 64)
     private String purchaseOrderLineId;
 
-    @Column(name = "external_version", nullable = false)
-    private long externalVersion;
+    @Column(name = "receipt_line_version", nullable = false)
+    private long receiptLineVersion;
 
     @Column(name = "confirmed_quantity", nullable = false)
     private ConfirmedQuantity confirmedQuantity;
+
+    @Column(name = "active", nullable = false)
+    private boolean active = true;
 
     protected ReceiptLineSnapshot() {
     }
@@ -50,18 +54,16 @@ public class ReceiptLineSnapshot {
             String receiptId,
             String receiptLineId,
             String purchaseOrderLineId,
-            long externalVersion,
+            long receiptLineVersion,
             ConfirmedQuantity confirmedQuantity) {
-        if (externalVersion < 0) {
-            throw new DomainValidationException("externalVersion must not be negative: " + externalVersion);
-        }
         this.id = Objects.requireNonNull(id, "id");
         this.purchaseOrderId = requireText(purchaseOrderId, "purchaseOrderId");
         this.receiptId = requireText(receiptId, "receiptId");
         this.receiptLineId = requireText(receiptLineId, "receiptLineId");
         this.purchaseOrderLineId = requireText(purchaseOrderLineId, "purchaseOrderLineId");
-        this.externalVersion = externalVersion;
+        this.receiptLineVersion = requireNonNegative(receiptLineVersion, "receiptLineVersion");
         this.confirmedQuantity = Objects.requireNonNull(confirmedQuantity, "confirmedQuantity");
+        this.active = true;
     }
 
     public static ReceiptLineSnapshot create(
@@ -76,9 +78,30 @@ public class ReceiptLineSnapshot {
                 facts.confirmedQuantity());
     }
 
+    /**
+     * Updates the mutable facts of this receipt line and marks it active again.
+     * The row id and external receipt line id are never changed.
+     */
+    public void updateFrom(ReceiptLineFacts facts) {
+        this.receiptLineVersion = requireNonNegative(facts.version(), "receiptLineVersion");
+        this.confirmedQuantity = Objects.requireNonNull(facts.confirmedQuantity(), "confirmedQuantity");
+        this.active = true;
+    }
+
+    public void deactivate() {
+        this.active = false;
+    }
+
     private static String requireText(String value, String field) {
         if (value == null || value.isBlank()) {
             throw new DomainValidationException(field + " must not be blank");
+        }
+        return value;
+    }
+
+    private static long requireNonNegative(long value, String field) {
+        if (value < 0) {
+            throw new DomainValidationException(field + " must not be negative: " + value);
         }
         return value;
     }
@@ -103,12 +126,16 @@ public class ReceiptLineSnapshot {
         return purchaseOrderLineId;
     }
 
-    public long externalVersion() {
-        return externalVersion;
+    public long receiptLineVersion() {
+        return receiptLineVersion;
     }
 
     public ConfirmedQuantity confirmedQuantity() {
         return confirmedQuantity;
+    }
+
+    public boolean isActive() {
+        return active;
     }
 
     @Override
