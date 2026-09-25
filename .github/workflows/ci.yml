@@ -38,6 +38,9 @@ jobs:
       - name: Mock ERP test
         working-directory: mock-erp
         run: npm test
+      - name: Mock purchasing test
+        working-directory: mock-purchasing
+        run: npm test
       - name: Compose config and images
         run: |
           docker compose config --quiet
@@ -48,6 +51,8 @@ jobs:
           curl --fail --silent http://localhost:8080/actuator/health
           curl --fail --silent http://localhost:3000/api/health
           curl --fail --silent http://localhost:8081/health
+          curl --fail --silent http://localhost:8082/health
+          curl --fail --silent http://localhost:8082/api/purchase-orders/PO-1001
           docker compose exec -T postgres psql -U invoice_match -d invoice_match -Atc "SELECT current_setting('TimeZone')"
       - name: Compose logs on failure
         if: failure()

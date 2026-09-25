@@ -23,11 +23,14 @@ services:
       DB_URL: jdbc:postgresql://postgres:5432/invoice_match
       DB_USER: invoice_match
       DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      PURCHASING_BASE_URL: http://mock-purchasing:8082
       TZ: UTC
     ports:
       - "${CORE_API_PORT:-8080}:8080"
     depends_on:
       postgres:
+        condition: service_healthy
+      mock-purchasing:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
@@ -60,6 +63,18 @@ services:
       - "${MOCK_ERP_PORT:-8081}:8081"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8081/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  mock-purchasing:
+    build: ./mock-purchasing
+    environment:
+      TZ: UTC
+    ports:
+      - "${MOCK_PURCHASING_PORT:-8082}:8082"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8082/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
       interval: 5s
       timeout: 3s
       retries: 12
