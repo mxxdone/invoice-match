@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: core-api
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/invoice_match}
+    username: ${DB_USER:invoice_match}
+    password: ${DB_PASSWORD}
+    hikari:
+      connection-init-sql: SET TIME ZONE 'UTC'
+  jackson:
+    time-zone: UTC
+
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  endpoints:
+    web:
+      exposure:
+        include: health,info
