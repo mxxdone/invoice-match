@@ -7,10 +7,12 @@ import static com.invoicematch.core.support.PurchasingPayloads.receiptLine;
 import com.invoicematch.core.purchasingreference.application.PurchaseOrderSnapshotReader;
 import com.invoicematch.core.purchasingreference.application.PurchasingReferenceService;
 import com.invoicematch.core.purchasingreference.application.RefreshPurchaseOrderCommand;
+import com.invoicematch.core.purchasingreference.application.SnapshotPayloadHasher;
 import com.invoicematch.core.purchasingreference.domain.ExternalFactUnconfirmedException;
 import com.invoicematch.core.purchasingreference.domain.ExternalReferenceMismatchException;
 import com.invoicematch.core.purchasingreference.domain.ExternalSnapshotConflictException;
 import com.invoicematch.core.purchasingreference.domain.PurchaseOrderAggregate;
+import com.invoicematch.core.purchasingreference.domain.ReceiptLineFacts;
 import com.invoicematch.core.purchasingreference.domain.RefreshOutcome;
 import com.invoicematch.core.purchasingreference.domain.RefreshResult;
 import com.invoicematch.core.shared.domain.PurchaseOrderId;
@@ -71,6 +73,9 @@ class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest
 
     @Autowired
     private PurchaseOrderSnapshotReader reader;
+
+    @Autowired
+    private SnapshotPayloadHasher hasher;
 
     @Autowired
     private JdbcTemplate jdbc;
@@ -164,6 +169,31 @@ class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest
     @Test
     void readerReturnsEmptyWhenNoSnapshotExists() {
         assertThat(reader.findCurrent(command().purchaseOrderId())).isEmpty();
+    }
+
+    @Test
+    void receiptLineReferenceChangeUpdatesInPlaceAndKeepsCanonicalConsistency() {
+        STUB.respond(200, PurchasingPayloads.confirmedPartialReceipt().toJson());
+        service.refresh(command());
+        UUID receiptLine1Id = uuidOf("receipt_line_snapshot", "receipt_line_id", "RCL-1001-1-1");
+
+        STUB.respond(200, swappedReceiptLineReferences().toJson());
+        RefreshResult result = service.refresh(command());
+
+        assertThat(result.outcome()).isEqualTo(RefreshOutcome.UPDATED);
+        assertThat(uuidOf("receipt_line_snapshot", "receipt_line_id", "RCL-1001-1-1"))
+                .isEqualTo(receiptLine1Id);
+        assertThat(receiptLinePurchaseOrderLineId("RCL-1001-1-1")).isEqualTo("POL-1001-2");
+        assertThat(receiptLinePurchaseOrderLineId("RCL-1001-1-2")).isEqualTo("POL-1001-1");
+
+        PurchaseOrderAggregate current = reader.findCurrent(command().purchaseOrderId()).orElseThrow();
+        ReceiptLineFacts firstLine = current.receipts().get(0).lines().stream()
+                .filter(line -> line.receiptLineId().equals("RCL-1001-1-1"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(firstLine.purchaseOrderLineId()).isEqualTo("POL-1001-2");
+        assertThat(firstLine.confirmedQuantity().value()).isEqualTo(60);
+        assertThat(hasher.canonicalize(current).hash()).isEqualTo(payloadHash());
     }
 
     @Test
@@ -295,8 +325,21 @@ class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest
                 .toJson();
     }
 
-    private static PurchasingPayloads versionDroppingSecondLineAndReceiptLine() {
+    private static PurchasingPayloads swappedReceiptLineReferences() {
         return PurchasingPayloads.confirmedPartialReceipt()
+                .snapshotVersion(6)
+                .purchaseOrderVersion(4)
+                .clearReceipts()
+                .addReceipt(
+                        "RCV-1001-1",
+                        "CONFIRMED",
+                        "2026-01-05",
+                        3,
+                        receiptLine("RCL-1001-1-1", 3, "POL-1001-2", 60),
+                        receiptLine("RCL-1001-1-2", 3, "POL-1001-1", 20));
+    }
+
+    private static PurchasingPayloads versionDroppingSecondLineAndReceiptLine() {        return PurchasingPayloads.confirmedPartialReceipt()
                 .snapshotVersion(6)
                 .purchaseOrderVersion(4)
                 .clearLines()
@@ -350,6 +393,13 @@ class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest
         return jdbc.queryForObject(
                 "select confirmed_quantity from receipt_line_snapshot where receipt_line_id = ?",
                 Integer.class,
+                receiptLineId);
+    }
+
+    private String receiptLinePurchaseOrderLineId(String receiptLineId) {
+        return jdbc.queryForObject(
+                "select purchase_order_line_id from receipt_line_snapshot where receipt_line_id = ?",
+                String.class,
                 receiptLineId);
     }
 

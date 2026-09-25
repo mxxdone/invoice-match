@@ -19,13 +19,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Read side of the local purchasing reference snapshot. It assembles the
  * current aggregate from active rows only; rows deactivated by a newer external
  * snapshot are excluded.
+ *
+ * <p>The read runs in a {@link Isolation#REPEATABLE_READ} transaction so that
+ * the root and child statements observe one consistent PostgreSQL snapshot. A
+ * refresh that commits between two child queries can therefore never produce a
+ * hybrid of the old and new snapshot versions.
  */
 @Component
 public class PurchaseOrderSnapshotReader {
@@ -34,25 +41,29 @@ public class PurchaseOrderSnapshotReader {
     private final PurchaseOrderLineSnapshotRepository lines;
     private final ReceiptSnapshotRepository receipts;
     private final ReceiptLineSnapshotRepository receiptLines;
+    private final SnapshotReadInterceptor interceptor;
 
-    public PurchaseOrderSnapshotReader(
+    PurchaseOrderSnapshotReader(
             PurchaseOrderSnapshotRepository snapshots,
             PurchaseOrderLineSnapshotRepository lines,
             ReceiptSnapshotRepository receipts,
-            ReceiptLineSnapshotRepository receiptLines) {
+            ReceiptLineSnapshotRepository receiptLines,
+            ObjectProvider<SnapshotReadInterceptor> interceptors) {
         this.snapshots = snapshots;
         this.lines = lines;
         this.receipts = receipts;
         this.receiptLines = receiptLines;
+        this.interceptor = interceptors.getIfAvailable(() -> SnapshotReadInterceptor.NONE);
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Optional<PurchaseOrderAggregate> findCurrent(PurchaseOrderId purchaseOrderId) {
         String id = purchaseOrderId.value();
         Optional<PurchaseOrderSnapshot> snapshot = snapshots.findById(id);
         if (snapshot.isEmpty()) {
             return Optional.empty();
         }
+        interceptor.afterRootLoaded();
 
         List<PurchaseOrderLineFacts> lineFacts = lines.findByPurchaseOrderIdAndActiveTrue(id).stream()
                 .map(PurchaseOrderSnapshotReader::toLineFacts)

@@ -33,7 +33,7 @@ public class ReceiptLineSnapshot {
     @Column(name = "receipt_line_id", nullable = false, updatable = false, length = 64)
     private String receiptLineId;
 
-    @Column(name = "purchase_order_line_id", nullable = false, updatable = false, length = 64)
+    @Column(name = "purchase_order_line_id", nullable = false, length = 64)
     private String purchaseOrderLineId;
 
     @Column(name = "receipt_line_version", nullable = false)
@@ -80,9 +80,12 @@ public class ReceiptLineSnapshot {
 
     /**
      * Updates the mutable facts of this receipt line and marks it active again.
-     * The row id and external receipt line id are never changed.
+     * The row id and external receipt line id are never changed, but the
+     * referenced purchase order line may move to another valid line of the same
+     * purchase order.
      */
     public void updateFrom(ReceiptLineFacts facts) {
+        this.purchaseOrderLineId = requireText(facts.purchaseOrderLineId(), "purchaseOrderLineId");
         this.receiptLineVersion = requireNonNegative(facts.version(), "receiptLineVersion");
         this.confirmedQuantity = Objects.requireNonNull(facts.confirmedQuantity(), "confirmedQuantity");
         this.active = true;
