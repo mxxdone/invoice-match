@@ -21,6 +21,11 @@ spring:
   jackson:
     time-zone: UTC
 
+purchasing-system:
+  base-url: ${PURCHASING_BASE_URL:http://localhost:8082}
+  connect-timeout: ${PURCHASING_CONNECT_TIMEOUT:2s}
+  read-timeout: ${PURCHASING_READ_TIMEOUT:3s}
+
 management:
   endpoint:
     health:
