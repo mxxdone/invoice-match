@@ -1,6 +1,6 @@
 # Invoice Match
 
-P1-00 provides a runnable baseline for the invoice matching project. It has one Java 21 Spring Boot 3 API, a Next.js TypeScript web app, PostgreSQL, and a minimal Mock ERP process. Business APIs and data models begin in later tickets.
+P1-00 provides a runnable baseline for the invoice matching project. It has one Java 21 Spring Boot 3 API, a Next.js TypeScript web app, PostgreSQL, and a minimal Mock ERP process. P1-01 adds the domain contract and PostgreSQL schema baseline (invoice case, draft revision, evidence bundle, match result, review snapshot and decision); business APIs begin in later tickets.
 
 ## Run all services
 
@@ -58,6 +58,8 @@ If a host port is already occupied, change `CORE_API_PORT`, `WEB_PORT`, `POSTGRE
 
 ## Verify
 
+The `core-api` tests run Flyway migrations and JPA persistence against a real PostgreSQL started with Testcontainers, so Docker must be available.
+
 ```sh
 cd core-api
 ./gradlew clean test bootJar
@@ -70,4 +72,4 @@ cd ../mock-erp
 npm test
 ```
 
-The GitHub Actions workflow runs these checks and a four-service Compose smoke test. Source layout is intentionally small: `core-api` holds one Spring application and leaves feature packages for future tickets; `web/src/app` holds the Next.js routes; `mock-erp` serves only a deterministic health response. There is no P1-01 domain schema or P1-09 payment behavior yet.
+The GitHub Actions workflow runs these checks and a four-service Compose smoke test. Source layout is intentionally small: `core-api` holds one Spring application organized by feature (`invoicecase`, `matching`, `review`, `shared`); `web/src/app` holds the Next.js routes; `mock-erp` serves only a deterministic health response. P1-01 defines the Phase 1 state contract and PostgreSQL baseline, but later tickets still own submission, review and P1-09 payment behavior.
