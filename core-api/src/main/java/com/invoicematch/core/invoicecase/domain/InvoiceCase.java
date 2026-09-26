@@ -128,7 +128,33 @@ public class InvoiceCase {
                     "InvoiceCase " + id() + " cannot attach a draft revision while " + status);
         }
         this.currentDraftRevisionId = Objects.requireNonNull(draftRevisionId, "draftRevisionId");
-        this.updatedAt = Objects.requireNonNull(occurredAt, "occurredAt");
+        this.updatedAt = requireIncreasing(occurredAt);
+    }
+
+    /**
+     * Detaches the current draft revision. Used when the revision is sealed and
+     * frozen into an evidence bundle, so the case no longer has an editable
+     * draft until a supplement opens the next revision.
+     */
+    public void clearDraftRevision(Instant occurredAt) {
+        this.currentDraftRevisionId = null;
+        this.updatedAt = requireIncreasing(occurredAt);
+    }
+
+    /**
+     * Marks the case as modified so its optimistic {@code version} bumps even
+     * when only a child collection (the draft lines) changed. The timestamp is
+     * forced to be strictly increasing because Hibernate only treats a dirty
+     * entity as changed when a mapped value actually differs; two edits in the
+     * same clock tick must still produce distinct case versions.
+     */
+    public void markModified(Instant occurredAt) {
+        this.updatedAt = requireIncreasing(occurredAt);
+    }
+
+    private Instant requireIncreasing(Instant occurredAt) {
+        Objects.requireNonNull(occurredAt, "occurredAt");
+        return occurredAt.isAfter(updatedAt) ? occurredAt : updatedAt.plusNanos(1);
     }
 
     public InvoiceCaseId id() {

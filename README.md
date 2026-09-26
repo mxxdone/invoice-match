@@ -1,6 +1,6 @@
 # Invoice Match
 
-P1-00 provides a runnable baseline for the invoice matching project. It has one Java 21 Spring Boot 3 API, a Next.js TypeScript web app, PostgreSQL, and a minimal Mock ERP process. P1-01 adds the domain contract and PostgreSQL schema baseline (invoice case, draft revision, evidence bundle, match result, review snapshot and decision). P1-02 adds a read-only external purchasing system Mock (`mock-purchasing`), a read-only Core API adapter and a PostgreSQL-backed current snapshot of suppliers' purchase orders, lines, receipts and receipt lines with external versions; business write APIs begin in later tickets.
+P1-00 provides a runnable baseline for the invoice matching project. It has one Java 21 Spring Boot 3 API, a Next.js TypeScript web app, PostgreSQL, and a minimal Mock ERP process. P1-01 adds the domain contract and PostgreSQL schema baseline (invoice case, draft revision, evidence bundle, match result, review snapshot and decision). P1-02 adds a read-only external purchasing system Mock (`mock-purchasing`), a read-only Core API adapter and a PostgreSQL-backed current snapshot of suppliers' purchase orders, lines, receipts and receipt lines with external versions. P1-03 adds the first business write APIs: manual invoice case creation validated against the external purchase order, atomic current-draft editing, submission that freezes a canonical hashed `EvidenceBundle` version, supplement revisions that copy the previous frozen lines, past bundle version reads and request-id idempotency.
 
 ## Run all services
 
@@ -22,6 +22,27 @@ Open <http://localhost:3000>. The health endpoints are:
 The read-only Mock purchasing aggregate is deterministic, for example
 <http://localhost:8082/api/purchase-orders/PO-1001> (confirmed order with a confirmed partial
 receipt) and <http://localhost:8082/api/purchase-orders/PO-1002> (unconfirmed order).
+
+## Invoice case API (P1-03)
+
+All write endpoints require a `requestId`. Repeating a request with the same
+`requestId` and the same payload replays the original response without repeating
+the side effect; the same `requestId` with a different payload is a `409`
+conflict.
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/invoice-cases` | Create a case after validating the external purchase order, starting OPEN draft revision v1 |
+| `GET` | `/api/invoice-cases/{id}` | Read the case header, current OPEN draft and its lines |
+| `PUT` | `/api/invoice-cases/{id}/draft` | Atomically replace the current OPEN draft's lines (requires `expectedCaseVersion`) |
+| `POST` | `/api/invoice-cases/{id}/submit` | Freeze the current draft into the next immutable `EvidenceBundle` version and move to `REVIEW_PENDING` |
+| `POST` | `/api/invoice-cases/{id}/revisions` | In `SUPPLEMENT_REQUIRED`, open the next OPEN revision copied from the previous frozen bundle |
+| `GET` | `/api/invoice-cases/{id}/evidence-bundles` | List frozen bundle versions with payload hashes |
+| `GET` | `/api/invoice-cases/{id}/evidence-bundles/{version}` | Read one frozen bundle's canonical payload and hash |
+
+Validation failures return `400`; stale versions, non-editable drafts, invalid
+state transitions and idempotency conflicts return `409`; a missing external
+purchase order returns `404`; an external purchasing timeout returns `503`.
 
 Check PostgreSQL connectivity and its timezone:
 
@@ -86,4 +107,4 @@ cd ../mock-purchasing
 npm test
 ```
 
-The GitHub Actions workflow runs these checks and a five-service Compose smoke test. Source layout is intentionally small: `core-api` holds one Spring application organized by feature (`invoicecase`, `matching`, `purchasingreference`, `review`, `shared`); `web/src/app` holds the Next.js routes; `mock-erp` serves only a deterministic health response; `mock-purchasing` serves deterministic read-only purchase order aggregates. P1-01 defines the Phase 1 state contract and PostgreSQL baseline, P1-02 defines the external purchasing reference snapshot and refresh version semantics, but later tickets still own submission, review, allocation and P1-09 payment behavior.
+The GitHub Actions workflow runs these checks and a five-service Compose smoke test. Source layout is intentionally small: `core-api` holds one Spring application organized by feature (`invoicecase`, `matching`, `purchasingreference`, `review`, `shared`); `web/src/app` holds the Next.js routes; `mock-erp` serves only a deterministic health response; `mock-purchasing` serves deterministic read-only purchase order aggregates. P1-01 defines the Phase 1 state contract and PostgreSQL baseline, P1-02 defines the external purchasing reference snapshot and refresh version semantics, P1-03 defines manual submission, evidence bundle versioning and request-id idempotency, but later tickets still own matching, review, allocation and P1-09 payment behavior.
