@@ -144,6 +144,20 @@ class InvoiceCaseManualSubmissionMigrationTest extends AbstractPostgresIntegrati
     }
 
     @Test
+    void lineMutationLocksTheDraftRevisionAndOrderMovesAscending() {
+        String lockFunction = jdbc.queryForObject(
+                "select pg_get_functiondef('lock_draft_revision_for_line_change'::regproc)", String.class);
+        assertThat(lockFunction).containsIgnoringCase("for update");
+
+        String lineTrigger = jdbc.queryForObject(
+                "select pg_get_functiondef('reject_sealed_revision_line_change'::regproc)", String.class);
+        assertThat(lineTrigger)
+                .contains("lock_draft_revision_for_line_change(NEW.draft_revision_id)")
+                .contains("lock_draft_revision_for_line_change(OLD.draft_revision_id)")
+                .contains("OLD.draft_revision_id < NEW.draft_revision_id");
+    }
+
+    @Test
     void openDraftRevisionCanBeSealedExactlyOnce() {
         UUID caseId = insertCase();
         UUID revisionId = insertRevision(caseId, 1, "OPEN", null);

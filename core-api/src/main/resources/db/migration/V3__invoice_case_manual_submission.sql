@@ -54,11 +54,28 @@ CREATE CONSTRAINT TRIGGER trg_idempotency_record_complete
 
 -- A draft revision is only editable while OPEN. Once it is SEALED its invoice
 -- lines are part of an immutable EvidenceBundle version and must never change.
--- On UPDATE both the old and the new target revision are checked, so a line
--- cannot be moved from a sealed revision to an open one or vice versa.
+--
+-- The draft_revision row is the shared mutex between a line mutation and the
+-- submission that seals the revision. Every line mutation first locks the
+-- affected draft_revision row with SELECT ... FOR UPDATE and keeps it to the end
+-- of the transaction; sealing is an UPDATE of that same row, so the two
+-- serialize. The status is only inspected after the lock is held, which prevents
+-- an uncommitted line change from racing a seal.
+--
+-- An UPDATE that moves a line between two revisions locks both rows in
+-- ascending UUID order, so two opposite moves cannot deadlock.
+CREATE OR REPLACE FUNCTION lock_draft_revision_for_line_change(revision_id uuid) RETURNS void AS $$
+DECLARE
+    locked uuid;
+BEGIN
+    SELECT dr.id INTO locked FROM draft_revision dr WHERE dr.id = revision_id FOR UPDATE;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE OR REPLACE FUNCTION reject_sealed_revision_line_change() RETURNS trigger AS $$
 BEGIN
     IF TG_OP = 'INSERT' THEN
+        PERFORM lock_draft_revision_for_line_change(NEW.draft_revision_id);
         IF EXISTS (SELECT 1 FROM draft_revision dr
                    WHERE dr.id = NEW.draft_revision_id AND dr.status = 'SEALED') THEN
             RAISE EXCEPTION 'invoice_line rows of a sealed draft revision are immutable'
@@ -66,6 +83,7 @@ BEGIN
         END IF;
         RETURN NEW;
     ELSIF TG_OP = 'DELETE' THEN
+        PERFORM lock_draft_revision_for_line_change(OLD.draft_revision_id);
         IF EXISTS (SELECT 1 FROM draft_revision dr
                    WHERE dr.id = OLD.draft_revision_id AND dr.status = 'SEALED') THEN
             RAISE EXCEPTION 'invoice_line rows of a sealed draft revision are immutable'
@@ -73,6 +91,16 @@ BEGIN
         END IF;
         RETURN OLD;
     ELSE
+        -- Deterministic lock order over the (at most two) affected revisions.
+        IF OLD.draft_revision_id = NEW.draft_revision_id THEN
+            PERFORM lock_draft_revision_for_line_change(NEW.draft_revision_id);
+        ELSIF OLD.draft_revision_id < NEW.draft_revision_id THEN
+            PERFORM lock_draft_revision_for_line_change(OLD.draft_revision_id);
+            PERFORM lock_draft_revision_for_line_change(NEW.draft_revision_id);
+        ELSE
+            PERFORM lock_draft_revision_for_line_change(NEW.draft_revision_id);
+            PERFORM lock_draft_revision_for_line_change(OLD.draft_revision_id);
+        END IF;
         IF EXISTS (SELECT 1 FROM draft_revision dr
                    WHERE dr.id IN (OLD.draft_revision_id, NEW.draft_revision_id)
                      AND dr.status = 'SEALED') THEN

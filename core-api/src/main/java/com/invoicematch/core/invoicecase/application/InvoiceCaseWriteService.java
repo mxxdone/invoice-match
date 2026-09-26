@@ -32,6 +32,7 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -65,6 +66,7 @@ public class InvoiceCaseWriteService {
     private final RequestIdempotencyStore idempotency;
     private final RequestFingerprint fingerprint;
     private final EvidenceBundlePayloadHasher payloadHasher;
+    private final DraftRevisionLockInterceptor draftRevisionLockInterceptor;
     private final Clock clock;
 
     public InvoiceCaseWriteService(
@@ -77,6 +79,7 @@ public class InvoiceCaseWriteService {
             RequestIdempotencyStore idempotency,
             RequestFingerprint fingerprint,
             EvidenceBundlePayloadHasher payloadHasher,
+            ObjectProvider<DraftRevisionLockInterceptor> draftRevisionLockInterceptors,
             Clock clock) {
         this.invoiceCases = invoiceCases;
         this.draftRevisions = draftRevisions;
@@ -87,6 +90,8 @@ public class InvoiceCaseWriteService {
         this.idempotency = idempotency;
         this.fingerprint = fingerprint;
         this.payloadHasher = payloadHasher;
+        this.draftRevisionLockInterceptor =
+                draftRevisionLockInterceptors.getIfAvailable(() -> DraftRevisionLockInterceptor.NONE);
         this.clock = clock;
     }
 
@@ -169,7 +174,12 @@ public class InvoiceCaseWriteService {
 
         InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         checkExpectedVersion(invoiceCase, command.expectedCaseVersion());
+        // The revision row lock is taken before any line is read or hashed, so a
+        // concurrent line mutation either commits before this lock or is rejected
+        // after it. Reading first would allow a frozen payload that omits a
+        // not-yet-committed line change.
         DraftRevision revision = currentDraft(invoiceCase);
+        draftRevisionLockInterceptor.afterLocked(revision.id());
         List<InvoiceLine> lines = invoiceLines.findByDraftRevisionIdOrderByLineNumberAsc(revision.id());
         if (lines.isEmpty()) {
             throw new DomainValidationException(
@@ -298,7 +308,7 @@ public class InvoiceCaseWriteService {
             throw new DraftNotEditableException(invoiceCase.id().value(), "no current revision is attached");
         }
         DraftRevision draft = draftRevisions
-                .findById(pointer)
+                .findByIdForUpdate(pointer)
                 .orElseThrow(() -> new DraftNotEditableException(invoiceCase.id().value(), "current revision is missing"));
         if (!draft.isEditable()) {
             throw new DraftNotEditableException(
