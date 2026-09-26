@@ -2,6 +2,7 @@ package com.invoicematch.core.review;
 
 import static com.invoicematch.core.support.PurchasingPayloads.receiptLine;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -29,6 +30,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -38,9 +40,11 @@ import org.springframework.test.web.servlet.MvcResult;
  * End-to-end P1-05 review workflow tests against real PostgreSQL and the
  * external purchasing stub: snapshot freezing, mapping/re-match, supplement,
  * rejection, freshness reasons, idempotency and immutability of the frozen
- * sources.
+ * sources. Review actions are performed as an APPROVER; case setup as the
+ * SUBMITTER and matching as an OPERATOR.
  */
 @AutoConfigureMockMvc
+@WithMockUser(username = "approver", roles = "APPROVER")
 class ReviewWorkflowApiIntegrationTest extends AbstractPostgresIntegrationTest {
 
     private static final String SUPPLIER = "SUP-1";
@@ -551,6 +555,7 @@ class ReviewWorkflowApiIntegrationTest extends AbstractPostgresIntegrationTest {
         ObjectNode body = objectMapper.createObjectNode();
         body.put("requestId", requestId);
         return mockMvc.perform(post("/api/invoice-cases/{id}/match", caseId)
+                        .with(user("operator").roles("OPERATOR"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(body)))
                 .andReturn();
@@ -645,6 +650,7 @@ class ReviewWorkflowApiIntegrationTest extends AbstractPostgresIntegrationTest {
         body.put("requestId", requestId);
         body.put("expectedCaseVersion", expectedVersion);
         MvcResult result = mockMvc.perform(post("/api/invoice-cases/{id}/revisions", caseId)
+                        .with(user("submitter").roles("SUBMITTER"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(body)))
                 .andReturn();
@@ -658,6 +664,7 @@ class ReviewWorkflowApiIntegrationTest extends AbstractPostgresIntegrationTest {
         body.put("purchaseOrderId", PO_ID);
         body.put("invoiceNumber", "INV-1");
         MvcResult result = mockMvc.perform(post("/api/invoice-cases")
+                        .with(user("submitter").roles("SUBMITTER"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(body)))
                 .andReturn();
@@ -673,6 +680,7 @@ class ReviewWorkflowApiIntegrationTest extends AbstractPostgresIntegrationTest {
         ArrayNode array = body.putArray("lines");
         lines.forEach(array::add);
         MvcResult result = mockMvc.perform(put("/api/invoice-cases/{id}/draft", caseId)
+                        .with(user("submitter").roles("SUBMITTER"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(body)))
                 .andReturn();
@@ -684,6 +692,7 @@ class ReviewWorkflowApiIntegrationTest extends AbstractPostgresIntegrationTest {
         body.put("requestId", requestId);
         body.put("expectedCaseVersion", expectedVersion);
         MvcResult result = mockMvc.perform(post("/api/invoice-cases/{id}/submit", caseId)
+                        .with(user("submitter").roles("SUBMITTER"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(body)))
                 .andReturn();

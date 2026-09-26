@@ -64,7 +64,8 @@ class EvidenceBundlePayloadHasherTest {
 
     private static InvoiceCase invoiceCase() {
         return InvoiceCase.create(
-                InvoiceCaseId.newId(), SupplierId.of("SUP-1"), PurchaseOrderId.of("PO-1"), "INV-001", "INV001", T0);
+                InvoiceCaseId.newId(), SupplierId.of("SUP-1"), PurchaseOrderId.of("PO-1"), "INV-001", "INV001",
+                "submitter", T0);
     }
 
     private static InvoiceLine line(

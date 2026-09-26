@@ -1,5 +1,9 @@
 package com.invoicematch.core.invoicecase.application;
 
+import com.invoicematch.core.audit.application.AuditEvent;
+import com.invoicematch.core.audit.application.AuditRecorder;
+import com.invoicematch.core.audit.domain.AuditAction;
+import com.invoicematch.core.audit.domain.AuditTargetType;
 import com.invoicematch.core.invoicecase.domain.CaseStateConflictException;
 import com.invoicematch.core.invoicecase.domain.DraftNotEditableException;
 import com.invoicematch.core.invoicecase.domain.DraftRevision;
@@ -19,6 +23,8 @@ import com.invoicematch.core.purchasingreference.application.PreparedPurchaseOrd
 import com.invoicematch.core.purchasingreference.application.PurchaseOrderSnapshotReader;
 import com.invoicematch.core.purchasingreference.application.PurchasingReferenceService;
 import com.invoicematch.core.purchasingreference.domain.PurchaseOrderAggregate;
+import com.invoicematch.core.security.Actor;
+import com.invoicematch.core.security.AuthorizationService;
 import com.invoicematch.core.shared.domain.DomainValidationException;
 import com.invoicematch.core.shared.domain.Money;
 import com.invoicematch.core.shared.domain.PurchaseOrderId;
@@ -27,7 +33,9 @@ import com.invoicematch.core.shared.domain.SupplierId;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
@@ -67,6 +75,8 @@ public class InvoiceCaseWriteService {
     private final RequestFingerprint fingerprint;
     private final EvidenceBundlePayloadHasher payloadHasher;
     private final DraftRevisionLockInterceptor draftRevisionLockInterceptor;
+    private final AuthorizationService authorization;
+    private final AuditRecorder audit;
     private final Clock clock;
 
     public InvoiceCaseWriteService(
@@ -80,6 +90,8 @@ public class InvoiceCaseWriteService {
             RequestFingerprint fingerprint,
             EvidenceBundlePayloadHasher payloadHasher,
             ObjectProvider<DraftRevisionLockInterceptor> draftRevisionLockInterceptors,
+            AuthorizationService authorization,
+            AuditRecorder audit,
             Clock clock) {
         this.invoiceCases = invoiceCases;
         this.draftRevisions = draftRevisions;
@@ -92,6 +104,8 @@ public class InvoiceCaseWriteService {
         this.payloadHasher = payloadHasher;
         this.draftRevisionLockInterceptor =
                 draftRevisionLockInterceptors.getIfAvailable(() -> DraftRevisionLockInterceptor.NONE);
+        this.authorization = authorization;
+        this.audit = audit;
         this.clock = clock;
     }
 
@@ -110,12 +124,14 @@ public class InvoiceCaseWriteService {
         purchasingReferenceService.applyPrepared(preparedSnapshot);
 
         Instant now = clock.instant();
+        Actor actor = authorization.actor();
         InvoiceCase invoiceCase = invoiceCases.saveAndFlush(InvoiceCase.create(
                 InvoiceCaseId.newId(),
                 SupplierId.of(command.supplierId()),
                 PurchaseOrderId.of(command.purchaseOrderId()),
                 command.invoiceNumber(),
                 InvoiceNumberNormalizer.normalize(command.invoiceNumber()),
+                actor.username(),
                 now));
 
         DraftRevision draft = draftRevisions.saveAndFlush(DraftRevision.open(invoiceCase.id().value(), 1, now));
@@ -127,6 +143,21 @@ public class InvoiceCaseWriteService {
         invoiceCase = invoiceCases.saveAndFlush(invoiceCase);
 
         InvoiceCaseDetail detail = InvoiceCaseDetail.from(invoiceCase, draft, List.of());
+        audit.record(new AuditEvent(
+                invoiceCase.id().value(),
+                actor,
+                AuditAction.CASE_CREATED,
+                AuditTargetType.CASE,
+                invoiceCase.id().value().toString(),
+                invoiceCase.version(),
+                null,
+                Map.of(
+                        "supplierId", invoiceCase.supplier().value(),
+                        "purchaseOrderId", invoiceCase.purchaseOrder().value(),
+                        "invoiceNumber", invoiceCase.invoiceNumber(),
+                        "status", invoiceCase.status().name()),
+                command.requestId(),
+                now));
         idempotency.recordResponse(SCOPE_CREATE, CREATE_RESOURCE_KEY, command.requestId(), 201, detail);
         return CommandResult.created(detail);
     }
@@ -147,6 +178,7 @@ public class InvoiceCaseWriteService {
         validateLines(command.lines(), invoiceCase.purchaseOrder().value());
 
         List<InvoiceLine> existing = invoiceLines.findByDraftRevisionIdOrderByLineNumberAsc(draft.id());
+        List<Map<String, Object>> beforeLines = existing.stream().map(this::lineSummary).toList();
         invoiceLines.deleteAll(existing);
         invoiceLines.flush();
 
@@ -158,6 +190,17 @@ public class InvoiceCaseWriteService {
         invoiceCase = invoiceCases.saveAndFlush(invoiceCase);
 
         InvoiceCaseDetail detail = InvoiceCaseDetail.from(invoiceCase, draft, replacement);
+        audit.record(new AuditEvent(
+                command.caseId(),
+                authorization.actor(),
+                AuditAction.DRAFT_LINES_REPLACED,
+                AuditTargetType.DRAFT_REVISION,
+                draft.id().toString(),
+                invoiceCase.version(),
+                Map.of("lines", beforeLines),
+                Map.of("lines", replacement.stream().map(this::lineSummary).toList()),
+                command.requestId(),
+                now));
         idempotency.recordResponse(SCOPE_REPLACE_DRAFT, resourceKey, command.requestId(), 200, detail);
         return CommandResult.ok(detail);
     }
@@ -174,6 +217,7 @@ public class InvoiceCaseWriteService {
 
         InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         checkExpectedVersion(invoiceCase, command.expectedCaseVersion());
+        String statusBefore = invoiceCase.status().name();
         // The revision row lock is taken before any line is read or hashed, so a
         // concurrent line mutation either commits before this lock or is rejected
         // after it. Reading first would allow a frozen payload that omits a
@@ -205,6 +249,20 @@ public class InvoiceCaseWriteService {
 
         SubmissionResult result = new SubmissionResult(
                 command.caseId(), invoiceCase.status(), invoiceCase.version(), EvidenceBundleSummary.from(bundle));
+        audit.record(new AuditEvent(
+                command.caseId(),
+                authorization.actor(),
+                AuditAction.CASE_SUBMITTED,
+                AuditTargetType.CASE,
+                command.caseId().toString(),
+                invoiceCase.version(),
+                Map.of("status", statusBefore, "draftRevisionNumber", revision.revisionNumber()),
+                Map.of(
+                        "status", invoiceCase.status().name(),
+                        "evidenceBundleVersion", bundle.versionNumber(),
+                        "evidencePayloadHash", bundle.payloadHash()),
+                command.requestId(),
+                now));
         idempotency.recordResponse(SCOPE_SUBMIT, resourceKey, command.requestId(), 200, result);
         return CommandResult.ok(result);
     }
@@ -266,6 +324,22 @@ public class InvoiceCaseWriteService {
         invoiceCase = invoiceCases.saveAndFlush(invoiceCase);
 
         InvoiceCaseDetail detail = InvoiceCaseDetail.from(invoiceCase, draft, copies);
+        audit.record(new AuditEvent(
+                command.caseId(),
+                authorization.actor(),
+                AuditAction.SUPPLEMENT_REVISION_OPENED,
+                AuditTargetType.DRAFT_REVISION,
+                draft.id().toString(),
+                invoiceCase.version(),
+                Map.of(
+                        "status", InvoiceCaseStatus.SUPPLEMENT_REQUIRED.name(),
+                        "evidenceBundleVersion", latestBundle.versionNumber()),
+                Map.of(
+                        "status", invoiceCase.status().name(),
+                        "revisionNumber", draft.revisionNumber(),
+                        "copiedLineCount", copies.size()),
+                command.requestId(),
+                now));
         idempotency.recordResponse(SCOPE_OPEN_REVISION, resourceKey, command.requestId(), 201, detail);
         return CommandResult.created(detail);
     }
@@ -382,5 +456,15 @@ public class InvoiceCaseWriteService {
 
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value;
+    }
+
+    private Map<String, Object> lineSummary(InvoiceLine line) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("lineNumber", line.lineNumber());
+        summary.put("rawItemName", line.rawItemName());
+        summary.put("quantity", line.quantity().value());
+        summary.put("unitPrice", line.unitPrice().amount());
+        summary.put("confirmedItemId", line.confirmedItemId());
+        return summary;
     }
 }

@@ -25,6 +25,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -33,9 +34,11 @@ import org.springframework.test.web.servlet.MvcResult;
 /**
  * HTTP contract tests for the P1-03 manual invoice and evidence bundle flow,
  * running the full stack against real PostgreSQL and a real external
- * purchasing stub.
+ * purchasing stub. Every request is made as the case SUBMITTER, so case
+ * ownership and the submitter role are exercised end to end.
  */
 @AutoConfigureMockMvc
+@WithMockUser(username = "submitter", roles = "SUBMITTER")
 class InvoiceCaseApiIntegrationTest extends AbstractPostgresIntegrationTest {
 
     private static final String SUPPLIER = "SUP-1";

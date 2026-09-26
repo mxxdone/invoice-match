@@ -3,6 +3,10 @@ package com.invoicematch.core.review.application;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.invoicematch.core.audit.application.AuditEvent;
+import com.invoicematch.core.audit.application.AuditRecorder;
+import com.invoicematch.core.audit.domain.AuditAction;
+import com.invoicematch.core.audit.domain.AuditTargetType;
 import com.invoicematch.core.invoicecase.application.CommandResult;
 import com.invoicematch.core.invoicecase.application.EvidenceBundlePayload;
 import com.invoicematch.core.invoicecase.application.EvidenceBundlePayloadHasher;
@@ -31,6 +35,8 @@ import com.invoicematch.core.review.domain.ReviewStateConflictException;
 import com.invoicematch.core.review.domain.ReviewTargetInvalidException;
 import com.invoicematch.core.review.persistence.ReviewDecisionRepository;
 import com.invoicematch.core.review.persistence.ReviewSnapshotRepository;
+import com.invoicematch.core.security.Actor;
+import com.invoicematch.core.security.AuthorizationService;
 import com.invoicematch.core.shared.domain.DomainValidationException;
 import com.invoicematch.core.shared.domain.PurchaseOrderId;
 import java.time.Clock;
@@ -62,8 +68,6 @@ public class ReviewService {
     public static final String SCOPE_SUPPLEMENT = "invoice-case:supplement";
     public static final String SCOPE_REJECT = "invoice-case:reject";
     private static final int MAX_REASON_LENGTH = 1000;
-    private static final int MAX_ACTOR_LENGTH = 64;
-    private static final String DEFAULT_ACTOR = "reviewer";
 
     private final InvoiceCaseRepository invoiceCases;
     private final InvoiceCaseQueryService invoiceCaseQueries;
@@ -81,6 +85,8 @@ public class ReviewService {
     private final ReviewLockInterceptor reviewLockInterceptor;
     private final ReviewCommandFingerprint fingerprint;
     private final RequestIdempotencyStore idempotency;
+    private final AuthorizationService authorization;
+    private final AuditRecorder audit;
     private final ObjectMapper mapper = new ObjectMapper();
     private final Clock clock;
 
@@ -101,6 +107,8 @@ public class ReviewService {
             ObjectProvider<ReviewLockInterceptor> reviewLockInterceptors,
             ReviewCommandFingerprint fingerprint,
             RequestIdempotencyStore idempotency,
+            AuthorizationService authorization,
+            AuditRecorder audit,
             Clock clock) {
         this.invoiceCases = invoiceCases;
         this.invoiceCaseQueries = invoiceCaseQueries;
@@ -118,6 +126,8 @@ public class ReviewService {
         this.reviewLockInterceptor = reviewLockInterceptors.getIfAvailable(() -> ReviewLockInterceptor.NONE);
         this.fingerprint = fingerprint;
         this.idempotency = idempotency;
+        this.authorization = authorization;
+        this.audit = audit;
         this.clock = clock;
     }
 
@@ -152,6 +162,21 @@ public class ReviewService {
                 clock.instant());
 
         ReviewSnapshotView view = ReviewSnapshotView.from(snapshot);
+        audit.record(new AuditEvent(
+                command.caseId(),
+                authorization.actor(),
+                AuditAction.REVIEW_SNAPSHOT_FROZEN,
+                AuditTargetType.REVIEW_SNAPSHOT,
+                snapshot.id().toString(),
+                invoiceCase.version(),
+                null,
+                java.util.Map.of(
+                        "snapshotNumber", snapshot.snapshotNumber(),
+                        "payloadHash", snapshot.payloadHash(),
+                        "matchResultNumber", result.resultNumber(),
+                        "evidenceBundleVersion", bundle.versionNumber()),
+                command.requestId(),
+                snapshot.createdAt()));
         idempotency.recordResponse(SCOPE_SNAPSHOT, resourceKey, command.requestId(), 201, view);
         return CommandResult.created(view);
     }
@@ -183,14 +208,14 @@ public class ReviewService {
                 resolveUniquePurchaseOrderLine(command.caseId(), purchasing, command.itemId());
 
         Instant now = clock.instant();
-        String decidedBy = actor(command.decidedBy());
+        Actor actor = authorization.actor();
         int decisionNumber = decisions.maxDecisionNumber(command.caseId()) + 1;
         ReviewDecision decision = ReviewDecision.recordMapping(
                 UUID.randomUUID(),
                 command.caseId(),
                 target.id(),
                 decisionNumber,
-                decidedBy,
+                actor.username(),
                 null,
                 mappingPayload(command.lineNumber(), command.itemId(), purchaseOrderLineId),
                 target.payloadHash(),
@@ -224,6 +249,23 @@ public class ReviewService {
 
         MappingDecisionResult response =
                 new MappingDecisionResult(ReviewDecisionView.from(decision), ReviewSnapshotView.from(successor));
+        audit.record(new AuditEvent(
+                command.caseId(),
+                actor,
+                AuditAction.ITEM_MAPPED,
+                AuditTargetType.REVIEW_DECISION,
+                decision.id().toString(),
+                invoiceCase.version(),
+                null,
+                java.util.Map.of(
+                        "lineNumber", command.lineNumber(),
+                        "itemId", command.itemId(),
+                        "purchaseOrderLineId", purchaseOrderLineId,
+                        "decisionNumber", decision.decisionNumber(),
+                        "successorSnapshotNumber", successor.snapshotNumber(),
+                        "successorMatchResultNumber", successorResult.resultNumber()),
+                command.requestId(),
+                now));
         idempotency.recordResponse(SCOPE_MAPPING, resourceKey, command.requestId(), 200, response);
         return CommandResult.ok(response);
     }
@@ -247,14 +289,30 @@ public class ReviewService {
         String reason = requireReason(command.reason());
 
         Instant now = clock.instant();
+        Actor actor = authorization.actor();
         ReviewDecision decision = recordSimpleDecision(
-                command.caseId(), target, ReviewDecisionType.SUPPLEMENT_REQUESTED, actor(command.decidedBy()), reason, now);
+                command.caseId(), target, ReviewDecisionType.SUPPLEMENT_REQUESTED, actor.username(), reason, now);
         decisions.saveAndFlush(decision);
 
         invoiceCase.transitionTo(InvoiceCaseStatus.SUPPLEMENT_REQUIRED, now);
         invoiceCases.saveAndFlush(invoiceCase);
 
         ReviewDecisionView view = ReviewDecisionView.from(decision);
+        audit.record(new AuditEvent(
+                command.caseId(),
+                actor,
+                AuditAction.SUPPLEMENT_REQUESTED,
+                AuditTargetType.REVIEW_DECISION,
+                decision.id().toString(),
+                invoiceCase.version(),
+                java.util.Map.of("status", "REVIEW_PENDING"),
+                java.util.Map.of(
+                        "status", invoiceCase.status().name(),
+                        "decisionNumber", decision.decisionNumber(),
+                        "reason", reason,
+                        "reviewSnapshotId", target.id().toString()),
+                command.requestId(),
+                now));
         idempotency.recordResponse(SCOPE_SUPPLEMENT, resourceKey, command.requestId(), 200, view);
         return CommandResult.ok(view);
     }
@@ -278,14 +336,30 @@ public class ReviewService {
         String reason = requireReason(command.reason());
 
         Instant now = clock.instant();
+        Actor actor = authorization.actor();
         ReviewDecision decision = recordSimpleDecision(
-                command.caseId(), target, ReviewDecisionType.REJECTED, actor(command.decidedBy()), reason, now);
+                command.caseId(), target, ReviewDecisionType.REJECTED, actor.username(), reason, now);
         decisions.saveAndFlush(decision);
 
         invoiceCase.transitionTo(InvoiceCaseStatus.REJECTED, now);
         invoiceCases.saveAndFlush(invoiceCase);
 
         ReviewDecisionView view = ReviewDecisionView.from(decision);
+        audit.record(new AuditEvent(
+                command.caseId(),
+                actor,
+                AuditAction.CASE_REJECTED,
+                AuditTargetType.REVIEW_DECISION,
+                decision.id().toString(),
+                invoiceCase.version(),
+                java.util.Map.of("status", "REVIEW_PENDING"),
+                java.util.Map.of(
+                        "status", invoiceCase.status().name(),
+                        "decisionNumber", decision.decisionNumber(),
+                        "reason", reason,
+                        "reviewSnapshotId", target.id().toString()),
+                command.requestId(),
+                now));
         idempotency.recordResponse(SCOPE_REJECT, resourceKey, command.requestId(), 200, view);
         return CommandResult.ok(view);
     }
@@ -470,20 +544,6 @@ public class ReviewService {
         String trimmed = reason.strip();
         if (trimmed.length() > MAX_REASON_LENGTH) {
             throw new DomainValidationException("reason must be at most " + MAX_REASON_LENGTH + " characters");
-        }
-        return trimmed;
-    }
-
-    private static String actor(String decidedBy) {
-        // TODO(P1-06): replace this client-supplied placeholder with the
-        // authenticated principal. Until then decidedBy is non-authoritative and
-        // must not be trusted for authorization, self-approval or audit.
-        if (decidedBy == null || decidedBy.isBlank()) {
-            return DEFAULT_ACTOR;
-        }
-        String trimmed = decidedBy.strip();
-        if (trimmed.length() > MAX_ACTOR_LENGTH) {
-            throw new DomainValidationException("decidedBy must be at most " + MAX_ACTOR_LENGTH + " characters");
         }
         return trimmed;
     }

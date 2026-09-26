@@ -108,7 +108,7 @@ class ReviewConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest {
             Callable<MappingDecisionResult> task = () -> {
                 gate.await(10, TimeUnit.SECONDS);
                 return reviewService.recordMapping(new RecordMappingDecisionCommand(
-                                caseId, "map-same", version, snapshot.id(), snapshot.payloadHash(), 1, ITEM_A, "reviewer"))
+                                caseId, "map-same", version, snapshot.id(), snapshot.payloadHash(), 1, ITEM_A))
                         .body();
             };
             Future<MappingDecisionResult> first = pool.submit(task);
@@ -139,12 +139,12 @@ class ReviewConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest {
         try {
             Future<Void> mapping = pool.submit(() -> race(gate, successes, conflicts, () -> {
                 reviewService.recordMapping(new RecordMappingDecisionCommand(
-                        caseId, "map-race", version, snapshot.id(), snapshot.payloadHash(), 1, ITEM_A, "reviewer"));
+                        caseId, "map-race", version, snapshot.id(), snapshot.payloadHash(), 1, ITEM_A));
                 return null;
             }));
             Future<Void> supplement = pool.submit(() -> race(gate, successes, conflicts, () -> {
                 reviewService.requestSupplement(new RequestSupplementCommand(
-                        caseId, "supp-race", version, snapshot.id(), snapshot.payloadHash(), "need correction", "reviewer"));
+                        caseId, "supp-race", version, snapshot.id(), snapshot.payloadHash(), "need correction"));
                 return null;
             }));
             gate.countDown();

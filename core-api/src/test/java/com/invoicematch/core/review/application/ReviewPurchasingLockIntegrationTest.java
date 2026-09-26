@@ -126,7 +126,7 @@ class ReviewPurchasingLockIntegrationTest extends AbstractPostgresIntegrationTes
         ExecutorService refreshPool = Executors.newSingleThreadExecutor();
         try {
             Future<?> review = reviewPool.submit(() -> reviewService.recordMapping(new RecordMappingDecisionCommand(
-                    caseId, "map-1", version, snapshot.id(), snapshot.payloadHash(), 1, ITEM_A, "reviewer")));
+                    caseId, "map-1", version, snapshot.id(), snapshot.payloadHash(), 1, ITEM_A)));
             assertThat(INTERCEPTOR.awaitPurchaseOrderLocked(10, TimeUnit.SECONDS)).isTrue();
 
             Future<?> refresh = refreshPool.submit(() -> purchasingReferenceService.refresh(
@@ -179,7 +179,7 @@ class ReviewPurchasingLockIntegrationTest extends AbstractPostgresIntegrationTes
             assertThat(held.await(10, TimeUnit.SECONDS)).isTrue();
 
             Future<?> review = reviewPool.submit(() -> reviewService.recordMapping(new RecordMappingDecisionCommand(
-                    caseId, "map-1", version, snapshot.id(), snapshot.payloadHash(), 1, ITEM_A, "reviewer")));
+                    caseId, "map-1", version, snapshot.id(), snapshot.payloadHash(), 1, ITEM_A)));
 
             Thread.sleep(700);
             assertThat(review.isDone())

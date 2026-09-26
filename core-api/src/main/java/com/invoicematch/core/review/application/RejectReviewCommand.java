@@ -4,7 +4,8 @@ import java.util.UUID;
 
 /**
  * Rejects the invoice claim against the current fresh review snapshot, moving
- * the case to {@code REJECTED}.
+ * the case to {@code REJECTED}. The actor is derived from the authenticated
+ * principal, never from the request.
  */
 public record RejectReviewCommand(
         UUID caseId,
@@ -12,6 +13,5 @@ public record RejectReviewCommand(
         long expectedCaseVersion,
         UUID reviewSnapshotId,
         String reviewPayloadHash,
-        String reason,
-        String decidedBy) {
+        String reason) {
 }

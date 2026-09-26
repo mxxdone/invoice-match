@@ -1,5 +1,9 @@
 package com.invoicematch.core.matching.application;
 
+import com.invoicematch.core.audit.application.AuditEvent;
+import com.invoicematch.core.audit.application.AuditRecorder;
+import com.invoicematch.core.audit.domain.AuditAction;
+import com.invoicematch.core.audit.domain.AuditTargetType;
 import com.invoicematch.core.invoicecase.application.CommandResult;
 import com.invoicematch.core.invoicecase.application.EvidenceBundlePayload;
 import com.invoicematch.core.invoicecase.application.EvidenceBundlePayloadHasher;
@@ -13,6 +17,7 @@ import com.invoicematch.core.matching.domain.MatchStateConflictException;
 import com.invoicematch.core.matching.persistence.MatchResultRepository;
 import com.invoicematch.core.purchasingreference.application.CurrentPurchaseOrderSnapshot;
 import com.invoicematch.core.purchasingreference.application.PurchaseOrderSnapshotReader;
+import com.invoicematch.core.security.AuthorizationService;
 import com.invoicematch.core.shared.domain.PurchaseOrderId;
 import java.time.Clock;
 import java.time.Instant;
@@ -48,6 +53,8 @@ public class MatchingService {
     private final EvidenceBundlePayloadHasher bundleHasher;
     private final EffectiveMappingResolver mappingResolver;
     private final MatchLockInterceptor matchLockInterceptor;
+    private final AuthorizationService authorization;
+    private final AuditRecorder audit;
     private final Clock clock;
 
     public MatchingService(
@@ -60,6 +67,8 @@ public class MatchingService {
             EvidenceBundlePayloadHasher bundleHasher,
             ObjectProvider<EffectiveMappingResolver> mappingResolvers,
             ObjectProvider<MatchLockInterceptor> matchLockInterceptors,
+            AuthorizationService authorization,
+            AuditRecorder audit,
             Clock clock) {
         this.invoiceCaseQueries = invoiceCaseQueries;
         this.purchaseOrderSnapshots = purchaseOrderSnapshots;
@@ -70,6 +79,8 @@ public class MatchingService {
         this.bundleHasher = bundleHasher;
         this.mappingResolver = mappingResolvers.getIfAvailable(() -> EffectiveMappingResolver.EMPTY);
         this.matchLockInterceptor = matchLockInterceptors.getIfAvailable(() -> MatchLockInterceptor.NONE);
+        this.authorization = authorization;
+        this.audit = audit;
         this.clock = clock;
     }
 
@@ -96,6 +107,22 @@ public class MatchingService {
 
         CurrentPurchaseOrderSnapshot purchasing = requireCurrentPurchasingSnapshot(caseSnapshot);
         MatchResultView view = appendResult(caseSnapshot, purchasing);
+        audit.record(new AuditEvent(
+                caseSnapshot.caseId(),
+                authorization.actor(),
+                AuditAction.MATCH_RUN,
+                AuditTargetType.MATCH_RESULT,
+                view.id().toString(),
+                caseSnapshot.caseVersion(),
+                null,
+                java.util.Map.of(
+                        "resultNumber", view.resultNumber(),
+                        "resultHash", view.resultHash(),
+                        "evidenceBundleId", view.evidenceBundleId().toString(),
+                        "evidenceBundleVersion", caseSnapshot.evidenceBundleVersion(),
+                        "purchasingSnapshotVersion", view.purchasingSnapshotVersion()),
+                command.requestId(),
+                view.createdAt()));
         idempotency.recordResponse(SCOPE_MATCH, resourceKey, command.requestId(), 201, view);
         return CommandResult.created(view);
     }

@@ -201,8 +201,8 @@ class InvoiceCaseManualSubmissionMigrationTest extends AbstractPostgresIntegrati
         UUID id = UUID.randomUUID();
         jdbc.update(
                 "insert into invoice_case (id, supplier_id, purchase_order_id, invoice_number,"
-                        + " normalized_invoice_number, status, version, created_at, updated_at)"
-                        + " values (?, 'SUP-1', 'PO-1', 'INV-1', 'INV1', 'DRAFT', 0, ?, ?)",
+                        + " normalized_invoice_number, submitted_by, status, version, created_at, updated_at)"
+                        + " values (?, 'SUP-1', 'PO-1', 'INV-1', 'INV1', 'legacy', 'DRAFT', 0, ?, ?)",
                 id,
                 Timestamp.from(T0),
                 Timestamp.from(T0));
