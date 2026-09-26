@@ -1,7 +1,9 @@
 package com.invoicematch.core.invoicecase.application;
 
+import com.invoicematch.core.purchasingreference.application.PreparedPurchaseOrderSnapshot;
 import com.invoicematch.core.purchasingreference.application.PurchasingReferenceService;
 import com.invoicematch.core.purchasingreference.application.RefreshPurchaseOrderCommand;
+import com.invoicematch.core.shared.domain.DomainValidationException;
 import com.invoicematch.core.shared.domain.PurchaseOrderId;
 import com.invoicematch.core.shared.domain.SupplierId;
 import java.util.Optional;
@@ -34,6 +36,11 @@ public class InvoiceCaseApplicationService {
     }
 
     public CommandResult<InvoiceCaseDetail> create(CreateInvoiceCaseCommand command) {
+        // Pure input validation before anything observable happens: a supplier
+        // invoice number that normalizes to nothing is an input error, not an
+        // external lookup.
+        requireNormalizableInvoiceNumber(command.invoiceNumber());
+
         String requestHash = fingerprint.create(command);
         Optional<RequestIdempotencyStore.StoredResponse> existing = idempotency.find(
                 InvoiceCaseWriteService.SCOPE_CREATE, InvoiceCaseWriteService.CREATE_RESOURCE_KEY, command.requestId());
@@ -46,9 +53,21 @@ public class InvoiceCaseApplicationService {
             return new CommandResult<>(stored.status(), idempotency.decode(stored, InvoiceCaseDetail.class));
         }
 
-        purchasingReferenceService.refresh(new RefreshPurchaseOrderCommand(
-                PurchaseOrderId.of(command.purchaseOrderId()), SupplierId.of(command.supplierId())));
-        return writeService.create(command, requestHash);
+        // Fetch, validate and canonicalize the external aggregate without any
+        // database transaction or lock. The write transaction applies the
+        // prepared snapshot only after it wins the request-id reservation.
+        PreparedPurchaseOrderSnapshot preparedSnapshot = purchasingReferenceService.fetchValidated(
+                new RefreshPurchaseOrderCommand(
+                        PurchaseOrderId.of(command.purchaseOrderId()), SupplierId.of(command.supplierId())));
+        return writeService.create(command, requestHash, preparedSnapshot);
+    }
+
+    private static void requireNormalizableInvoiceNumber(String invoiceNumber) {
+        String normalized = InvoiceNumberNormalizer.normalize(invoiceNumber);
+        if (normalized == null || normalized.isBlank()) {
+            throw new DomainValidationException(
+                    "invoiceNumber must contain at least one letter or digit");
+        }
     }
 
     public CommandResult<InvoiceCaseDetail> replaceDraft(ReplaceDraftLinesCommand command) {

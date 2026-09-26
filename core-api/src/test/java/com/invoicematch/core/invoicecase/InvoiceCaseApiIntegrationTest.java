@@ -226,6 +226,59 @@ class InvoiceCaseApiIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     @Test
+    void confirmedItemIdMustBeAnItemIdNotAPurchaseOrderLineId() throws Exception {
+        JsonNode created = createCase("req-1");
+        String caseId = created.get("id").asText();
+
+        MvcResult result = performReplaceDraft(caseId,
+                replaceBody("req-po-line", created.get("version").asLong(),
+                        List.of(line(1, "A4 Paper", 1, 100, "POL-1001-1"))));
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(400);
+        assertThat(code(result)).isEqualTo("VALIDATION_ERROR");
+        assertThat(count("invoice_line")).isZero();
+    }
+
+    @Test
+    void nullDraftLineIsRejected() throws Exception {
+        JsonNode created = createCase("req-1");
+        String caseId = created.get("id").asText();
+
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("requestId", "req-null-line");
+        body.put("expectedCaseVersion", created.get("version").asLong());
+        body.putArray("lines").addNull();
+
+        MvcResult result = performReplaceDraft(caseId, body);
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(400);
+        assertThat(code(result)).isEqualTo("VALIDATION_ERROR");
+    }
+
+    @Test
+    void requestIdLengthBoundaryIsEnforcedBeforeExternalCall() throws Exception {
+        MvcResult tooLong = performCreate(createRequestBody("r".repeat(129), SUPPLIER, PO_ID, "INV-1"));
+
+        assertThat(tooLong.getResponse().getStatus()).isEqualTo(400);
+        assertThat(code(tooLong)).isEqualTo("VALIDATION_ERROR");
+        assertThat(count("invoice_case")).isZero();
+        assertThat(count("purchase_order_snapshot")).isZero();
+
+        JsonNode accepted = createCase("r".repeat(128));
+        assertThat(accepted.get("id").asText()).isNotBlank();
+    }
+
+    @Test
+    void punctuationOnlyInvoiceNumberIsRejectedBeforeExternalCall() throws Exception {
+        MvcResult result = performCreate(createRequestBody("req-punctuation", SUPPLIER, PO_ID, "---"));
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(400);
+        assertThat(code(result)).isEqualTo("VALIDATION_ERROR");
+        assertThat(count("invoice_case")).isZero();
+        assertThat(count("purchase_order_snapshot")).isZero();
+    }
+
+    @Test
     void replaceDraftRejectsStaleExpectedCaseVersion() throws Exception {
         JsonNode created = createCase("req-1");
         String caseId = created.get("id").asText();

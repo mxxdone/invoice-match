@@ -40,9 +40,17 @@ conflict.
 | `GET` | `/api/invoice-cases/{id}/evidence-bundles` | List frozen bundle versions with payload hashes |
 | `GET` | `/api/invoice-cases/{id}/evidence-bundles/{version}` | Read one frozen bundle's canonical payload and hash |
 
-Validation failures return `400`; stale versions, non-editable drafts, invalid
-state transitions and idempotency conflicts return `409`; a missing external
-purchase order returns `404`; an external purchasing timeout returns `503`.
+Draft lines are `{lineNumber, rawItemName, quantity, unitPrice, confirmedItemId}`.
+`lineNumber` must be contiguous from `1`, `rawItemName` non-blank, `quantity`
+positive, `unitPrice` non-negative. When `confirmedItemId` is present it must be
+the **item id** of an active line of the case's current purchase order snapshot;
+purchase order line ids are a different namespace and are rejected.
+`requestId` is limited to 128 characters.
+
+Validation failures (`400`) are checked before the external purchase order is
+called. Stale versions, non-editable drafts, invalid state transitions and
+idempotency conflicts return `409`; a missing external purchase order returns
+`404`; an external purchasing timeout returns `503`.
 
 Check PostgreSQL connectivity and its timezone:
 

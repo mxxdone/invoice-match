@@ -7,6 +7,8 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -23,6 +25,7 @@ public final class StubPurchasingServer implements AutoCloseable {
     private volatile int status = 200;
     private volatile String body = "{}";
     private volatile Duration delay = Duration.ZERO;
+    private final Map<String, String> perPurchaseOrderBodies = new ConcurrentHashMap<>();
 
     public StubPurchasingServer() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -40,9 +43,14 @@ public final class StubPurchasingServer implements AutoCloseable {
                 Thread.currentThread().interrupt();
             }
         }
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        String path = exchange.getRequestURI().getPath();
+        String purchaseOrderId = path.substring(path.lastIndexOf('/') + 1);
+        String perPathBody = perPurchaseOrderBodies.get(purchaseOrderId);
+        String responseBody = perPathBody != null ? perPathBody : body;
+        int responseStatus = perPathBody != null ? 200 : status;
+        byte[] bytes = responseBody.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("content-type", "application/json; charset=utf-8");
-        exchange.sendResponseHeaders(status, bytes.length);
+        exchange.sendResponseHeaders(responseStatus, bytes.length);
         try (OutputStream out = exchange.getResponseBody()) {
             out.write(bytes);
         }
@@ -52,6 +60,16 @@ public final class StubPurchasingServer implements AutoCloseable {
         this.delay = Duration.ZERO;
         this.status = status;
         this.body = body;
+        this.perPurchaseOrderBodies.clear();
+    }
+
+    /**
+     * Serves a specific body for one purchase order id regardless of the global
+     * default, so a test can give two different valid purchase orders.
+     */
+    public void respondFor(String purchaseOrderId, String body) {
+        this.delay = Duration.ZERO;
+        this.perPurchaseOrderBodies.put(purchaseOrderId, body);
     }
 
     public void respondAfter(String body, Duration delay) {

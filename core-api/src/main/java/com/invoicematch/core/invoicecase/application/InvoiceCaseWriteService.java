@@ -15,7 +15,9 @@ import com.invoicematch.core.invoicecase.persistence.DraftRevisionRepository;
 import com.invoicematch.core.invoicecase.persistence.EvidenceBundleRepository;
 import com.invoicematch.core.invoicecase.persistence.InvoiceCaseRepository;
 import com.invoicematch.core.invoicecase.persistence.InvoiceLineRepository;
+import com.invoicematch.core.purchasingreference.application.PreparedPurchaseOrderSnapshot;
 import com.invoicematch.core.purchasingreference.application.PurchaseOrderSnapshotReader;
+import com.invoicematch.core.purchasingreference.application.PurchasingReferenceService;
 import com.invoicematch.core.purchasingreference.domain.PurchaseOrderAggregate;
 import com.invoicematch.core.shared.domain.DomainValidationException;
 import com.invoicematch.core.shared.domain.Money;
@@ -30,7 +32,6 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -60,6 +61,7 @@ public class InvoiceCaseWriteService {
     private final InvoiceLineRepository invoiceLines;
     private final EvidenceBundleRepository evidenceBundles;
     private final PurchaseOrderSnapshotReader purchaseOrderSnapshots;
+    private final PurchasingReferenceService purchasingReferenceService;
     private final RequestIdempotencyStore idempotency;
     private final RequestFingerprint fingerprint;
     private final EvidenceBundlePayloadHasher payloadHasher;
@@ -71,6 +73,7 @@ public class InvoiceCaseWriteService {
             InvoiceLineRepository invoiceLines,
             EvidenceBundleRepository evidenceBundles,
             PurchaseOrderSnapshotReader purchaseOrderSnapshots,
+            PurchasingReferenceService purchasingReferenceService,
             RequestIdempotencyStore idempotency,
             RequestFingerprint fingerprint,
             EvidenceBundlePayloadHasher payloadHasher,
@@ -80,6 +83,7 @@ public class InvoiceCaseWriteService {
         this.invoiceLines = invoiceLines;
         this.evidenceBundles = evidenceBundles;
         this.purchaseOrderSnapshots = purchaseOrderSnapshots;
+        this.purchasingReferenceService = purchasingReferenceService;
         this.idempotency = idempotency;
         this.fingerprint = fingerprint;
         this.payloadHasher = payloadHasher;
@@ -87,12 +91,18 @@ public class InvoiceCaseWriteService {
     }
 
     @Transactional
-    public CommandResult<InvoiceCaseDetail> create(CreateInvoiceCaseCommand command, String requestHash) {
+    public CommandResult<InvoiceCaseDetail> create(
+            CreateInvoiceCaseCommand command, String requestHash, PreparedPurchaseOrderSnapshot preparedSnapshot) {
         RequestIdempotencyStore.BeginResult begin =
                 idempotency.begin(SCOPE_CREATE, CREATE_RESOURCE_KEY, command.requestId(), requestHash);
         if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
             return replay(replay.response(), InvoiceCaseDetail.class);
         }
+
+        // Only the winner of the request-id reservation applies the external
+        // snapshot, inside this transaction, so a conflicting loser leaves no
+        // half-applied purchase order or case behind.
+        purchasingReferenceService.applyPrepared(preparedSnapshot);
 
         Instant now = clock.instant();
         InvoiceCase invoiceCase = invoiceCases.saveAndFlush(InvoiceCase.create(
@@ -345,13 +355,13 @@ public class InvoiceCaseWriteService {
                 .findCurrent(PurchaseOrderId.of(purchaseOrderId))
                 .orElseThrow(() -> new DomainValidationException(
                         "No purchase order snapshot for " + purchaseOrderId + " is available to validate confirmed items"));
-        Set<String> validReferences = aggregate.purchaseOrder().lines().stream()
-                .flatMap(line -> Stream.of(line.itemId(), line.purchaseOrderLineId()))
+        Set<String> validItemIds = aggregate.purchaseOrder().lines().stream()
+                .map(line -> line.itemId())
                 .collect(Collectors.toSet());
         for (String confirmedItemId : confirmedItemIds) {
-            if (!validReferences.contains(confirmedItemId)) {
+            if (!validItemIds.contains(confirmedItemId)) {
                 throw new DomainValidationException("confirmedItemId " + confirmedItemId
-                        + " does not match an active purchase order line or item of " + purchaseOrderId);
+                        + " does not match an active item of purchase order " + purchaseOrderId);
             }
         }
     }

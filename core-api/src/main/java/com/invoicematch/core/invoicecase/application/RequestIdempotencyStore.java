@@ -50,8 +50,15 @@ public class RequestIdempotencyStore {
         List<StoredResponse> rows = jdbc.query(
                 "select request_hash, response_status, response_body from idempotency_record"
                         + " where scope = ? and resource_key = ? and request_id = ?",
-                (rs, rowNum) -> new StoredResponse(rs.getString("request_hash"), rs.getInt("response_status"),
-                        rs.getString("response_body")),
+                (rs, rowNum) -> {
+                    Integer status = rs.getObject("response_status", Integer.class);
+                    String body = rs.getString("response_body");
+                    if (status == null || body == null) {
+                        throw new IllegalStateException("Idempotency record for " + scope + "/" + resourceKey + "/"
+                                + requestId + " is committed without a stored response");
+                    }
+                    return new StoredResponse(rs.getString("request_hash"), status, body);
+                },
                 scope,
                 resourceKey,
                 requestId);
@@ -88,7 +95,7 @@ public class RequestIdempotencyStore {
     }
 
     public void recordResponse(String scope, String resourceKey, String requestId, int status, Object body) {
-        jdbc.update(
+        int updated = jdbc.update(
                 "update idempotency_record set response_status = ?, response_body = ?"
                         + " where scope = ? and resource_key = ? and request_id = ?",
                 status,
@@ -96,6 +103,10 @@ public class RequestIdempotencyStore {
                 scope,
                 resourceKey,
                 requestId);
+        if (updated != 1) {
+            throw new IllegalStateException("Idempotency record for " + scope + "/" + resourceKey + "/" + requestId
+                    + " was not reserved by this transaction");
+        }
     }
 
     public <T> T decode(StoredResponse stored, Class<T> type) {

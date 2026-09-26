@@ -92,6 +92,44 @@ class InvoiceCaseConcurrencyIntegrationTest extends AbstractPostgresIntegrationT
 
         assertThat(ids).hasSize(threads).containsOnly(ids.get(0));
         assertThat(count("invoice_case")).isEqualTo(1);
+        assertThat(count("purchase_order_snapshot")).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentCreateWithSameRequestIdDifferentPurchaseOrderConflictsWithoutLoserSnapshot() throws Exception {
+        STUB.respondFor("PO-1001", PurchasingPayloads.confirmedPartialReceipt().toJson());
+        STUB.respondFor(
+                "PO-1002",
+                PurchasingPayloads.confirmedPartialReceipt().purchaseOrderId("PO-1002").toJson());
+
+        List<Callable<String>> tasks = List.of(
+                createTask("req-race", "PO-1001"), createTask("req-race", "PO-1002"));
+
+        List<String> results = runConcurrently(tasks);
+
+        assertThat(results).containsExactlyInAnyOrder("OK", "IdempotencyConflictException");
+        assertThat(count("invoice_case")).isEqualTo(1);
+        assertThat(count("purchase_order_snapshot")).isEqualTo(1);
+
+        String winnerPurchaseOrder =
+                jdbc.queryForObject("select purchase_order_id from invoice_case", String.class);
+        String loserPurchaseOrder = winnerPurchaseOrder.equals("PO-1001") ? "PO-1002" : "PO-1001";
+        assertThat(jdbc.queryForObject(
+                        "select count(*) from purchase_order_snapshot where purchase_order_id = ?",
+                        Integer.class,
+                        loserPurchaseOrder))
+                .isZero();
+    }
+
+    private Callable<String> createTask(String requestId, String purchaseOrderId) {
+        return () -> {
+            try {
+                commands.create(new CreateInvoiceCaseCommand(requestId, "SUP-1", purchaseOrderId, "INV-1"));
+                return "OK";
+            } catch (RuntimeException e) {
+                return e.getClass().getSimpleName();
+            }
+        };
     }
 
     @Test

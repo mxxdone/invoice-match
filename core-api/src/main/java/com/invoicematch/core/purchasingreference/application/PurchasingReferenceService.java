@@ -39,11 +39,35 @@ public class PurchasingReferenceService {
         this.clock = clock;
     }
 
+    /**
+     * Fetches, validates and applies one external aggregate. The fetch and
+     * validation happen outside the store's transaction; the caller's public
+     * behaviour is unchanged.
+     */
     public RefreshResult refresh(RefreshPurchaseOrderCommand command) {
+        return applyPrepared(fetchValidated(command));
+    }
+
+    /**
+     * Fetches, validates and canonicalizes one external aggregate without
+     * touching the database. Intended to be called outside a transaction so the
+     * external HTTP call never runs while a transaction or row lock is held.
+     */
+    public PreparedPurchaseOrderSnapshot fetchValidated(RefreshPurchaseOrderCommand command) {
         PurchaseOrderAggregate aggregate = client.fetch(command.purchaseOrderId());
         validate(command, aggregate);
         SnapshotPayloadHasher.CanonicalPayload canonical = hasher.canonicalize(aggregate);
-        return store.apply(aggregate, canonical.json(), canonical.hash(), clock.instant());
+        return new PreparedPurchaseOrderSnapshot(aggregate, canonical.json(), canonical.hash(), clock.instant());
+    }
+
+    /**
+     * Applies a previously fetched, validated aggregate. The store joins the
+     * caller's transaction when one is active, so the snapshot write can be
+     * committed atomically with the caller's business effect.
+     */
+    public RefreshResult applyPrepared(PreparedPurchaseOrderSnapshot prepared) {
+        return store.apply(
+                prepared.aggregate(), prepared.canonicalJson(), prepared.canonicalHash(), prepared.retrievedAt());
     }
 
     private void validate(RefreshPurchaseOrderCommand command, PurchaseOrderAggregate aggregate) {
