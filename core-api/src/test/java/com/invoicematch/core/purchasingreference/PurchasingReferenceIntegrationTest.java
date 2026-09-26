@@ -197,6 +197,33 @@ class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest
     }
 
     @Test
+    void delimiterCollidingReceiptLineIdsAreDistinguishedWhenOneIsRemoved() {
+        STUB.respond(200, collidingReceiptLines().toJson());
+        service.refresh(command());
+
+        UUID retainedId = receiptLineUuid("R|A", "B");
+        UUID removedId = receiptLineUuid("R", "A|B");
+
+        STUB.respond(200, collidingReceiptLinesDroppingOne().toJson());
+        RefreshResult result = service.refresh(command());
+
+        assertThat(result.outcome()).isEqualTo(RefreshOutcome.UPDATED);
+        assertThat(receiptLineUuid("R|A", "B")).isEqualTo(retainedId);
+        assertThat(receiptLineUuid("R", "A|B")).isEqualTo(removedId);
+        assertThat(receiptLineActive("R|A", "B")).isTrue();
+        assertThat(receiptLineActive("R", "A|B")).isFalse();
+        assertThat(count("receipt_line_snapshot")).isEqualTo(2);
+        assertThat(activeCount("receipt_line_snapshot")).isEqualTo(1);
+
+        PurchaseOrderAggregate current = reader.findCurrent(command().purchaseOrderId()).orElseThrow();
+        assertThat(current.receipts()).hasSize(1);
+        assertThat(current.receipts().get(0).receiptId()).isEqualTo("R|A");
+        assertThat(current.receipts().get(0).lines()).hasSize(1);
+        assertThat(current.receipts().get(0).lines().get(0).receiptLineId()).isEqualTo("B");
+        assertThat(hasher.canonicalize(current).hash()).isEqualTo(payloadHash());
+    }
+
+    @Test
     void olderVersionIsIgnoredAndDoesNotOverwrite() {
         STUB.respond(200, versionWithConfirmedQuantity(6, 70));
         service.refresh(command());
@@ -339,6 +366,21 @@ class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest
                         receiptLine("RCL-1001-1-2", 3, "POL-1001-1", 20));
     }
 
+        private static PurchasingPayloads collidingReceiptLines() {
+        return PurchasingPayloads.confirmedPartialReceipt()
+                .snapshotVersion(5)
+                .clearReceipts()
+                .addReceipt("R|A", "CONFIRMED", "2026-01-05", 1, receiptLine("B", 1, "POL-1001-1", 10))
+                .addReceipt("R", "CONFIRMED", "2026-01-05", 1, receiptLine("A|B", 1, "POL-1001-1", 20));
+    }
+
+    private static PurchasingPayloads collidingReceiptLinesDroppingOne() {
+        return PurchasingPayloads.confirmedPartialReceipt()
+                .snapshotVersion(6)
+                .clearReceipts()
+                .addReceipt("R|A", "CONFIRMED", "2026-01-05", 1, receiptLine("B", 1, "POL-1001-1", 10));
+    }
+
     private static PurchasingPayloads versionDroppingSecondLineAndReceiptLine() {        return PurchasingPayloads.confirmedPartialReceipt()
                 .snapshotVersion(6)
                 .purchaseOrderVersion(4)
@@ -401,6 +443,22 @@ class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest
                 "select purchase_order_line_id from receipt_line_snapshot where receipt_line_id = ?",
                 String.class,
                 receiptLineId);
+    }
+
+    private UUID receiptLineUuid(String receiptId, String receiptLineId) {
+        return jdbc.queryForObject(
+                "select id from receipt_line_snapshot where receipt_id = ? and receipt_line_id = ?",
+                UUID.class,
+                receiptId,
+                receiptLineId);
+    }
+
+    private boolean receiptLineActive(String receiptId, String receiptLineId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "select active from receipt_line_snapshot where receipt_id = ? and receipt_line_id = ?",
+                Boolean.class,
+                receiptId,
+                receiptLineId));
     }
 
     private UUID uuidOf(String table, String keyColumn, String key) {

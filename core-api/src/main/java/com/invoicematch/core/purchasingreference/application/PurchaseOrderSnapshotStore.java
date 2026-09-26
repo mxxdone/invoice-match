@@ -174,14 +174,14 @@ public class PurchaseOrderSnapshotStore {
     }
 
     private void upsertReceiptLines(String purchaseOrderId, PurchaseOrderAggregate aggregate) {
-        Map<String, ReceiptLineSnapshot> existing = new HashMap<>();
+        Map<ReceiptLineKey, ReceiptLineSnapshot> existing = new HashMap<>();
         for (ReceiptLineSnapshot row : receiptLines.findByPurchaseOrderId(purchaseOrderId)) {
-            existing.put(receiptLineKey(row.receiptId(), row.receiptLineId()), row);
+            existing.put(new ReceiptLineKey(row.receiptId(), row.receiptLineId()), row);
         }
-        Set<String> incoming = new HashSet<>();
+        Set<ReceiptLineKey> incoming = new HashSet<>();
         for (ReceiptFacts receipt : aggregate.receipts()) {
             for (ReceiptLineFacts facts : receipt.lines()) {
-                String key = receiptLineKey(receipt.receiptId(), facts.receiptLineId());
+                ReceiptLineKey key = new ReceiptLineKey(receipt.receiptId(), facts.receiptLineId());
                 ReceiptLineSnapshot row = existing.get(key);
                 if (row == null) {
                     receiptLines.save(
@@ -193,14 +193,17 @@ public class PurchaseOrderSnapshotStore {
             }
         }
         for (ReceiptLineSnapshot row : existing.values()) {
-            if (!incoming.contains(receiptLineKey(row.receiptId(), row.receiptLineId()))) {
+            if (!incoming.contains(new ReceiptLineKey(row.receiptId(), row.receiptLineId()))) {
                 row.deactivate();
             }
         }
         receiptLines.flush();
     }
 
-    private static String receiptLineKey(String receiptId, String receiptLineId) {
-        return receiptId + "|" + receiptLineId;
+    /**
+     * Structured composite key so that receipt ids and receipt line ids that
+     * merely concatenate to the same string cannot collide.
+     */
+    private record ReceiptLineKey(String receiptId, String receiptLineId) {
     }
 }

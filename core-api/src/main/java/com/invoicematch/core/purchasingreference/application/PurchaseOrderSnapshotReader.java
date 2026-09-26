@@ -22,6 +22,7 @@ import java.util.stream.Collectors;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -29,10 +30,12 @@ import org.springframework.transaction.annotation.Transactional;
  * current aggregate from active rows only; rows deactivated by a newer external
  * snapshot are excluded.
  *
- * <p>The read runs in a {@link Isolation#REPEATABLE_READ} transaction so that
- * the root and child statements observe one consistent PostgreSQL snapshot. A
- * refresh that commits between two child queries can therefore never produce a
- * hybrid of the old and new snapshot versions.
+ * <p>The read always runs in its own {@link Isolation#REPEATABLE_READ}
+ * transaction ({@link Propagation#REQUIRES_NEW}) so that the root and child
+ * statements observe one consistent PostgreSQL snapshot regardless of the
+ * caller's transaction or isolation level. A refresh that commits between two
+ * child queries can therefore never produce a hybrid of the old and new
+ * snapshot versions.
  */
 @Component
 public class PurchaseOrderSnapshotReader {
@@ -56,7 +59,7 @@ public class PurchaseOrderSnapshotReader {
         this.interceptor = interceptors.getIfAvailable(() -> SnapshotReadInterceptor.NONE);
     }
 
-    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, propagation = Propagation.REQUIRES_NEW)
     public Optional<PurchaseOrderAggregate> findCurrent(PurchaseOrderId purchaseOrderId) {
         String id = purchaseOrderId.value();
         Optional<PurchaseOrderSnapshot> snapshot = snapshots.findById(id);

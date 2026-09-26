@@ -27,6 +27,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Proves that a current-snapshot read observes a single consistent PostgreSQL
@@ -78,6 +81,9 @@ class PurchasingReferenceIsolationIntegrationTest extends AbstractPostgresIntegr
     @Autowired
     private JdbcTemplate jdbc;
 
+    @Autowired
+    private PlatformTransactionManager transactionManager;
+
     @BeforeEach
     void reset() {
         INTERCEPTOR.reset();
@@ -111,19 +117,53 @@ class PurchasingReferenceIsolationIntegrationTest extends AbstractPostgresIntegr
             INTERCEPTOR.resume();
 
             PurchaseOrderAggregate aggregate = readFuture.get(20, TimeUnit.SECONDS);
-            assertThat(aggregate.snapshotVersion()).isEqualTo(5);
-            assertThat(aggregate.purchaseOrder().version()).isEqualTo(3);
-            ReceiptLineFacts receiptLine = aggregate.receipts().get(0).lines().stream()
-                    .filter(line -> line.receiptLineId().equals("RCL-1001-1-1"))
-                    .findFirst()
-                    .orElseThrow();
-            assertThat(receiptLine.purchaseOrderLineId()).isEqualTo("POL-1001-1");
-            assertThat(receiptLine.confirmedQuantity().value()).isEqualTo(60);
-            assertThat(receiptLine.version()).isEqualTo(2);
+            assertAllOld(aggregate);
         } finally {
             INTERCEPTOR.reset();
             pool.shutdownNow();
         }
+    }
+
+    @Test
+    void readInsideCallerReadCommittedTransactionAlsoSeesConsistentSnapshot() throws Exception {
+        STUB.respond(200, PurchasingPayloads.confirmedPartialReceipt().toJson());
+        service.refresh(command());
+
+        TransactionTemplate outer = new TransactionTemplate(transactionManager);
+        outer.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+        outer.setReadOnly(true);
+
+        INTERCEPTOR.arm();
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<PurchaseOrderAggregate> readFuture = pool.submit(
+                    () -> outer.execute(status -> reader.findCurrent(PurchaseOrderId.of(PO_ID)).orElseThrow()));
+            assertThat(INTERCEPTOR.awaitRootLoaded(10, TimeUnit.SECONDS)).isTrue();
+
+            STUB.respond(200, newerVersionWithChangedFacts());
+            RefreshResult updated = service.refresh(command());
+            assertThat(updated.outcome()).isEqualTo(RefreshOutcome.UPDATED);
+
+            INTERCEPTOR.resume();
+
+            PurchaseOrderAggregate aggregate = readFuture.get(20, TimeUnit.SECONDS);
+            assertAllOld(aggregate);
+        } finally {
+            INTERCEPTOR.reset();
+            pool.shutdownNow();
+        }
+    }
+
+    private static void assertAllOld(PurchaseOrderAggregate aggregate) {
+        assertThat(aggregate.snapshotVersion()).isEqualTo(5);
+        assertThat(aggregate.purchaseOrder().version()).isEqualTo(3);
+        ReceiptLineFacts receiptLine = aggregate.receipts().get(0).lines().stream()
+                .filter(line -> line.receiptLineId().equals("RCL-1001-1-1"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(receiptLine.purchaseOrderLineId()).isEqualTo("POL-1001-1");
+        assertThat(receiptLine.confirmedQuantity().value()).isEqualTo(60);
+        assertThat(receiptLine.version()).isEqualTo(2);
     }
 
     private static RefreshPurchaseOrderCommand command() {
