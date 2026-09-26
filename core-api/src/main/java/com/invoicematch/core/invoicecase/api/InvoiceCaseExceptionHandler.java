@@ -13,6 +13,7 @@ import com.invoicematch.core.purchasingreference.domain.PurchaseOrderNotFoundExc
 import com.invoicematch.core.purchasingreference.domain.PurchasingReferenceException;
 import com.invoicematch.core.purchasingreference.domain.PurchasingSystemUnavailableException;
 import com.invoicematch.core.shared.domain.DomainValidationException;
+import com.invoicematch.core.shared.domain.NumericOverflowException;
 import java.util.stream.Collectors;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
@@ -35,6 +36,11 @@ public class InvoiceCaseExceptionHandler {
     @ExceptionHandler(DomainValidationException.class)
     public ResponseEntity<ApiError> handleValidation(DomainValidationException e) {
         return error(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", e.getMessage());
+    }
+
+    @ExceptionHandler(NumericOverflowException.class)
+    public ResponseEntity<ApiError> handleOverflow(NumericOverflowException e) {
+        return error(HttpStatus.BAD_REQUEST, "NUMERIC_OVERFLOW", e.getMessage());
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

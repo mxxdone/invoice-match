@@ -462,6 +462,26 @@ class MatchEngineTest {
         }
     }
 
+    @Test
+    void effectiveMappingResolvesUnconfirmedLineDeterministically() {
+        MatchInput input = input(
+                List.of(invoice(1, "Premium Copy Paper A4", 60, 2500, null)),
+                List.of(poLine("POL-1", "ITEM-A", 100, 2500)),
+                List.of(receipt("R-1", "2026-01-05", 2, rline("RL-1", 1, "POL-1", 60))),
+                List.of(),
+                List.of(new AppliedMapping(1, "ITEM-A")));
+
+        JsonNode payload = compute(input);
+
+        assertThat(payload.get("appliedMappings")).hasSize(1);
+        assertThat(payload.get("appliedMappings").get(0).get("lineNumber").asInt()).isEqualTo(1);
+        assertThat(payload.get("appliedMappings").get(0).get("itemId").asText()).isEqualTo("ITEM-A");
+        JsonNode line = payload.get("lineOutcomes").get(0);
+        assertThat(line.get("status").asText()).isEqualTo("MATCHED");
+        assertThat(line.get("confirmedItemId").asText()).isEqualTo("ITEM-A");
+        assertThat(payload.get("normal").asBoolean()).isTrue();
+    }
+
     private static long totalPlannedForReceiptLine(JsonNode payload, String receiptLineId) {
         long total = 0L;
         for (JsonNode line : payload.get("lineOutcomes")) {
@@ -488,6 +508,15 @@ class MatchEngineTest {
             List<PurchaseOrderLineFacts> poLines,
             List<ReceiptFacts> receipts,
             List<UUID> duplicateCaseIds) {
+        return input(invoiceLines, poLines, receipts, duplicateCaseIds, List.of());
+    }
+
+    private static MatchInput input(
+            List<EvidenceBundlePayload.EvidenceLine> invoiceLines,
+            List<PurchaseOrderLineFacts> poLines,
+            List<ReceiptFacts> receipts,
+            List<UUID> duplicateCaseIds,
+            List<AppliedMapping> appliedMappings) {
         PurchaseOrderFacts purchaseOrder = new PurchaseOrderFacts(
                 3, PurchaseOrderStatus.CONFIRMED, SupplierId.of("SUP-1"), "Hanul Office Supply", poLines);
         PurchaseOrderAggregate aggregate =
@@ -505,7 +534,8 @@ class MatchEngineTest {
                 invoiceLines,
                 aggregate,
                 "snapshot-hash",
-                duplicateCaseIds);
+                duplicateCaseIds,
+                appliedMappings);
     }
 
     private static EvidenceBundlePayload.EvidenceLine invoice(

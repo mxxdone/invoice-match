@@ -27,6 +27,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import org.springframework.stereotype.Component;
@@ -45,7 +46,7 @@ import org.springframework.stereotype.Component;
 public class MatchEngine {
 
     /** Stable identifier of the canonical payload shape, bumped on any change. */
-    public static final String SCHEMA_VERSION = "match-result-v1";
+    public static final String SCHEMA_VERSION = "match-result-v2";
 
     private static final Comparator<EvidenceBundlePayload.EvidenceLine> INVOICE_LINE_ORDER =
             Comparator.comparingInt(EvidenceBundlePayload.EvidenceLine::lineNumber);
@@ -70,6 +71,8 @@ public class MatchEngine {
                 .sorted(INVOICE_LINE_ORDER)
                 .toList();
 
+        Map<Integer, String> mappingsByLine = effectiveMappingsByLine(input);
+
         Map<String, List<PurchaseOrderLineFacts>> poLinesByItem = input.purchasing().purchaseOrder().lines().stream()
                 .sorted(PO_LINE_ORDER)
                 .collect(Collectors.groupingBy(
@@ -81,8 +84,8 @@ public class MatchEngine {
         List<MatchLineOutcome> outcomes = new ArrayList<>();
         List<MatchException> exceptions = new ArrayList<>();
         for (EvidenceBundlePayload.EvidenceLine invoiceLine : invoiceLines) {
-            MatchLineOutcome outcome =
-                    matchLine(invoiceLine, poLinesByItem, receiptCandidatesByPoLine, remainingByReceiptLine);
+            MatchLineOutcome outcome = matchLine(
+                    invoiceLine, mappingsByLine, poLinesByItem, receiptCandidatesByPoLine, remainingByReceiptLine);
             outcomes.add(outcome);
             exceptions.addAll(outcome.exceptions());
         }
@@ -95,9 +98,26 @@ public class MatchEngine {
                 && outcomes.stream().allMatch(outcome ->
                         outcome.status() == MatchLineStatus.MATCHED && outcome.hasCompleteExpectedPlan());
 
-        ObjectNode payload = buildPayload(input, outcomes, orderedExceptions, normal);
+        ObjectNode payload = buildPayload(input, invoiceLines, mappingsByLine, outcomes, orderedExceptions, normal);
         String json = write(payload);
         return new MatchComputation(json, sha256Hex(json));
+    }
+
+    /**
+     * Canonical effective mapping index keyed by invoice line number. The
+     * resolver already returns one entry per line; requiring unique line numbers
+     * here keeps the canonical payload independent of resolver list ordering.
+     */
+    private static Map<Integer, String> effectiveMappingsByLine(MatchInput input) {
+        Map<Integer, String> mappings = new TreeMap<>();
+        for (AppliedMapping mapping : input.appliedMappings()) {
+            String previous = mappings.put(mapping.lineNumber(), mapping.itemId());
+            if (previous != null && !previous.equals(mapping.itemId())) {
+                throw new IllegalStateException(
+                        "Conflicting effective mappings for invoice line " + mapping.lineNumber());
+            }
+        }
+        return mappings;
     }
 
     /**
@@ -118,11 +138,16 @@ public class MatchEngine {
 
     private MatchLineOutcome matchLine(
             EvidenceBundlePayload.EvidenceLine invoiceLine,
+            Map<Integer, String> mappingsByLine,
             Map<String, List<PurchaseOrderLineFacts>> poLinesByItem,
             Map<String, List<ReceiptLineCandidate>> receiptCandidatesByPoLine,
             Map<ReceiptKey, Long> remainingByReceiptLine) {
         int lineNumber = invoiceLine.lineNumber();
-        String confirmedItemId = blankToNull(invoiceLine.confirmedItemId());
+        // An effective case-local mapping takes precedence over the frozen
+        // confirmed item so a human decision is what the re-match reflects.
+        String confirmedItemId = mappingsByLine.containsKey(lineNumber)
+                ? mappingsByLine.get(lineNumber)
+                : blankToNull(invoiceLine.confirmedItemId());
 
         if (confirmedItemId == null) {
             Map<String, Object> details = orderedDetails();
@@ -278,6 +303,8 @@ public class MatchEngine {
 
     private ObjectNode buildPayload(
             MatchInput input,
+            List<EvidenceBundlePayload.EvidenceLine> invoiceLines,
+            Map<Integer, String> mappingsByLine,
             List<MatchLineOutcome> outcomes,
             List<MatchException> exceptions,
             boolean normal) {
@@ -294,6 +321,18 @@ public class MatchEngine {
         bundle.put("id", input.evidenceBundleId().toString());
         bundle.put("version", input.evidenceBundleVersion());
         bundle.put("payloadHash", input.evidenceBundleHash());
+
+        // Effective case-local mappings actually applied to a line present in
+        // this bundle, sorted by line number. Empty when none are effective.
+        ArrayNode appliedMappings = root.putArray("appliedMappings");
+        for (EvidenceBundlePayload.EvidenceLine line : invoiceLines) {
+            String itemId = mappingsByLine.get(line.lineNumber());
+            if (itemId != null) {
+                ObjectNode mapping = appliedMappings.addObject();
+                mapping.put("lineNumber", line.lineNumber());
+                mapping.put("itemId", itemId);
+            }
+        }
 
         ObjectNode purchasing = root.putObject("purchasingSnapshot");
         purchasing.put("snapshotVersion", input.purchasing().snapshotVersion());

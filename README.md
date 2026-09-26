@@ -1,6 +1,6 @@
 # Invoice Match
 
-P1-00 provides a runnable baseline for the invoice matching project. It has one Java 21 Spring Boot 3 API, a Next.js TypeScript web app, PostgreSQL, and a minimal Mock ERP process. P1-01 adds the domain contract and PostgreSQL schema baseline (invoice case, draft revision, evidence bundle, match result, review snapshot and decision). P1-02 adds a read-only external purchasing system Mock (`mock-purchasing`), a read-only Core API adapter and a PostgreSQL-backed current snapshot of suppliers' purchase orders, lines, receipts and receipt lines with external versions. P1-03 adds the first business write APIs: manual invoice case creation validated against the external purchase order, atomic current-draft editing, submission that freezes a canonical hashed `EvidenceBundle` version, supplement revisions that copy the previous frozen lines, past bundle version reads and request-id idempotency. P1-04 adds the deterministic, AI-free 3-way match: the latest frozen bundle is compared with zero tolerance against the current purchasing snapshot and an immutable, canonically hashed `MatchResult` with per-line calculation evidence, an exception taxonomy and a non-consuming expected FIFO allocation plan is appended.
+P1-00 provides a runnable baseline for the invoice matching project. It has one Java 21 Spring Boot 3 API, a Next.js TypeScript web app, PostgreSQL, and a minimal Mock ERP process. P1-01 adds the domain contract and PostgreSQL schema baseline (invoice case, draft revision, evidence bundle, match result, review snapshot and decision). P1-02 adds a read-only external purchasing system Mock (`mock-purchasing`), a read-only Core API adapter and a PostgreSQL-backed current snapshot of suppliers' purchase orders, lines, receipts and receipt lines with external versions. P1-03 adds the first business write APIs: manual invoice case creation validated against the external purchase order, atomic current-draft editing, submission that freezes a canonical hashed `EvidenceBundle` version, supplement revisions that copy the previous frozen lines, past bundle version reads and request-id idempotency. P1-04 adds the deterministic, AI-free 3-way match: the latest frozen bundle is compared with zero tolerance against the current purchasing snapshot and an immutable, canonically hashed `MatchResult` with per-line calculation evidence, an exception taxonomy and a non-consuming expected FIFO allocation plan is appended. P1-05 adds the human review workflow: a frozen `ReviewSnapshot` approval subject with a canonical payload hash, case-local item mapping with deterministic re-match and a successor snapshot, supplement request and rejection, machine-checkable freshness/staleness, and request-id idempotency. Approval/allocation, roles/audit and AI remain out of scope.
 
 ## Run all services
 
@@ -113,6 +113,63 @@ NON_CONSUMING_EXPECTED_PLAN_V1`). P1-04 writes no allocation and consumes no
 balance; approval (P1-07) revalidates and consumes it against the then-current
 balance. Business duplicate detection is separate from request-id idempotency.
 
+The canonical match payload schema is `match-result-v2`; the `appliedMappings`
+array records which effective case-local mappings were applied.
+
+## Review workflow API (P1-05)
+
+`ReviewSnapshot` is the frozen approval subject from ADR 0001: exactly what a
+reviewer is shown. It contains the case version, the evidence bundle
+id/version/hash, the source match result id/number/hash with its full
+calculation evidence, the effective case-local mappings, the invoice line
+amounts and total KRW amount, the captured purchasing snapshot
+versions/hash, and a canonical payload hash. Snapshots are append-only and
+carry an unambiguous per-case monotonic `snapshotNumber`; decisions carry a
+per-case monotonic `decisionNumber`.
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/invoice-cases/{id}/review-snapshots` | Freeze the current review subject from the latest match result (requires `requestId`, `expectedCaseVersion`) |
+| `GET` | `/api/invoice-cases/{id}/review-snapshots` | Snapshot history, oldest first |
+| `GET` | `/api/invoice-cases/{id}/review-snapshots/latest` | Latest snapshot |
+| `GET` | `/api/invoice-cases/{id}/review-snapshots/{number}` | One snapshot by business order |
+| `GET` | `/api/invoice-cases/{id}/review-snapshots/{number}/freshness` | Machine-checkable freshness with explicit stale reasons |
+| `GET` | `/api/invoice-cases/{id}/review-decisions` | Append-only decision history, oldest first |
+| `POST` | `/api/invoice-cases/{id}/mapping-decisions` | Confirm an item mapping for one line of the snapshot the reviewer saw |
+| `POST` | `/api/invoice-cases/{id}/supplement-requests` | Confirm a supplement request |
+| `POST` | `/api/invoice-cases/{id}/reject` | Reject with a reason |
+
+A snapshot can only be frozen from a `REVIEW_PENDING` case, the latest frozen
+bundle, the latest match result for that bundle, and only when that result was
+computed against the current purchasing snapshot and the current effective
+mappings; otherwise the request is a `409`. Freezing does not change the case
+version. Human actions must send `reviewSnapshotId`, `reviewPayloadHash`,
+`expectedCaseVersion` and `requestId`; a stale, superseded or mismatched target
+is rejected with `409` and no side effect. The `STALE_REVIEW_TARGET` body lists
+explicit reasons (`CASE_STATE`, `CASE_VERSION`, `EVIDENCE_BUNDLE`, `MATCH_RESULT`,
+`MAPPING`, `PURCHASING_SNAPSHOT`, `SUPERSEDED`).
+
+A mapping is scoped to the case and to a specific bundle and invoice line:
+`{requestId, expectedCaseVersion, reviewSnapshotId, reviewPayloadHash,
+lineNumber, itemId, decidedBy?}`. The chosen `itemId` must resolve to exactly
+one active purchase order line of the current purchase order. Recording it
+bumps the case version, re-matches with every effective mapping, and freezes a
+successor snapshot whose payload records the applied mappings and the new
+result. Prior snapshots and bundles are preserved and become stale; a new
+bundle never silently inherits an old bundle's mappings. Supplement and reject
+require a non-blank reason (max 1000 characters) and atomically move the case
+to `SUPPLEMENT_REQUIRED` or `REJECTED`. `SUPPLEMENT_REQUIRED` permits neither a
+new match nor a new snapshot until corrected evidence vNext is submitted and
+matched. Reusing a `requestId` with the same payload replays the response; a
+different payload is a `409` conflict. Amounts use checked arithmetic, so an
+overflowing line total or snapshot total is rejected atomically with
+`400 NUMERIC_OVERFLOW`.
+
+The canonical snapshot payload sorts every collection and excludes the
+snapshot's generated identity/time and decision ids from its SHA-256, so the
+same semantic inputs hash equally regardless of repository or list ordering.
+Approval, allocation, payment, roles, audit and AI are out of scope for P1-05.
+
 Check PostgreSQL connectivity and its timezone:
 
 ```sh
@@ -176,4 +233,4 @@ cd ../mock-purchasing
 npm test
 ```
 
-The GitHub Actions workflow runs these checks and a five-service Compose smoke test. Source layout is intentionally small: `core-api` holds one Spring application organized by feature (`invoicecase`, `matching`, `purchasingreference`, `review`, `shared`); `web/src/app` holds the Next.js routes; `mock-erp` serves only a deterministic health response; `mock-purchasing` serves deterministic read-only purchase order aggregates. P1-01 defines the Phase 1 state contract and PostgreSQL baseline, P1-02 defines the external purchasing reference snapshot and refresh version semantics, P1-03 defines manual submission, evidence bundle versioning and request-id idempotency, P1-04 defines the deterministic AI-free 3-way match, but later tickets still own review, allocation, payment and P1-09 behavior.
+The GitHub Actions workflow runs these checks and a five-service Compose smoke test. Source layout is intentionally small: `core-api` holds one Spring application organized by feature (`invoicecase`, `matching`, `purchasingreference`, `review`, `shared`); `web/src/app` holds the Next.js routes; `mock-erp` serves only a deterministic health response; `mock-purchasing` serves deterministic read-only purchase order aggregates. P1-01 defines the Phase 1 state contract and PostgreSQL baseline, P1-02 defines the external purchasing reference snapshot and refresh version semantics, P1-03 defines manual submission, evidence bundle versioning and request-id idempotency, P1-04 defines the deterministic AI-free 3-way match, P1-05 defines the frozen review snapshot, case-local mapping with deterministic re-match, supplement/reject and freshness, but later tickets still own approval, allocation, payment, roles/audit and P1-09 behavior.

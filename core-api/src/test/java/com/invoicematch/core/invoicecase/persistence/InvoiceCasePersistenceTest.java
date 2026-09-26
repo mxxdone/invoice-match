@@ -119,10 +119,10 @@ class InvoiceCasePersistenceTest extends AbstractPostgresIntegrationTest {
                 UUID.randomUUID(), caseId, sealedDraft.id(), 1, "bundle-hash", "{\"lines\":[]}",
                 T0.plusSeconds(1)));
         ReviewSnapshot snapshot = reviewSnapshots.save(ReviewSnapshot.freeze(
-                UUID.randomUUID(), caseId, bundle.id(), null, 0L, 1, "snapshot-hash", "{\"total\":0}",
-                T0.plusSeconds(2)));
+                UUID.randomUUID(), caseId, bundle.id(), null, null, 1, 0L, 1, 0L, "purchasing-hash", 0,
+                "snapshot-hash", "{\"total\":0}", T0.plusSeconds(2)));
         ReviewDecision decision = reviewDecisions.save(ReviewDecision.record(
-                UUID.randomUUID(), caseId, snapshot.id(), ReviewDecisionType.APPROVED, "approver-1",
+                UUID.randomUUID(), caseId, snapshot.id(), 1, ReviewDecisionType.APPROVED, "approver-1",
                 "looks correct", null, "snapshot-hash", T0.plusSeconds(3)));
 
         assertThat(evidenceBundles.findById(bundle.id()))

@@ -100,7 +100,7 @@ class MatchingApiIntegrationTest extends AbstractPostgresIntegrationTest {
         assertThat(result.get("resultNumber").asInt()).isEqualTo(1);
         assertThat(result.get("evidenceBundleId").asText()).isNotBlank();
         JsonNode payload = result.get("payload");
-        assertThat(payload.get("schemaVersion").asText()).isEqualTo("match-result-v1");
+        assertThat(payload.get("schemaVersion").asText()).isEqualTo("match-result-v2");
         assertThat(payload.get("normal").asBoolean()).isTrue();
         assertThat(payload.get("evidenceBundle").get("version").asInt()).isEqualTo(1);
         assertThat(payload.get("evidenceBundle").get("payloadHash").asText()).isNotBlank();

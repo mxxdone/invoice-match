@@ -19,6 +19,9 @@ public record MatchResultView(
         UUID evidenceBundleId,
         int resultNumber,
         String resultHash,
+        long purchasingSnapshotVersion,
+        String purchasingSnapshotHash,
+        int mappingWatermark,
         JsonNode payload,
         Instant createdAt) {
 
@@ -31,6 +34,9 @@ public record MatchResultView(
                 result.evidenceBundleId(),
                 result.resultNumber(),
                 result.resultHash(),
+                result.purchasingSnapshotVersion(),
+                result.purchasingSnapshotHash(),
+                result.mappingWatermark(),
                 parse(result.payload()),
                 result.createdAt());
     }
