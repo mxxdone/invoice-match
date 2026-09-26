@@ -469,17 +469,59 @@ class MatchEngineTest {
                 List.of(poLine("POL-1", "ITEM-A", 100, 2500)),
                 List.of(receipt("R-1", "2026-01-05", 2, rline("RL-1", 1, "POL-1", 60))),
                 List.of(),
-                List.of(new AppliedMapping(1, "ITEM-A")));
+                List.of(new AppliedMapping(1, "ITEM-A", "POL-1")));
 
         JsonNode payload = compute(input);
 
         assertThat(payload.get("appliedMappings")).hasSize(1);
         assertThat(payload.get("appliedMappings").get(0).get("lineNumber").asInt()).isEqualTo(1);
         assertThat(payload.get("appliedMappings").get(0).get("itemId").asText()).isEqualTo("ITEM-A");
+        assertThat(payload.get("appliedMappings").get(0).get("purchaseOrderLineId").asText()).isEqualTo("POL-1");
         JsonNode line = payload.get("lineOutcomes").get(0);
         assertThat(line.get("status").asText()).isEqualTo("MATCHED");
         assertThat(line.get("confirmedItemId").asText()).isEqualTo("ITEM-A");
         assertThat(payload.get("normal").asBoolean()).isTrue();
+    }
+
+    @Test
+    void mappingUsesTheExactChosenPurchaseOrderLineInsteadOfReResolvingTheItem() {
+        // The same item now maps to two active lines. Item resolution would be
+        // ambiguous, but the mapping pinned POL-1 and must be honoured exactly.
+        MatchInput input = input(
+                List.of(invoice(1, "Premium Copy Paper A4", 10, 2500, null)),
+                List.of(poLine("POL-1", "ITEM-A", 100, 2500), poLine("POL-9", "ITEM-A", 100, 2500)),
+                List.of(receipt("R-1", "2026-01-05", 2, rline("RL-1", 1, "POL-1", 60))),
+                List.of(),
+                List.of(new AppliedMapping(1, "ITEM-A", "POL-1")));
+
+        JsonNode payload = compute(input);
+
+        JsonNode line = payload.get("lineOutcomes").get(0);
+        assertThat(line.get("status").asText()).isEqualTo("MATCHED");
+        assertThat(line.get("purchaseOrderLine").get("purchaseOrderLineId").asText()).isEqualTo("POL-1");
+        assertThat(payload.get("appliedMappings").get(0).get("purchaseOrderLineId").asText()).isEqualTo("POL-1");
+    }
+
+    @Test
+    void mappingWhoseChosenPurchaseOrderLineDisappearedRequiresRemapWithoutRetarget() {
+        // POL-1 is gone; only POL-9 (same item) remains. The mapping must not
+        // silently retarget to POL-9.
+        MatchInput input = input(
+                List.of(invoice(1, "Premium Copy Paper A4", 10, 2500, null)),
+                List.of(poLine("POL-9", "ITEM-A", 100, 2500)),
+                List.of(receipt("R-1", "2026-01-05", 2, rline("RL-1", 1, "POL-9", 60))),
+                List.of(),
+                List.of(new AppliedMapping(1, "ITEM-A", "POL-1")));
+
+        JsonNode payload = compute(input);
+
+        JsonNode line = payload.get("lineOutcomes").get(0);
+        assertThat(line.get("status").asText()).isEqualTo("EVIDENCE_INSUFFICIENT");
+        assertThat(line.get("purchaseOrderLine").isNull()).isTrue();
+        JsonNode exception = payload.get("exceptions").get(0);
+        assertThat(exception.get("type").asText()).isEqualTo("EVIDENCE_INSUFFICIENT");
+        assertThat(exception.get("details").get("mappedPurchaseOrderLineId").asText()).isEqualTo("POL-1");
+        assertThat(payload.get("appliedMappings").get(0).get("purchaseOrderLineId").asText()).isEqualTo("POL-1");
     }
 
     private static long totalPlannedForReceiptLine(JsonNode payload, String receiptLineId) {

@@ -32,8 +32,8 @@ class ReviewSnapshotPayloadBuilderTest {
     void canonicalPayloadContainsFrozenSubjectAndRecomputesAmounts() throws Exception {
         ReviewSnapshotPayloadInput input = input(
                 List.of(
-                        new AppliedMapping(1, "ITEM-A4-80"),
-                        new AppliedMapping(2, "ITEM-TONER-BK")),
+                        new AppliedMapping(1, "ITEM-A4-80", "POL-1001-1"),
+                        new AppliedMapping(2, "ITEM-TONER-BK", "POL-1001-2")),
                 List.of(
                         line(1, "A4 Paper", 60, 2500),
                         line(2, "Toner", 2, 55000)));
@@ -53,6 +53,8 @@ class ReviewSnapshotPayloadBuilderTest {
         assertThat(payload.get("matchResult").get("payload").get("lineOutcomes").isArray()).isTrue();
         assertThat(payload.get("effectiveMappings")).hasSize(2);
         assertThat(payload.get("effectiveMappings").get(1).get("itemId").asText()).isEqualTo("ITEM-TONER-BK");
+        assertThat(payload.get("effectiveMappings").get(1).get("purchaseOrderLineId").asText())
+                .isEqualTo("POL-1001-2");
         assertThat(payload.get("invoiceLines").get(0).get("lineAmount").asLong()).isEqualTo(150000L);
         assertThat(payload.get("invoiceLines").get(1).get("lineAmount").asLong()).isEqualTo(110000L);
         assertThat(payload.get("totalAmount").asLong()).isEqualTo(260000L);
@@ -65,8 +67,8 @@ class ReviewSnapshotPayloadBuilderTest {
     @Test
     void canonicalHashIsInvariantToMappingAndLineOrdering() {
         List<AppliedMapping> mappings = List.of(
-                new AppliedMapping(1, "ITEM-A4-80"),
-                new AppliedMapping(2, "ITEM-TONER-BK"));
+                new AppliedMapping(1, "ITEM-A4-80", "POL-1001-1"),
+                new AppliedMapping(2, "ITEM-TONER-BK", "POL-1001-2"));
         List<EvidenceBundlePayload.EvidenceLine> lines = List.of(
                 line(1, "A4 Paper", 60, 2500),
                 line(2, "Toner", 2, 55000));
@@ -110,7 +112,7 @@ class ReviewSnapshotPayloadBuilderTest {
                 4,
                 "result-hash",
                 2,
-                "{\"schemaVersion\":\"match-result-v2\",\"lineOutcomes\":[],\"appliedMappings\":[]}",
+                "{\"schemaVersion\":\"match-result-v3\",\"lineOutcomes\":[],\"appliedMappings\":[]}",
                 mappings,
                 lines,
                 5L,

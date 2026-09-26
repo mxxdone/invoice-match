@@ -27,6 +27,13 @@ import org.springframework.web.bind.annotation.RestController;
  * history/detail/freshness and records the three Phase 1 human actions (item
  * mapping, supplement request and rejection). Approval/allocation belongs to
  * P1-07 and is not exposed here.
+ *
+ * <p><strong>Authentication debt (P1-06):</strong> the optional
+ * {@code decidedBy} field is an unauthenticated client placeholder, not a
+ * verified identity. It must not be used for authorization, self-approval
+ * checks or audit. P1-01's {@code ReviewDecision.decidedBy} non-null constraint
+ * is satisfied with a placeholder actor until P1-06 binds the authenticated
+ * principal server-side and removes this field from the request contract.
  */
 @RestController
 @RequestMapping("/api/invoice-cases")

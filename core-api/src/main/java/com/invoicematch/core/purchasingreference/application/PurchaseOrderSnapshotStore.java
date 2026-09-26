@@ -21,7 +21,6 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -47,26 +46,26 @@ public class PurchaseOrderSnapshotStore {
     private final PurchaseOrderLineSnapshotRepository lines;
     private final ReceiptSnapshotRepository receipts;
     private final ReceiptLineSnapshotRepository receiptLines;
-    private final JdbcTemplate jdbc;
+    private final PurchaseOrderSnapshotLock purchaseOrderLock;
 
     public PurchaseOrderSnapshotStore(
             PurchaseOrderSnapshotRepository snapshots,
             PurchaseOrderLineSnapshotRepository lines,
             ReceiptSnapshotRepository receipts,
             ReceiptLineSnapshotRepository receiptLines,
-            JdbcTemplate jdbc) {
+            PurchaseOrderSnapshotLock purchaseOrderLock) {
         this.snapshots = snapshots;
         this.lines = lines;
         this.receipts = receipts;
         this.receiptLines = receiptLines;
-        this.jdbc = jdbc;
+        this.purchaseOrderLock = purchaseOrderLock;
     }
 
     @Transactional
     public RefreshResult apply(
             PurchaseOrderAggregate aggregate, String canonicalPayload, String payloadHash, Instant retrievedAt) {
         String purchaseOrderId = aggregate.purchaseOrderId().value();
-        acquirePurchaseOrderLock(purchaseOrderId);
+        purchaseOrderLock.acquireXactLock(purchaseOrderId);
         var existing = snapshots.findForUpdate(purchaseOrderId);
 
         PurchaseOrderFacts purchaseOrder = aggregate.purchaseOrder();
@@ -110,15 +109,6 @@ public class PurchaseOrderSnapshotStore {
                 retrievedAt);
         upsertChildren(purchaseOrderId, aggregate);
         return RefreshResult.of(RefreshOutcome.UPDATED, incomingVersion);
-    }
-
-    /**
-     * Transaction-scoped advisory lock on the purchase order, so concurrent
-     * first refreshes with no row to lock are serialized and cannot leak a raw
-     * unique-constraint failure.
-     */
-    private void acquirePurchaseOrderLock(String purchaseOrderId) {
-        jdbc.queryForList("select pg_advisory_xact_lock(1, hashtext(?))", purchaseOrderId);
     }
 
     private void upsertChildren(String purchaseOrderId, PurchaseOrderAggregate aggregate) {

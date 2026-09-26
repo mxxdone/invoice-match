@@ -46,7 +46,7 @@ import org.springframework.stereotype.Component;
 public class MatchEngine {
 
     /** Stable identifier of the canonical payload shape, bumped on any change. */
-    public static final String SCHEMA_VERSION = "match-result-v2";
+    public static final String SCHEMA_VERSION = "match-result-v3";
 
     private static final Comparator<EvidenceBundlePayload.EvidenceLine> INVOICE_LINE_ORDER =
             Comparator.comparingInt(EvidenceBundlePayload.EvidenceLine::lineNumber);
@@ -71,12 +71,15 @@ public class MatchEngine {
                 .sorted(INVOICE_LINE_ORDER)
                 .toList();
 
-        Map<Integer, String> mappingsByLine = effectiveMappingsByLine(input);
+        Map<Integer, AppliedMapping> mappingsByLine = effectiveMappingsByLine(input);
 
         Map<String, List<PurchaseOrderLineFacts>> poLinesByItem = input.purchasing().purchaseOrder().lines().stream()
                 .sorted(PO_LINE_ORDER)
                 .collect(Collectors.groupingBy(
                         PurchaseOrderLineFacts::itemId, LinkedHashMap::new, Collectors.toList()));
+        Map<String, PurchaseOrderLineFacts> poLinesById = input.purchasing().purchaseOrder().lines().stream()
+                .collect(Collectors.toMap(
+                        PurchaseOrderLineFacts::purchaseOrderLineId, line -> line, (first, second) -> first));
 
         Map<String, List<ReceiptLineCandidate>> receiptCandidatesByPoLine = receiptCandidates(input);
         Map<ReceiptKey, Long> remainingByReceiptLine = initialConfirmedBalances(receiptCandidatesByPoLine);
@@ -85,7 +88,12 @@ public class MatchEngine {
         List<MatchException> exceptions = new ArrayList<>();
         for (EvidenceBundlePayload.EvidenceLine invoiceLine : invoiceLines) {
             MatchLineOutcome outcome = matchLine(
-                    invoiceLine, mappingsByLine, poLinesByItem, receiptCandidatesByPoLine, remainingByReceiptLine);
+                    invoiceLine,
+                    mappingsByLine,
+                    poLinesByItem,
+                    poLinesById,
+                    receiptCandidatesByPoLine,
+                    remainingByReceiptLine);
             outcomes.add(outcome);
             exceptions.addAll(outcome.exceptions());
         }
@@ -108,11 +116,11 @@ public class MatchEngine {
      * resolver already returns one entry per line; requiring unique line numbers
      * here keeps the canonical payload independent of resolver list ordering.
      */
-    private static Map<Integer, String> effectiveMappingsByLine(MatchInput input) {
-        Map<Integer, String> mappings = new TreeMap<>();
+    private static Map<Integer, AppliedMapping> effectiveMappingsByLine(MatchInput input) {
+        Map<Integer, AppliedMapping> mappings = new TreeMap<>();
         for (AppliedMapping mapping : input.appliedMappings()) {
-            String previous = mappings.put(mapping.lineNumber(), mapping.itemId());
-            if (previous != null && !previous.equals(mapping.itemId())) {
+            AppliedMapping previous = mappings.put(mapping.lineNumber(), mapping);
+            if (previous != null && !previous.equals(mapping)) {
                 throw new IllegalStateException(
                         "Conflicting effective mappings for invoice line " + mapping.lineNumber());
             }
@@ -138,17 +146,56 @@ public class MatchEngine {
 
     private MatchLineOutcome matchLine(
             EvidenceBundlePayload.EvidenceLine invoiceLine,
-            Map<Integer, String> mappingsByLine,
+            Map<Integer, AppliedMapping> mappingsByLine,
             Map<String, List<PurchaseOrderLineFacts>> poLinesByItem,
+            Map<String, PurchaseOrderLineFacts> poLinesById,
             Map<String, List<ReceiptLineCandidate>> receiptCandidatesByPoLine,
             Map<ReceiptKey, Long> remainingByReceiptLine) {
         int lineNumber = invoiceLine.lineNumber();
-        // An effective case-local mapping takes precedence over the frozen
-        // confirmed item so a human decision is what the re-match reflects.
-        String confirmedItemId = mappingsByLine.containsKey(lineNumber)
-                ? mappingsByLine.get(lineNumber)
-                : blankToNull(invoiceLine.confirmedItemId());
+        AppliedMapping mapping = mappingsByLine.get(lineNumber);
 
+        // An effective case-local mapping takes precedence over the frozen
+        // confirmed item and pins the exact purchase order line the human chose.
+        // Re-resolving by item could silently retarget the mapping after a
+        // purchasing refresh, so it is never done.
+        if (mapping != null) {
+            PurchaseOrderLineFacts mappedLine = poLinesById.get(mapping.purchaseOrderLineId());
+            if (mappedLine == null) {
+                List<String> activeItemCandidates = poLinesByItem
+                        .getOrDefault(mapping.itemId(), List.of()).stream()
+                        .map(PurchaseOrderLineFacts::purchaseOrderLineId)
+                        .toList();
+                Map<String, Object> details = orderedDetails();
+                details.put("confirmedItemId", mapping.itemId());
+                details.put("mappedPurchaseOrderLineId", mapping.purchaseOrderLineId());
+                details.put("candidatePoLineIds", activeItemCandidates);
+                details.put("invoiceQuantity", invoiceLine.quantity());
+                MatchException exception =
+                        MatchException.line(MatchExceptionType.EVIDENCE_INSUFFICIENT, lineNumber, details);
+                return new MatchLineOutcome(
+                        lineNumber,
+                        invoiceLine.rawItemName(),
+                        mapping.itemId(),
+                        MatchLineStatus.EVIDENCE_INSUFFICIENT,
+                        activeItemCandidates,
+                        null,
+                        invoiceLine.quantity(),
+                        invoiceLine.unitPrice(),
+                        0L,
+                        List.of(),
+                        0L,
+                        List.of(exception));
+            }
+            return planLine(
+                    invoiceLine,
+                    mappedLine,
+                    mapping.itemId(),
+                    List.of(mappedLine.purchaseOrderLineId()),
+                    receiptCandidatesByPoLine,
+                    remainingByReceiptLine);
+        }
+
+        String confirmedItemId = blankToNull(invoiceLine.confirmedItemId());
         if (confirmedItemId == null) {
             Map<String, Object> details = orderedDetails();
             details.put("rawItemName", invoiceLine.rawItemName());
@@ -196,7 +243,28 @@ public class MatchEngine {
                     List.of(exception));
         }
 
-        PurchaseOrderLineFacts poLine = candidates.get(0);
+        return planLine(
+                invoiceLine,
+                candidates.get(0),
+                confirmedItemId,
+                candidateIds,
+                receiptCandidatesByPoLine,
+                remainingByReceiptLine);
+    }
+
+    /**
+     * Plans one invoice line against one exact purchase order line, sharing the
+     * zero-tolerance price and non-consuming FIFO balance logic between the
+     * item-resolved and mapping-resolved paths.
+     */
+    private MatchLineOutcome planLine(
+            EvidenceBundlePayload.EvidenceLine invoiceLine,
+            PurchaseOrderLineFacts poLine,
+            String confirmedItemId,
+            List<String> candidateIds,
+            Map<String, List<ReceiptLineCandidate>> receiptCandidatesByPoLine,
+            Map<ReceiptKey, Long> remainingByReceiptLine) {
+        int lineNumber = invoiceLine.lineNumber();
         List<ReceiptLineCandidate> receiptCandidates =
                 receiptCandidatesByPoLine.getOrDefault(poLine.purchaseOrderLineId(), List.of());
 
@@ -257,7 +325,7 @@ public class MatchEngine {
                 invoiceLine.rawItemName(),
                 confirmedItemId,
                 MatchLineStatus.MATCHED,
-                List.of(poLine.purchaseOrderLineId()),
+                candidateIds,
                 matchedPoLine,
                 invoiceLine.quantity(),
                 invoiceLine.unitPrice(),
@@ -304,7 +372,7 @@ public class MatchEngine {
     private ObjectNode buildPayload(
             MatchInput input,
             List<EvidenceBundlePayload.EvidenceLine> invoiceLines,
-            Map<Integer, String> mappingsByLine,
+            Map<Integer, AppliedMapping> mappingsByLine,
             List<MatchLineOutcome> outcomes,
             List<MatchException> exceptions,
             boolean normal) {
@@ -323,14 +391,16 @@ public class MatchEngine {
         bundle.put("payloadHash", input.evidenceBundleHash());
 
         // Effective case-local mappings actually applied to a line present in
-        // this bundle, sorted by line number. Empty when none are effective.
+        // this bundle, sorted by line number. Each carries the exact purchase
+        // order line the human chose, so re-matches cannot silently retarget.
         ArrayNode appliedMappings = root.putArray("appliedMappings");
         for (EvidenceBundlePayload.EvidenceLine line : invoiceLines) {
-            String itemId = mappingsByLine.get(line.lineNumber());
-            if (itemId != null) {
-                ObjectNode mapping = appliedMappings.addObject();
-                mapping.put("lineNumber", line.lineNumber());
-                mapping.put("itemId", itemId);
+            AppliedMapping mapping = mappingsByLine.get(line.lineNumber());
+            if (mapping != null) {
+                ObjectNode node = appliedMappings.addObject();
+                node.put("lineNumber", line.lineNumber());
+                node.put("itemId", mapping.itemId());
+                node.put("purchaseOrderLineId", mapping.purchaseOrderLineId());
             }
         }
 

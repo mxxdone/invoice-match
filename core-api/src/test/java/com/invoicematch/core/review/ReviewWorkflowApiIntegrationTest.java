@@ -155,6 +155,8 @@ class ReviewWorkflowApiIntegrationTest extends AbstractPostgresIntegrationTest {
         JsonNode successorPayload = successor.get("payload");
         assertThat(successorPayload.get("effectiveMappings")).hasSize(1);
         assertThat(successorPayload.get("effectiveMappings").get(0).get("itemId").asText()).isEqualTo(ITEM_A);
+        assertThat(successorPayload.get("effectiveMappings").get(0).get("purchaseOrderLineId").asText())
+                .isEqualTo("POL-1001-1");
         assertThat(successorPayload.get("matchResult").get("payload").get("lineOutcomes").get(0).get("status").asText())
                 .isEqualTo("MATCHED");
 
@@ -232,6 +234,68 @@ class ReviewWorkflowApiIntegrationTest extends AbstractPostgresIntegrationTest {
         assertThat(newMatch.get("payload").get("appliedMappings")).isEmpty();
         assertThat(newMatch.get("payload").get("lineOutcomes").get(0).get("status").asText())
                 .isEqualTo("ITEM_UNCONFIRMED");
+    }
+
+    @Test
+    void effectiveMappingUsesItsExactLineWhenItemBecomesAmbiguousAfterRefresh() throws Exception {
+        String caseId = submittedCase(1, "Premium Copy Paper A4", 60, 2500, null);
+        runMatch(caseId, "match-1");
+        JsonNode first = freeze(caseId, "snap-1");
+        recordMapping(caseId, "map-1", currentCaseVersion(caseId),
+                first.get("id").asText(), first.get("payloadHash").asText(), 1, ITEM_A, 200);
+
+        // The item now resolves to two active lines; item-based resolution would
+        // be ambiguous, but the mapping pinned POL-1001-1 and must keep it.
+        STUB.respond(
+                200,
+                PurchasingPayloads.confirmedPartialReceipt()
+                        .snapshotVersion(6)
+                        .purchaseOrderVersion(4)
+                        .addLine("POL-1001-9", ITEM_A, "Premium Copy Paper A4 80g", 100, 2500)
+                        .toJson());
+        refreshSnapshot();
+
+        JsonNode rematch = runMatch(caseId, "match-2");
+        JsonNode line = rematch.get("payload").get("lineOutcomes").get(0);
+        assertThat(line.get("status").asText()).isEqualTo("MATCHED");
+        assertThat(line.get("purchaseOrderLine").get("purchaseOrderLineId").asText()).isEqualTo("POL-1001-1");
+        assertThat(rematch.get("payload").get("appliedMappings").get(0).get("purchaseOrderLineId").asText())
+                .isEqualTo("POL-1001-1");
+    }
+
+    @Test
+    void effectiveMappingDoesNotRetargetWhenItsChosenLineDisappears() throws Exception {
+        String caseId = submittedCase(1, "Premium Copy Paper A4", 60, 2500, null);
+        runMatch(caseId, "match-1");
+        JsonNode first = freeze(caseId, "snap-1");
+        recordMapping(caseId, "map-1", currentCaseVersion(caseId),
+                first.get("id").asText(), first.get("payloadHash").asText(), 1, ITEM_A, 200);
+
+        // POL-1001-1 is gone; only POL-1001-9 (same item) remains. The mapping
+        // must not silently retarget to the new line.
+        STUB.respond(
+                200,
+                PurchasingPayloads.confirmedPartialReceipt()
+                        .snapshotVersion(6)
+                        .purchaseOrderVersion(4)
+                        .clearLines()
+                        .addLine("POL-1001-9", ITEM_A, "Premium Copy Paper A4 80g", 100, 2500)
+                        .clearReceipts()
+                        .addReceipt(
+                                "RCV-1001-1",
+                                "CONFIRMED",
+                                "2026-01-05",
+                                3,
+                                receiptLine("RCL-1001-1-9", 3, "POL-1001-9", 60))
+                        .toJson());
+        refreshSnapshot();
+
+        JsonNode rematch = runMatch(caseId, "match-2");
+        JsonNode line = rematch.get("payload").get("lineOutcomes").get(0);
+        assertThat(line.get("status").asText()).isEqualTo("EVIDENCE_INSUFFICIENT");
+        assertThat(line.get("purchaseOrderLine").isNull()).isTrue();
+        assertThat(rematch.get("payload").get("appliedMappings").get(0).get("purchaseOrderLineId").asText())
+                .isEqualTo("POL-1001-1");
     }
 
     @Test
@@ -606,6 +670,11 @@ class ReviewWorkflowApiIntegrationTest extends AbstractPostgresIntegrationTest {
 
     private JsonNode latestSnapshot(String caseId) throws Exception {
         return read(mockMvc.perform(get("/api/invoice-cases/{id}/review-snapshots/latest", caseId)).andReturn());
+    }
+
+    private void refreshSnapshot() {
+        purchasingReferenceService.refresh(
+                new RefreshPurchaseOrderCommand(PurchaseOrderId.of(PO_ID), SupplierId.of(SUPPLIER)));
     }
 
     private JsonNode getEvidenceBundle(String caseId, int version) throws Exception {

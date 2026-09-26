@@ -21,6 +21,7 @@ import com.invoicematch.core.matching.application.MatchingService;
 import com.invoicematch.core.matching.domain.MatchResult;
 import com.invoicematch.core.matching.persistence.MatchResultRepository;
 import com.invoicematch.core.purchasingreference.application.CurrentPurchaseOrderSnapshot;
+import com.invoicematch.core.purchasingreference.application.PurchaseOrderSnapshotLock;
 import com.invoicematch.core.purchasingreference.application.PurchaseOrderSnapshotReader;
 import com.invoicematch.core.purchasingreference.domain.PurchaseOrderLineFacts;
 import com.invoicematch.core.review.domain.ReviewDecision;
@@ -36,6 +37,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -75,6 +77,8 @@ public class ReviewService {
     private final ReviewSnapshotPayloadBuilder payloadBuilder;
     private final EvidenceBundlePayloadHasher bundleHasher;
     private final PurchaseOrderSnapshotReader purchaseOrderSnapshots;
+    private final PurchaseOrderSnapshotLock purchaseOrderLock;
+    private final ReviewLockInterceptor reviewLockInterceptor;
     private final ReviewCommandFingerprint fingerprint;
     private final RequestIdempotencyStore idempotency;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -93,6 +97,8 @@ public class ReviewService {
             ReviewSnapshotPayloadBuilder payloadBuilder,
             EvidenceBundlePayloadHasher bundleHasher,
             PurchaseOrderSnapshotReader purchaseOrderSnapshots,
+            PurchaseOrderSnapshotLock purchaseOrderLock,
+            ObjectProvider<ReviewLockInterceptor> reviewLockInterceptors,
             ReviewCommandFingerprint fingerprint,
             RequestIdempotencyStore idempotency,
             Clock clock) {
@@ -108,6 +114,8 @@ public class ReviewService {
         this.payloadBuilder = payloadBuilder;
         this.bundleHasher = bundleHasher;
         this.purchaseOrderSnapshots = purchaseOrderSnapshots;
+        this.purchaseOrderLock = purchaseOrderLock;
+        this.reviewLockInterceptor = reviewLockInterceptors.getIfAvailable(() -> ReviewLockInterceptor.NONE);
         this.fingerprint = fingerprint;
         this.idempotency = idempotency;
         this.clock = clock;
@@ -125,7 +133,7 @@ public class ReviewService {
 
         InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         requireReviewPending(invoiceCase);
-        checkExpectedVersion(invoiceCase, command.expectedCaseVersion());
+        beginWrite(invoiceCase, command.expectedCaseVersion());
 
         EvidenceBundle bundle = latestBundle(command.caseId());
         MatchResult result = latestResultForBundle(command.caseId(), bundle.id());
@@ -160,7 +168,7 @@ public class ReviewService {
 
         InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         requireReviewPending(invoiceCase);
-        checkExpectedVersion(invoiceCase, command.expectedCaseVersion());
+        beginWrite(invoiceCase, command.expectedCaseVersion());
 
         ReviewSnapshot target = requireTarget(invoiceCase, command.reviewSnapshotId(), command.reviewPayloadHash());
         currentness.requireCurrent(invoiceCase, target);
@@ -232,7 +240,7 @@ public class ReviewService {
 
         InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         requireReviewPending(invoiceCase);
-        checkExpectedVersion(invoiceCase, command.expectedCaseVersion());
+        beginWrite(invoiceCase, command.expectedCaseVersion());
 
         ReviewSnapshot target = requireTarget(invoiceCase, command.reviewSnapshotId(), command.reviewPayloadHash());
         currentness.requireCurrent(invoiceCase, target);
@@ -263,7 +271,7 @@ public class ReviewService {
 
         InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         requireReviewPending(invoiceCase);
-        checkExpectedVersion(invoiceCase, command.expectedCaseVersion());
+        beginWrite(invoiceCase, command.expectedCaseVersion());
 
         ReviewSnapshot target = requireTarget(invoiceCase, command.reviewSnapshotId(), command.reviewPayloadHash());
         currentness.requireCurrent(invoiceCase, target);
@@ -441,6 +449,20 @@ public class ReviewService {
         }
     }
 
+    /**
+     * Starts a review write under the case row lock and the purchase order
+     * advisory lock. The advisory lock is held from here to commit, so a
+     * concurrent purchasing refresh cannot change the snapshot between the
+     * final currentness validation and the committed decision/snapshot. The lock
+     * order is always invoice case first, then purchase order; no other writer
+     * takes them in the opposite order, so this cannot deadlock.
+     */
+    private void beginWrite(InvoiceCase invoiceCase, long expectedVersion) {
+        checkExpectedVersion(invoiceCase, expectedVersion);
+        purchaseOrderLock.acquireXactLock(invoiceCase.purchaseOrder().value());
+        reviewLockInterceptor.afterPurchaseOrderLocked(invoiceCase.id().value());
+    }
+
     private static String requireReason(String reason) {
         if (reason == null || reason.isBlank()) {
             throw new DomainValidationException("reason must not be blank");
@@ -453,6 +475,9 @@ public class ReviewService {
     }
 
     private static String actor(String decidedBy) {
+        // TODO(P1-06): replace this client-supplied placeholder with the
+        // authenticated principal. Until then decidedBy is non-authoritative and
+        // must not be trusted for authorization, self-approval or audit.
         if (decidedBy == null || decidedBy.isBlank()) {
             return DEFAULT_ACTOR;
         }

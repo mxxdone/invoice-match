@@ -8,6 +8,11 @@ import java.util.UUID;
 
 /**
  * Confirms a supplement request against the current fresh review snapshot.
+ *
+ * <p><strong>Non-authoritative until P1-06:</strong> {@code decidedBy} is a
+ * client-supplied, unauthenticated placeholder recorded for traceability only;
+ * it is not an authorization or audit source. P1-06 replaces it with the
+ * authenticated principal.
  */
 public record SupplementRequestRequest(
         @NotBlank @Size(max = 128) String requestId,

@@ -38,15 +38,18 @@ public class ReviewEffectiveMappingResolver implements EffectiveMappingResolver 
         List<ReviewDecision> mappingDecisions = decisions.findMappingDecisionsForBundle(
                 caseId, evidenceBundleId, ReviewDecisionType.MAPPING);
 
-        Map<Integer, String> latestItemByLine = new LinkedHashMap<>();
+        Map<Integer, ReviewDecision> latestDecisionByLine = new LinkedHashMap<>();
         int watermark = 0;
         for (ReviewDecision decision : mappingDecisions) {
-            latestItemByLine.put(decision.mappingLineNumber(), decision.mappingItemId());
+            latestDecisionByLine.put(decision.mappingLineNumber(), decision);
             watermark = Math.max(watermark, decision.decisionNumber());
         }
 
-        List<AppliedMapping> mappings = latestItemByLine.entrySet().stream()
-                .map(entry -> new AppliedMapping(entry.getKey(), entry.getValue()))
+        List<AppliedMapping> mappings = latestDecisionByLine.values().stream()
+                .map(decision -> new AppliedMapping(
+                        decision.mappingLineNumber(),
+                        decision.mappingItemId(),
+                        decision.mappingPoLineId()))
                 .toList();
         return new EffectiveMappings(mappings, watermark);
     }

@@ -89,6 +89,70 @@ class ReviewWorkflowMigrationTest extends AbstractPostgresIntegrationTest {
     }
 
     @Test
+    void snapshotCapturedPurchasingHashMustMatchItsSourceMatchResult() {
+        Seed seed = seedCaseWithBundle();
+
+        assertThatThrownBy(() -> insertSnapshot(
+                        seed, 1, seed.matchResultId, 1, "snap-hash", 5L, "wrong-hash", 0))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void snapshotCapturedMappingWatermarkMustMatchItsSourceMatchResult() {
+        Seed seed = seedCaseWithBundle();
+
+        assertThatThrownBy(() -> insertSnapshot(
+                        seed, 1, seed.matchResultId, 1, "snap-hash", 5L, "purchasing-hash", 9))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void snapshotMatchResultNumberMustMatchItsSourceMatchResult() {
+        Seed seed = seedCaseWithBundle();
+        UUID mismatched = UUID.randomUUID();
+        jdbc.update(
+                "insert into match_result (id, invoice_case_id, evidence_bundle_id, result_number, result_hash,"
+                        + " purchasing_snapshot_version, purchasing_snapshot_hash, mapping_watermark,"
+                        + " payload, created_at) values (?, ?, ?, 2, 'result-hash-2', 5, 'purchasing-hash', 0,"
+                        + " '{}'::jsonb, now())",
+                mismatched,
+                seed.caseId,
+                seed.bundleId);
+
+        assertThatThrownBy(() -> jdbc.update(
+                        "insert into review_snapshot (id, invoice_case_id, evidence_bundle_id, match_result_id,"
+                                + " match_result_number, snapshot_number, target_case_version,"
+                                + " target_evidence_bundle_version, purchasing_snapshot_version,"
+                                + " purchasing_snapshot_hash, mapping_watermark, payload_hash, payload, created_at)"
+                                + " values (?, ?, ?, ?, 1, 1, 0, 1, 5, 'purchasing-hash', 0, 'h',"
+                                + " '{}'::jsonb, now())",
+                        UUID.randomUUID(),
+                        seed.caseId,
+                        seed.bundleId,
+                        mismatched))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void mappingDecisionBundleMustBeTheTargetSnapshotBundle() {
+        Seed seed = seedCaseWithBundle();
+        UUID snapshotId = insertSnapshot(seed, 1, seed.matchResultId, 1, "snap-hash");
+        UUID otherBundleOfSameCase = insertSecondBundle(seed.caseId);
+
+        assertThatThrownBy(() -> jdbc.update(
+                        "insert into review_decision (id, invoice_case_id, review_snapshot_id, decision_number,"
+                                + " decision, decided_by, payload_hash, decided_at, mapping_bundle_id,"
+                                + " mapping_line_number, mapping_item_id, mapping_po_line_id) "
+                                + "values (?, ?, ?, 1, 'MAPPING', 'reviewer', ?, now(), ?, 1, 'ITEM-A', 'POL-1')",
+                        UUID.randomUUID(),
+                        seed.caseId,
+                        snapshotId,
+                        "snap-hash",
+                        otherBundleOfSameCase))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
     void decisionNumberMustBePositiveAndUniquePerCase() {
         Seed seed = seedCaseWithBundle();
         UUID snapshotId = insertSnapshot(seed, 1, seed.matchResultId, 1, "snap-hash");
@@ -168,21 +232,54 @@ class ReviewWorkflowMigrationTest extends AbstractPostgresIntegrationTest {
     }
 
     private UUID insertSnapshot(Seed seed, int snapshotNumber, UUID matchResultId, int bundleVersion, String hash) {
+        return insertSnapshot(seed, snapshotNumber, matchResultId, bundleVersion, hash, 5L, "purchasing-hash", 0);
+    }
+
+    private UUID insertSnapshot(
+            Seed seed,
+            int snapshotNumber,
+            UUID matchResultId,
+            int bundleVersion,
+            String hash,
+            long purchasingVersion,
+            String purchasingHash,
+            int mappingWatermark) {
         UUID snapshotId = UUID.randomUUID();
         jdbc.update(
                 "insert into review_snapshot (id, invoice_case_id, evidence_bundle_id, match_result_id,"
                         + " match_result_number, snapshot_number, target_case_version,"
                         + " target_evidence_bundle_version, purchasing_snapshot_version, purchasing_snapshot_hash,"
                         + " mapping_watermark, payload_hash, payload, created_at) "
-                        + "values (?, ?, ?, ?, 1, ?, 0, ?, 5, 'purchasing-hash', 0, ?, '{}'::jsonb, now())",
+                        + "values (?, ?, ?, ?, 1, ?, 0, ?, ?, ?, ?, ?, '{}'::jsonb, now())",
                 snapshotId,
                 seed.caseId,
                 seed.bundleId,
                 matchResultId,
                 snapshotNumber,
                 bundleVersion,
+                purchasingVersion,
+                purchasingHash,
+                mappingWatermark,
                 hash);
         return snapshotId;
+    }
+
+    private UUID insertSecondBundle(UUID caseId) {
+        UUID draftId = UUID.randomUUID();
+        jdbc.update(
+                "insert into draft_revision (id, invoice_case_id, revision_number, status, created_at, sealed_at)"
+                        + " values (?, ?, 2, 'SEALED', now(), now())",
+                draftId,
+                caseId);
+        UUID bundleId = UUID.randomUUID();
+        jdbc.update(
+                "insert into evidence_bundle (id, invoice_case_id, draft_revision_id, version_number,"
+                        + " payload_hash, payload, submitted_at)"
+                        + " values (?, ?, ?, 2, 'bundle-hash-2', '{\"lines\":[]}'::jsonb, now())",
+                bundleId,
+                caseId,
+                draftId);
+        return bundleId;
     }
 
     private UUID insertDecision(

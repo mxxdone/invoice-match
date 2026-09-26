@@ -113,8 +113,9 @@ NON_CONSUMING_EXPECTED_PLAN_V1`). P1-04 writes no allocation and consumes no
 balance; approval (P1-07) revalidates and consumes it against the then-current
 balance. Business duplicate detection is separate from request-id idempotency.
 
-The canonical match payload schema is `match-result-v2`; the `appliedMappings`
-array records which effective case-local mappings were applied.
+The canonical match payload schema is `match-result-v3`; the `appliedMappings`
+array records which effective case-local mappings were applied, each with the
+exact purchase order line the human chose.
 
 ## Review workflow API (P1-05)
 
@@ -152,18 +153,34 @@ explicit reasons (`CASE_STATE`, `CASE_VERSION`, `EVIDENCE_BUNDLE`, `MATCH_RESULT
 A mapping is scoped to the case and to a specific bundle and invoice line:
 `{requestId, expectedCaseVersion, reviewSnapshotId, reviewPayloadHash,
 lineNumber, itemId, decidedBy?}`. The chosen `itemId` must resolve to exactly
-one active purchase order line of the current purchase order. Recording it
-bumps the case version, re-matches with every effective mapping, and freezes a
-successor snapshot whose payload records the applied mappings and the new
-result. Prior snapshots and bundles are preserved and become stale; a new
-bundle never silently inherits an old bundle's mappings. Supplement and reject
-require a non-blank reason (max 1000 characters) and atomically move the case
-to `SUPPLEMENT_REQUIRED` or `REJECTED`. `SUPPLEMENT_REQUIRED` permits neither a
-new match nor a new snapshot until corrected evidence vNext is submitted and
-matched. Reusing a `requestId` with the same payload replays the response; a
-different payload is a `409` conflict. Amounts use checked arithmetic, so an
-overflowing line total or snapshot total is rejected atomically with
-`400 NUMERIC_OVERFLOW`.
+one active purchase order line of the current purchase order, and that exact
+line is stored with the decision. Re-matching uses the stored purchase order
+line rather than re-resolving the item, so a later purchasing refresh that moves
+the item to a different line can never silently retarget the mapping; if the
+chosen line is no longer active the line is reported as insufficient evidence
+and needs a new mapping decision. Recording a mapping bumps the case version,
+re-matches with every effective mapping, and freezes a successor snapshot whose
+payload records the applied mappings and the new result. Prior snapshots and
+bundles are preserved and become stale; a new bundle never silently inherits an
+old bundle's mappings. Supplement and reject require a non-blank reason (max
+1000 characters) and atomically move the case to `SUPPLEMENT_REQUIRED` or
+`REJECTED`. `SUPPLEMENT_REQUIRED` permits neither a new match nor a new snapshot
+until corrected evidence vNext is submitted and matched. Reusing a `requestId`
+with the same payload replays the response; a different payload is a `409`
+conflict. Amounts use checked arithmetic, so an overflowing line total or
+snapshot total is rejected atomically with `400 NUMERIC_OVERFLOW`.
+
+Review writes take the invoice case row lock and then the same PostgreSQL
+advisory lock the purchasing snapshot refresh uses, and hold that advisory lock
+from the final currentness validation to commit. A concurrent refresh therefore
+cannot change the purchasing snapshot between the validation and the committed
+decision or snapshot. The lock order is always invoice case first, then purchase
+order, and no writer takes them in the opposite order.
+
+`decidedBy` is an optional, unauthenticated client-supplied placeholder until
+P1-06. It is stored for Phase 1 traceability only and is **not** an
+authorization, self-approval or audit source; P1-06 replaces it with the
+authenticated principal and removes it from the write contract.
 
 The canonical snapshot payload sorts every collection and excludes the
 snapshot's generated identity/time and decision ids from its SHA-256, so the

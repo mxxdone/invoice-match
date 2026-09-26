@@ -58,6 +58,7 @@ public class ReviewSnapshotPayloadBuilder {
             ObjectNode node = mappings.addObject();
             node.put("lineNumber", mapping.lineNumber());
             node.put("itemId", mapping.itemId());
+            node.put("purchaseOrderLineId", mapping.purchaseOrderLineId());
         }
 
         ArrayNode lines = root.putArray("invoiceLines");
