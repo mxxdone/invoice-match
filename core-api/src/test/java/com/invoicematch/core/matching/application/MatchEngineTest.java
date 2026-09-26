@@ -524,6 +524,31 @@ class MatchEngineTest {
         assertThat(payload.get("appliedMappings").get(0).get("purchaseOrderLineId").asText()).isEqualTo("POL-1");
     }
 
+    @Test
+    void mappingWhoseChosenPurchaseOrderLineItemChangedIsEvidenceInsufficient() {
+        // The chosen purchase order line id still exists, but a refresh changed
+        // its item. The stored mapping (ITEM-A -> POL-1) must not be applied to
+        // a POL-1 that now carries ITEM-B.
+        MatchInput input = input(
+                List.of(invoice(1, "Premium Copy Paper A4", 10, 2500, null)),
+                List.of(poLine("POL-1", "ITEM-B", 100, 2500)),
+                List.of(receipt("R-1", "2026-01-05", 2, rline("RL-1", 1, "POL-1", 60))),
+                List.of(),
+                List.of(new AppliedMapping(1, "ITEM-A", "POL-1")));
+
+        JsonNode payload = compute(input);
+
+        JsonNode line = payload.get("lineOutcomes").get(0);
+        assertThat(line.get("status").asText()).isEqualTo("EVIDENCE_INSUFFICIENT");
+        assertThat(line.get("purchaseOrderLine").isNull()).isTrue();
+        JsonNode exception = payload.get("exceptions").get(0);
+        assertThat(exception.get("type").asText()).isEqualTo("EVIDENCE_INSUFFICIENT");
+        assertThat(exception.get("details").get("mappedPurchaseOrderLineId").asText()).isEqualTo("POL-1");
+        assertThat(exception.get("details").get("currentPurchaseOrderLineItemId").asText()).isEqualTo("ITEM-B");
+        assertThat(payload.get("appliedMappings").get(0).get("itemId").asText()).isEqualTo("ITEM-A");
+        assertThat(payload.get("appliedMappings").get(0).get("purchaseOrderLineId").asText()).isEqualTo("POL-1");
+    }
+
     private static long totalPlannedForReceiptLine(JsonNode payload, String receiptLineId) {
         long total = 0L;
         for (JsonNode line : payload.get("lineOutcomes")) {

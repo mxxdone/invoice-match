@@ -156,35 +156,15 @@ public class MatchEngine {
 
         // An effective case-local mapping takes precedence over the frozen
         // confirmed item and pins the exact purchase order line the human chose.
-        // Re-resolving by item could silently retarget the mapping after a
-        // purchasing refresh, so it is never done.
+        // The stored (itemId, purchaseOrderLineId) pair must still match the
+        // current active line exactly: re-resolving by item could silently
+        // retarget the mapping, and applying it to a line whose item changed
+        // would match the frozen item against a different purchase order item.
         if (mapping != null) {
             PurchaseOrderLineFacts mappedLine = poLinesById.get(mapping.purchaseOrderLineId());
-            if (mappedLine == null) {
-                List<String> activeItemCandidates = poLinesByItem
-                        .getOrDefault(mapping.itemId(), List.of()).stream()
-                        .map(PurchaseOrderLineFacts::purchaseOrderLineId)
-                        .toList();
-                Map<String, Object> details = orderedDetails();
-                details.put("confirmedItemId", mapping.itemId());
-                details.put("mappedPurchaseOrderLineId", mapping.purchaseOrderLineId());
-                details.put("candidatePoLineIds", activeItemCandidates);
-                details.put("invoiceQuantity", invoiceLine.quantity());
-                MatchException exception =
-                        MatchException.line(MatchExceptionType.EVIDENCE_INSUFFICIENT, lineNumber, details);
-                return new MatchLineOutcome(
-                        lineNumber,
-                        invoiceLine.rawItemName(),
-                        mapping.itemId(),
-                        MatchLineStatus.EVIDENCE_INSUFFICIENT,
-                        activeItemCandidates,
-                        null,
-                        invoiceLine.quantity(),
-                        invoiceLine.unitPrice(),
-                        0L,
-                        List.of(),
-                        0L,
-                        List.of(exception));
+            boolean itemMatches = mappedLine != null && mappedLine.itemId().equals(mapping.itemId());
+            if (!itemMatches) {
+                return mappingEvidenceInsufficient(invoiceLine, mapping, mappedLine, poLinesByItem);
             }
             return planLine(
                     invoiceLine,
@@ -250,6 +230,49 @@ public class MatchEngine {
                 candidateIds,
                 receiptCandidatesByPoLine,
                 remainingByReceiptLine);
+    }
+
+    /**
+     * Reports that an effective mapping can no longer be applied because its
+     * chosen purchase order line is missing, or is still present but now carries
+     * a different item. Diagnostics name the chosen line, the item it now holds
+     * (if any) and the currently active lines for the mapped item, so a person
+     * can decide whether to re-map. The line is never matched against the stale
+     * item or silently retargeted.
+     */
+    private MatchLineOutcome mappingEvidenceInsufficient(
+            EvidenceBundlePayload.EvidenceLine invoiceLine,
+            AppliedMapping mapping,
+            PurchaseOrderLineFacts currentLine,
+            Map<String, List<PurchaseOrderLineFacts>> poLinesByItem) {
+        int lineNumber = invoiceLine.lineNumber();
+        List<String> activeItemCandidates = poLinesByItem
+                .getOrDefault(mapping.itemId(), List.of()).stream()
+                .map(PurchaseOrderLineFacts::purchaseOrderLineId)
+                .toList();
+        Map<String, Object> details = orderedDetails();
+        details.put("confirmedItemId", mapping.itemId());
+        details.put("mappedPurchaseOrderLineId", mapping.purchaseOrderLineId());
+        if (currentLine != null) {
+            details.put("currentPurchaseOrderLineItemId", currentLine.itemId());
+        }
+        details.put("candidatePoLineIds", activeItemCandidates);
+        details.put("invoiceQuantity", invoiceLine.quantity());
+        MatchException exception =
+                MatchException.line(MatchExceptionType.EVIDENCE_INSUFFICIENT, lineNumber, details);
+        return new MatchLineOutcome(
+                lineNumber,
+                invoiceLine.rawItemName(),
+                mapping.itemId(),
+                MatchLineStatus.EVIDENCE_INSUFFICIENT,
+                activeItemCandidates,
+                null,
+                invoiceLine.quantity(),
+                invoiceLine.unitPrice(),
+                0L,
+                List.of(),
+                0L,
+                List.of(exception));
     }
 
     /**

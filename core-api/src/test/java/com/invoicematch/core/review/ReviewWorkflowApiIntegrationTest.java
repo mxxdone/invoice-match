@@ -299,6 +299,60 @@ class ReviewWorkflowApiIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     @Test
+    void effectiveMappingIsRejectedWhenTheSameLineItemChangesAfterRefresh() throws Exception {
+        String caseId = submittedCase(1, "Premium Copy Paper A4", 60, 2500, null);
+        runMatch(caseId, "match-1");
+        JsonNode first = freeze(caseId, "snap-1");
+        JsonNode mapping = recordMapping(caseId, "map-1", currentCaseVersion(caseId),
+                first.get("id").asText(), first.get("payloadHash").asText(), 1, ITEM_A, 200);
+        String staleSubjectId = mapping.get("successorSnapshot").get("id").asText();
+        String staleSubjectHash = mapping.get("successorSnapshot").get("payloadHash").asText();
+
+        // The same purchase order line id remains, but its item changed A -> B.
+        STUB.respond(
+                200,
+                PurchasingPayloads.confirmedPartialReceipt()
+                        .snapshotVersion(6)
+                        .purchaseOrderVersion(4)
+                        .clearLines()
+                        .addLine("POL-1001-1", "ITEM-A4-90", "Premium Copy Paper A4 90g", 100, 2500)
+                        .addLine("POL-1001-2", ITEM_B, "Laser Toner Black", 20, 55000)
+                        .toJson());
+        refreshSnapshot();
+
+        JsonNode rematch = runMatch(caseId, "match-2");
+        JsonNode line = rematch.get("payload").get("lineOutcomes").get(0);
+        assertThat(line.get("status").asText()).isEqualTo("EVIDENCE_INSUFFICIENT");
+        assertThat(line.get("purchaseOrderLine").isNull()).isTrue();
+        JsonNode exception = rematch.get("payload").get("exceptions").get(0);
+        assertThat(exception.get("details").get("mappedPurchaseOrderLineId").asText()).isEqualTo("POL-1001-1");
+        assertThat(exception.get("details").get("currentPurchaseOrderLineItemId").asText()).isEqualTo("ITEM-A4-90");
+        assertThat(rematch.get("payload").get("appliedMappings").get(0).get("purchaseOrderLineId").asText())
+                .isEqualTo("POL-1001-1");
+
+        // The subject the human saw is now stale; no decision can target it.
+        MvcResult staleAction = supplementRaw(caseId, "supp-1", currentCaseVersion(caseId),
+                staleSubjectId, staleSubjectHash, "reason");
+        assertThat(staleAction.getResponse().getStatus()).isEqualTo(409);
+        assertThat(read(staleAction).get("code").asText()).isEqualTo("STALE_REVIEW_TARGET");
+
+        // A fresh subject still shows the line as an exception, never MATCHED.
+        JsonNode frozen = freeze(caseId, "snap-2");
+        assertThat(frozen.get("payload").get("matchResult").get("payload")
+                        .get("lineOutcomes").get(0).get("status").asText())
+                .isEqualTo("EVIDENCE_INSUFFICIENT");
+
+        // Only a new human mapping to the corrected item yields a MATCHED successor.
+        JsonNode remapped = recordMapping(caseId, "map-2", currentCaseVersion(caseId),
+                frozen.get("id").asText(), frozen.get("payloadHash").asText(), 1, "ITEM-A4-90", 200);
+        assertThat(remapped.get("decision").get("mappingItemId").asText()).isEqualTo("ITEM-A4-90");
+        assertThat(remapped.get("decision").get("mappingPoLineId").asText()).isEqualTo("POL-1001-1");
+        assertThat(remapped.get("successorSnapshot").get("payload").get("matchResult").get("payload")
+                        .get("lineOutcomes").get(0).get("status").asText())
+                .isEqualTo("MATCHED");
+    }
+
+    @Test
     void duplicateRequestReplaysAndDifferentPayloadConflicts() throws Exception {
         String caseId = submittedCase(1, "A4 Paper", 60, 2500, ITEM_A);
         runMatch(caseId, "match-1");
