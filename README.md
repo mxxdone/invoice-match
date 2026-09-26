@@ -1,6 +1,6 @@
 # Invoice Match
 
-P1-00 provides a runnable baseline for the invoice matching project. It has one Java 21 Spring Boot 3 API, a Next.js TypeScript web app, PostgreSQL, and a minimal Mock ERP process. P1-01 adds the domain contract and PostgreSQL schema baseline (invoice case, draft revision, evidence bundle, match result, review snapshot and decision). P1-02 adds a read-only external purchasing system Mock (`mock-purchasing`), a read-only Core API adapter and a PostgreSQL-backed current snapshot of suppliers' purchase orders, lines, receipts and receipt lines with external versions. P1-03 adds the first business write APIs: manual invoice case creation validated against the external purchase order, atomic current-draft editing, submission that freezes a canonical hashed `EvidenceBundle` version, supplement revisions that copy the previous frozen lines, past bundle version reads and request-id idempotency.
+P1-00 provides a runnable baseline for the invoice matching project. It has one Java 21 Spring Boot 3 API, a Next.js TypeScript web app, PostgreSQL, and a minimal Mock ERP process. P1-01 adds the domain contract and PostgreSQL schema baseline (invoice case, draft revision, evidence bundle, match result, review snapshot and decision). P1-02 adds a read-only external purchasing system Mock (`mock-purchasing`), a read-only Core API adapter and a PostgreSQL-backed current snapshot of suppliers' purchase orders, lines, receipts and receipt lines with external versions. P1-03 adds the first business write APIs: manual invoice case creation validated against the external purchase order, atomic current-draft editing, submission that freezes a canonical hashed `EvidenceBundle` version, supplement revisions that copy the previous frozen lines, past bundle version reads and request-id idempotency. P1-04 adds the deterministic, AI-free 3-way match: the latest frozen bundle is compared with zero tolerance against the current purchasing snapshot and an immutable, canonically hashed `MatchResult` with per-line calculation evidence, an exception taxonomy and a non-consuming expected FIFO allocation plan is appended.
 
 ## Run all services
 
@@ -51,6 +51,59 @@ Validation failures (`400`) are checked before the external purchase order is
 called. Stale versions, non-editable drafts, invalid state transitions and
 idempotency conflicts return `409`; a missing external purchase order returns
 `404`; an external purchasing timeout returns `503`.
+
+## Deterministic matching API (P1-04)
+
+Run matching for the latest frozen bundle of a case against the current active
+purchasing snapshot. `POST` appends a new immutable `MatchResult` (it never
+updates one); reusing a `requestId` replays the stored response, and a new
+`requestId` for the same bundle appends another record with the same payload and
+hash. Allowed tolerance is exactly zero, KRW and quantities stay integers, and
+no `ReceiptAllocation` is created or receipt balance consumed in this ticket.
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/invoice-cases/{id}/match` | Append a match result for the latest frozen bundle (requires `requestId`) |
+| `GET` | `/api/invoice-cases/{id}/match` | Read the latest match result |
+| `GET` | `/api/invoice-cases/{id}/matches` | Read the append-only match result history, oldest first |
+
+A match only runs when the case is `REVIEW_PENDING` or `SUPPLEMENT_REQUIRED` and
+has a frozen bundle; otherwise it is `409 MATCH_STATE_CONFLICT` (or the case-level
+`409 CASE_STATE_CONFLICT`). An unknown case is `404`, and `GET` of the latest
+result before any match (or of an unknown case) is `404`.
+
+The response contains `id`, `invoiceCaseId`, `evidenceBundleId`, `resultHash`,
+`createdAt` and the canonical `payload` object. The payload records the bundle
+id/version/hash, the purchasing snapshot version/payload hash and receipt
+versions, the input invoice values, the compared purchase order values, the
+confirmed/available receipt values, the `expectedAllocationPlan` and every
+exception with machine-readable values, so a person can recompute the result.
+
+| Exception type | Meaning |
+| --- | --- |
+| `ITEM_UNCONFIRMED` | `confirmedItemId` is null/blank; no mapping is invented |
+| `EVIDENCE_INSUFFICIENT` | the confirmed item matches zero or several active purchase order lines, so price/receipt basis is not uniquely supportable |
+| `QUANTITY_EXCEEDS_RECEIPT_BALANCE` | invoice quantity is above the confirmed receipt quantity available for planning |
+| `UNIT_PRICE_MISMATCH` | invoice unit price differs from the matched purchase order line unit price |
+| `DUPLICATE_INVOICE_SUSPECTED` | another case has the same supplier and normalized invoice number; storage is not rejected |
+
+Several exceptions can coexist, both across lines and on one line. `normal` is
+true only when there is no exception and every line's expected plan covers its
+full invoice quantity.
+
+Determinism: the payload and its SHA-256 are computed from semantic inputs only
+and order every collection explicitly (invoice lines by line number, purchase
+order lines by external id, receipts by receipt id, receipt lines by
+`receiptDate` then external receipt line id then receipt id, exceptions by line
+number then type then values). The same inputs always produce the same hash
+regardless of repository or list ordering; the result id and creation time are
+not part of the hash.
+
+The `expectedAllocationPlan` is an expected, non-consuming FIFO plan
+(`allocationPlan.consuming = false`, `allocationPlan.mode =
+NON_CONSUMING_EXPECTED_PLAN_V1`). P1-04 writes no allocation and consumes no
+balance; approval (P1-07) revalidates and consumes it against the then-current
+balance. Business duplicate detection is separate from request-id idempotency.
 
 Check PostgreSQL connectivity and its timezone:
 
@@ -115,4 +168,4 @@ cd ../mock-purchasing
 npm test
 ```
 
-The GitHub Actions workflow runs these checks and a five-service Compose smoke test. Source layout is intentionally small: `core-api` holds one Spring application organized by feature (`invoicecase`, `matching`, `purchasingreference`, `review`, `shared`); `web/src/app` holds the Next.js routes; `mock-erp` serves only a deterministic health response; `mock-purchasing` serves deterministic read-only purchase order aggregates. P1-01 defines the Phase 1 state contract and PostgreSQL baseline, P1-02 defines the external purchasing reference snapshot and refresh version semantics, P1-03 defines manual submission, evidence bundle versioning and request-id idempotency, but later tickets still own matching, review, allocation and P1-09 payment behavior.
+The GitHub Actions workflow runs these checks and a five-service Compose smoke test. Source layout is intentionally small: `core-api` holds one Spring application organized by feature (`invoicecase`, `matching`, `purchasingreference`, `review`, `shared`); `web/src/app` holds the Next.js routes; `mock-erp` serves only a deterministic health response; `mock-purchasing` serves deterministic read-only purchase order aggregates. P1-01 defines the Phase 1 state contract and PostgreSQL baseline, P1-02 defines the external purchasing reference snapshot and refresh version semantics, P1-03 defines manual submission, evidence bundle versioning and request-id idempotency, P1-04 defines the deterministic AI-free 3-way match, but later tickets still own review, allocation, payment and P1-09 behavior.

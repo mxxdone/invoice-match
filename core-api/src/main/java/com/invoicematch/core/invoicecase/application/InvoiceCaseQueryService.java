@@ -1,5 +1,6 @@
 package com.invoicematch.core.invoicecase.application;
 
+import com.invoicematch.core.invoicecase.domain.CaseStateConflictException;
 import com.invoicematch.core.invoicecase.domain.DraftRevision;
 import com.invoicematch.core.invoicecase.domain.DraftRevisionStatus;
 import com.invoicematch.core.invoicecase.domain.EvidenceBundle;
@@ -67,7 +68,46 @@ public class InvoiceCaseQueryService {
         return EvidenceBundleDetail.from(bundle);
     }
 
-    private void requireCase(UUID caseId) {
+    /**
+     * Loads the case header and its latest frozen evidence bundle for the
+     * matching module. A case without a frozen bundle cannot be matched, which
+     * is a state conflict rather than a missing resource.
+     */
+    public MatchCaseSnapshot loadForMatching(UUID caseId) {
+        InvoiceCase invoiceCase =
+                invoiceCases.findById(caseId).orElseThrow(() -> new InvoiceCaseNotFoundException(caseId));
+        EvidenceBundle bundle = evidenceBundles
+                .findFirstByInvoiceCaseIdOrderByVersionNumberDesc(caseId)
+                .orElseThrow(() -> new CaseStateConflictException(
+                        caseId, "no frozen evidence bundle exists to match"));
+        return new MatchCaseSnapshot(
+                invoiceCase.id().value(),
+                invoiceCase.supplier().value(),
+                invoiceCase.purchaseOrder().value(),
+                invoiceCase.invoiceNumber(),
+                invoiceCase.normalizedInvoiceNumber(),
+                invoiceCase.status(),
+                invoiceCase.version(),
+                bundle.id(),
+                bundle.versionNumber(),
+                bundle.payloadHash(),
+                bundle.payload());
+    }
+
+    /**
+     * Identifiers of other cases that share this supplier and normalized invoice
+     * number, for the {@code DUPLICATE_INVOICE_SUSPECTED} exception.
+     */
+    public List<UUID> findOtherCaseIdsWithBusinessInvoice(
+            String supplierId, String normalizedInvoiceNumber, UUID excludingCaseId) {
+        return invoiceCases.findOtherCaseIdsByBusinessInvoice(
+                supplierId, normalizedInvoiceNumber, excludingCaseId);
+    }
+
+    /**
+     * Throws {@link InvoiceCaseNotFoundException} when the case does not exist.
+     */
+    public void requireCase(UUID caseId) {
         if (!invoiceCases.existsById(caseId)) {
             throw new InvoiceCaseNotFoundException(caseId);
         }

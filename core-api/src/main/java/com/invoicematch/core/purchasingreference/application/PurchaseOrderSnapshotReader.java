@@ -61,6 +61,16 @@ public class PurchaseOrderSnapshotReader {
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, propagation = Propagation.REQUIRES_NEW)
     public Optional<PurchaseOrderAggregate> findCurrent(PurchaseOrderId purchaseOrderId) {
+        return findCurrentSnapshot(purchaseOrderId).map(CurrentPurchaseOrderSnapshot::aggregate);
+    }
+
+    /**
+     * Current aggregate plus the canonical payload hash stored with it, so a
+     * caller that must record which snapshot it compared does not need to reach
+     * into the persistence layer.
+     */
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, propagation = Propagation.REQUIRES_NEW)
+    public Optional<CurrentPurchaseOrderSnapshot> findCurrentSnapshot(PurchaseOrderId purchaseOrderId) {
         String id = purchaseOrderId.value();
         Optional<PurchaseOrderSnapshot> snapshot = snapshots.findById(id);
         if (snapshot.isEmpty()) {
@@ -95,8 +105,9 @@ public class PurchaseOrderSnapshotReader {
                 root.supplierName(),
                 lineFacts);
 
-        return Optional.of(new PurchaseOrderAggregate(
-                purchaseOrderId, root.snapshotVersion(), purchaseOrder, receiptFacts));
+        PurchaseOrderAggregate aggregate =
+                new PurchaseOrderAggregate(purchaseOrderId, root.snapshotVersion(), purchaseOrder, receiptFacts);
+        return Optional.of(new CurrentPurchaseOrderSnapshot(root.payloadHash(), aggregate));
     }
 
     private static PurchaseOrderLineFacts toLineFacts(PurchaseOrderLineSnapshot row) {
