@@ -26,11 +26,13 @@ import org.springframework.transaction.annotation.Transactional;
  * Orchestrates deterministic 3-way matching for one invoice case.
  *
  * <p>It loads the latest frozen evidence bundle and the current purchasing
- * snapshot, runs the pure {@link MatchEngine} and appends an immutable
- * {@link MatchResult}. A re-match with a new request id appends a new result
- * with the same canonical payload/hash; reusing a request id replays the stored
- * response. This method creates no {@code ReceiptAllocation} and consumes no
- * receipt balance.
+ * snapshot, applies the current effective case-local mappings through the
+ * {@link EffectiveMappingResolver} seam, runs the pure {@link MatchEngine} and
+ * appends an immutable {@link MatchResult} that records the compared purchasing
+ * snapshot and applied mapping watermark. A re-match with a new request id
+ * appends a new result with the same canonical payload/hash; reusing a request
+ * id replays the stored response. This method creates no
+ * {@code ReceiptAllocation} and consumes no receipt balance.
  */
 @Service
 public class MatchingService {
@@ -44,6 +46,7 @@ public class MatchingService {
     private final MatchCommandFingerprint fingerprint;
     private final RequestIdempotencyStore idempotency;
     private final EvidenceBundlePayloadHasher bundleHasher;
+    private final EffectiveMappingResolver mappingResolver;
     private final MatchLockInterceptor matchLockInterceptor;
     private final Clock clock;
 
@@ -55,6 +58,7 @@ public class MatchingService {
             MatchCommandFingerprint fingerprint,
             RequestIdempotencyStore idempotency,
             EvidenceBundlePayloadHasher bundleHasher,
+            ObjectProvider<EffectiveMappingResolver> mappingResolvers,
             ObjectProvider<MatchLockInterceptor> matchLockInterceptors,
             Clock clock) {
         this.invoiceCaseQueries = invoiceCaseQueries;
@@ -64,6 +68,7 @@ public class MatchingService {
         this.fingerprint = fingerprint;
         this.idempotency = idempotency;
         this.bundleHasher = bundleHasher;
+        this.mappingResolver = mappingResolvers.getIfAvailable(() -> EffectiveMappingResolver.EMPTY);
         this.matchLockInterceptor = matchLockInterceptors.getIfAvailable(() -> MatchLockInterceptor.NONE);
         this.clock = clock;
     }
@@ -89,17 +94,25 @@ public class MatchingService {
         matchLockInterceptor.afterCaseLocked(command.caseId());
         requireReviewable(caseSnapshot);
 
-        CurrentPurchaseOrderSnapshot purchasing = purchaseOrderSnapshots
-                .findCurrentSnapshot(PurchaseOrderId.of(caseSnapshot.purchaseOrderId()))
-                .orElseThrow(() -> new MatchStateConflictException(
-                        command.caseId(),
-                        "no current purchasing snapshot exists for purchase order "
-                                + caseSnapshot.purchaseOrderId()));
+        CurrentPurchaseOrderSnapshot purchasing = requireCurrentPurchasingSnapshot(caseSnapshot);
+        MatchResultView view = appendResult(caseSnapshot, purchasing);
+        idempotency.recordResponse(SCOPE_MATCH, resourceKey, command.requestId(), 201, view);
+        return CommandResult.created(view);
+    }
 
+    /**
+     * Computes and appends a result for an already-loaded case snapshot under a
+     * case row lock the caller holds (or for the plain match path). It is the
+     * seam the review module uses to re-match after a mapping decision inside
+     * the same transaction as the decision and its successor snapshot.
+     */
+    public MatchResultView appendResult(MatchCaseSnapshot caseSnapshot, CurrentPurchaseOrderSnapshot purchasing) {
         List<UUID> duplicateCaseIds = invoiceCaseQueries.findOtherCaseIdsWithBusinessInvoice(
                 caseSnapshot.supplierId(), caseSnapshot.normalizedInvoiceNumber(), caseSnapshot.caseId());
 
         EvidenceBundlePayload bundlePayload = bundleHasher.parse(caseSnapshot.evidenceBundlePayload());
+        EffectiveMappingResolver.EffectiveMappings effective =
+                mappingResolver.resolve(caseSnapshot.caseId(), caseSnapshot.evidenceBundleId());
 
         MatchInput input = new MatchInput(
                 caseSnapshot.caseId(),
@@ -114,7 +127,8 @@ public class MatchingService {
                 bundlePayload.lines(),
                 purchasing.aggregate(),
                 purchasing.payloadHash(),
-                duplicateCaseIds);
+                duplicateCaseIds,
+                effective.mappings());
 
         MatchComputation computation = engine.compute(input);
 
@@ -128,12 +142,26 @@ public class MatchingService {
                 caseSnapshot.evidenceBundleId(),
                 resultNumber,
                 computation.resultHash(),
+                purchasing.aggregate().snapshotVersion(),
+                purchasing.payloadHash(),
+                effective.watermark(),
                 computation.canonicalJson(),
                 clock.instant()));
+        return MatchResultView.from(saved);
+    }
 
-        MatchResultView view = MatchResultView.from(saved);
-        idempotency.recordResponse(SCOPE_MATCH, resourceKey, command.requestId(), 201, view);
-        return CommandResult.created(view);
+    /**
+     * Loads the current local purchasing snapshot or fails as a state conflict.
+     * The read is local (no external HTTP) so it may run while the caller holds
+     * the invoice case row lock.
+     */
+    public CurrentPurchaseOrderSnapshot requireCurrentPurchasingSnapshot(MatchCaseSnapshot caseSnapshot) {
+        return purchaseOrderSnapshots
+                .findCurrentSnapshot(PurchaseOrderId.of(caseSnapshot.purchaseOrderId()))
+                .orElseThrow(() -> new MatchStateConflictException(
+                        caseSnapshot.caseId(),
+                        "no current purchasing snapshot exists for purchase order "
+                                + caseSnapshot.purchaseOrderId()));
     }
 
     @Transactional(readOnly = true)

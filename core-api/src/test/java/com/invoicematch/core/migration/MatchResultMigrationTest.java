@@ -137,7 +137,9 @@ class MatchResultMigrationTest extends AbstractPostgresIntegrationTest {
         UUID matchResultId = UUID.randomUUID();
         jdbc.update(
                 "insert into match_result (id, invoice_case_id, evidence_bundle_id, result_number, result_hash,"
-                        + " payload, created_at) values (?, ?, ?, ?, ?, '{}'::jsonb, now())",
+                        + " purchasing_snapshot_version, purchasing_snapshot_hash, mapping_watermark,"
+                        + " payload, created_at) values (?, ?, ?, ?, ?, 5, 'purchasing-hash', 0,"
+                        + " '{}'::jsonb, now())",
                 matchResultId,
                 caseId,
                 evidenceBundleId,

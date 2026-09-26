@@ -20,6 +20,13 @@ public interface MatchResultRepository extends JpaRepository<MatchResult, UUID> 
     /** The most recently persisted result for one case, if any. */
     Optional<MatchResult> findFirstByInvoiceCaseIdOrderByResultNumberDesc(UUID invoiceCaseId);
 
+    /**
+     * The latest result computed for one exact evidence bundle of a case. A
+     * review snapshot may only be frozen from this result.
+     */
+    Optional<MatchResult> findFirstByInvoiceCaseIdAndEvidenceBundleIdOrderByResultNumberDesc(
+            UUID invoiceCaseId, UUID evidenceBundleId);
+
     /** Highest result number allocated for one case, or zero when none exists. */
     @Query("select coalesce(max(r.resultNumber), 0) from MatchResult r where r.invoiceCaseId = :caseId")
     int maxResultNumber(@Param("caseId") UUID caseId);

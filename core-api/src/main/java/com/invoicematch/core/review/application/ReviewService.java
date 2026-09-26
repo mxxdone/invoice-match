@@ -1,0 +1,516 @@
+package com.invoicematch.core.review.application;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.invoicematch.core.invoicecase.application.CommandResult;
+import com.invoicematch.core.invoicecase.application.EvidenceBundlePayload;
+import com.invoicematch.core.invoicecase.application.EvidenceBundlePayloadHasher;
+import com.invoicematch.core.invoicecase.application.InvoiceCaseQueryService;
+import com.invoicematch.core.invoicecase.application.MatchCaseSnapshot;
+import com.invoicematch.core.invoicecase.application.RequestIdempotencyStore;
+import com.invoicematch.core.invoicecase.domain.EvidenceBundle;
+import com.invoicematch.core.invoicecase.domain.InvoiceCase;
+import com.invoicematch.core.invoicecase.domain.InvoiceCaseNotFoundException;
+import com.invoicematch.core.invoicecase.domain.InvoiceCaseStatus;
+import com.invoicematch.core.invoicecase.domain.StaleCaseVersionException;
+import com.invoicematch.core.invoicecase.persistence.EvidenceBundleRepository;
+import com.invoicematch.core.invoicecase.persistence.InvoiceCaseRepository;
+import com.invoicematch.core.matching.application.MatchResultView;
+import com.invoicematch.core.matching.application.MatchingService;
+import com.invoicematch.core.matching.domain.MatchResult;
+import com.invoicematch.core.matching.persistence.MatchResultRepository;
+import com.invoicematch.core.purchasingreference.application.CurrentPurchaseOrderSnapshot;
+import com.invoicematch.core.purchasingreference.application.PurchaseOrderSnapshotLock;
+import com.invoicematch.core.purchasingreference.application.PurchaseOrderSnapshotReader;
+import com.invoicematch.core.purchasingreference.domain.PurchaseOrderLineFacts;
+import com.invoicematch.core.review.domain.ReviewDecision;
+import com.invoicematch.core.review.domain.ReviewDecisionType;
+import com.invoicematch.core.review.domain.ReviewSnapshot;
+import com.invoicematch.core.review.domain.ReviewStateConflictException;
+import com.invoicematch.core.review.domain.ReviewTargetInvalidException;
+import com.invoicematch.core.review.persistence.ReviewDecisionRepository;
+import com.invoicematch.core.review.persistence.ReviewSnapshotRepository;
+import com.invoicematch.core.shared.domain.DomainValidationException;
+import com.invoicematch.core.shared.domain.PurchaseOrderId;
+import java.time.Clock;
+import java.time.Instant;
+import java.util.List;
+import java.util.UUID;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+/**
+ * Transactional write side of the human review workflow.
+ *
+ * <p>Every method reserves its request id in the same transaction as its side
+ * effects. Human actions target exactly the snapshot the reviewer saw
+ * ({@code reviewSnapshotId} + {@code reviewPayloadHash} + {@code
+ * expectedCaseVersion}) and are rejected with 409 and no side effects when the
+ * target is stale, superseded or mismatched. Mapping decisions bump the case
+ * version, deterministically re-match with every effective case-local mapping
+ * and freeze a successor snapshot, all under the invoice case row lock so the
+ * lock order stays case first then children and no external HTTP is made while
+ * a lock is held.
+ */
+@Service
+public class ReviewService {
+
+    public static final String SCOPE_SNAPSHOT = "invoice-case:review-snapshot";
+    public static final String SCOPE_MAPPING = "invoice-case:mapping";
+    public static final String SCOPE_SUPPLEMENT = "invoice-case:supplement";
+    public static final String SCOPE_REJECT = "invoice-case:reject";
+    private static final int MAX_REASON_LENGTH = 1000;
+    private static final int MAX_ACTOR_LENGTH = 64;
+    private static final String DEFAULT_ACTOR = "reviewer";
+
+    private final InvoiceCaseRepository invoiceCases;
+    private final InvoiceCaseQueryService invoiceCaseQueries;
+    private final EvidenceBundleRepository evidenceBundles;
+    private final MatchResultRepository matchResults;
+    private final ReviewSnapshotRepository snapshots;
+    private final ReviewDecisionRepository decisions;
+    private final MatchingService matching;
+    private final ReviewEffectiveMappingResolver mappingResolver;
+    private final ReviewCurrentnessService currentness;
+    private final ReviewSnapshotPayloadBuilder payloadBuilder;
+    private final EvidenceBundlePayloadHasher bundleHasher;
+    private final PurchaseOrderSnapshotReader purchaseOrderSnapshots;
+    private final PurchaseOrderSnapshotLock purchaseOrderLock;
+    private final ReviewLockInterceptor reviewLockInterceptor;
+    private final ReviewCommandFingerprint fingerprint;
+    private final RequestIdempotencyStore idempotency;
+    private final ObjectMapper mapper = new ObjectMapper();
+    private final Clock clock;
+
+    public ReviewService(
+            InvoiceCaseRepository invoiceCases,
+            InvoiceCaseQueryService invoiceCaseQueries,
+            EvidenceBundleRepository evidenceBundles,
+            MatchResultRepository matchResults,
+            ReviewSnapshotRepository snapshots,
+            ReviewDecisionRepository decisions,
+            MatchingService matching,
+            ReviewEffectiveMappingResolver mappingResolver,
+            ReviewCurrentnessService currentness,
+            ReviewSnapshotPayloadBuilder payloadBuilder,
+            EvidenceBundlePayloadHasher bundleHasher,
+            PurchaseOrderSnapshotReader purchaseOrderSnapshots,
+            PurchaseOrderSnapshotLock purchaseOrderLock,
+            ObjectProvider<ReviewLockInterceptor> reviewLockInterceptors,
+            ReviewCommandFingerprint fingerprint,
+            RequestIdempotencyStore idempotency,
+            Clock clock) {
+        this.invoiceCases = invoiceCases;
+        this.invoiceCaseQueries = invoiceCaseQueries;
+        this.evidenceBundles = evidenceBundles;
+        this.matchResults = matchResults;
+        this.snapshots = snapshots;
+        this.decisions = decisions;
+        this.matching = matching;
+        this.mappingResolver = mappingResolver;
+        this.currentness = currentness;
+        this.payloadBuilder = payloadBuilder;
+        this.bundleHasher = bundleHasher;
+        this.purchaseOrderSnapshots = purchaseOrderSnapshots;
+        this.purchaseOrderLock = purchaseOrderLock;
+        this.reviewLockInterceptor = reviewLockInterceptors.getIfAvailable(() -> ReviewLockInterceptor.NONE);
+        this.fingerprint = fingerprint;
+        this.idempotency = idempotency;
+        this.clock = clock;
+    }
+
+    @Transactional
+    public CommandResult<ReviewSnapshotView> freezeSnapshot(FreezeReviewSnapshotCommand command) {
+        String resourceKey = command.caseId().toString();
+        String requestHash = fingerprint.freezeSnapshot(command);
+        RequestIdempotencyStore.BeginResult begin =
+                idempotency.begin(SCOPE_SNAPSHOT, resourceKey, command.requestId(), requestHash);
+        if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
+            return replay(replay.response(), ReviewSnapshotView.class);
+        }
+
+        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
+        requireReviewPending(invoiceCase);
+        beginWrite(invoiceCase, command.expectedCaseVersion());
+
+        EvidenceBundle bundle = latestBundle(command.caseId());
+        MatchResult result = latestResultForBundle(command.caseId(), bundle.id());
+        CurrentPurchaseOrderSnapshot purchasing = requireCurrentPurchasing(invoiceCase);
+
+        verifyResultIsCurrent(result, purchasing);
+
+        int snapshotNumber = snapshots.maxSnapshotNumber(command.caseId()) + 1;
+        ReviewSnapshot snapshot = buildAndSaveSnapshot(
+                invoiceCase,
+                bundle,
+                result,
+                mappingResolver.resolve(command.caseId(), bundle.id()).mappings(),
+                purchasing,
+                snapshotNumber,
+                clock.instant());
+
+        ReviewSnapshotView view = ReviewSnapshotView.from(snapshot);
+        idempotency.recordResponse(SCOPE_SNAPSHOT, resourceKey, command.requestId(), 201, view);
+        return CommandResult.created(view);
+    }
+
+    @Transactional
+    public CommandResult<MappingDecisionResult> recordMapping(RecordMappingDecisionCommand command) {
+        String resourceKey = command.caseId().toString();
+        String requestHash = fingerprint.recordMapping(command);
+        RequestIdempotencyStore.BeginResult begin =
+                idempotency.begin(SCOPE_MAPPING, resourceKey, command.requestId(), requestHash);
+        if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
+            return replay(replay.response(), MappingDecisionResult.class);
+        }
+
+        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
+        requireReviewPending(invoiceCase);
+        beginWrite(invoiceCase, command.expectedCaseVersion());
+
+        ReviewSnapshot target = requireTarget(invoiceCase, command.reviewSnapshotId(), command.reviewPayloadHash());
+        currentness.requireCurrent(invoiceCase, target);
+
+        EvidenceBundle bundle = evidenceBundles
+                .findById(target.evidenceBundleId())
+                .orElseThrow(() -> new ReviewStateConflictException(
+                        command.caseId(), "target evidence bundle no longer exists"));
+        requireLineExists(bundle, command.lineNumber());
+        CurrentPurchaseOrderSnapshot purchasing = requireCurrentPurchasing(invoiceCase);
+        String purchaseOrderLineId =
+                resolveUniquePurchaseOrderLine(command.caseId(), purchasing, command.itemId());
+
+        Instant now = clock.instant();
+        String decidedBy = actor(command.decidedBy());
+        int decisionNumber = decisions.maxDecisionNumber(command.caseId()) + 1;
+        ReviewDecision decision = ReviewDecision.recordMapping(
+                UUID.randomUUID(),
+                command.caseId(),
+                target.id(),
+                decisionNumber,
+                decidedBy,
+                null,
+                mappingPayload(command.lineNumber(), command.itemId(), purchaseOrderLineId),
+                target.payloadHash(),
+                now,
+                bundle.id(),
+                command.lineNumber(),
+                command.itemId(),
+                purchaseOrderLineId);
+        decisions.saveAndFlush(decision);
+
+        // Bump the case version before the successor is frozen so every prior
+        // snapshot is stale by the time the successor exists.
+        invoiceCase.markModified(now);
+        invoiceCase = invoiceCases.saveAndFlush(invoiceCase);
+
+        MatchCaseSnapshot caseSnapshot = invoiceCaseQueries.loadForMatching(command.caseId());
+        MatchResultView resultView = matching.appendResult(caseSnapshot, purchasing);
+        MatchResult successorResult = matchResults
+                .findById(resultView.id())
+                .orElseThrow(() -> new IllegalStateException("Successor match result vanished"));
+
+        int snapshotNumber = snapshots.maxSnapshotNumber(command.caseId()) + 1;
+        ReviewSnapshot successor = buildAndSaveSnapshot(
+                invoiceCase,
+                bundle,
+                successorResult,
+                mappingResolver.resolve(command.caseId(), bundle.id()).mappings(),
+                purchasing,
+                snapshotNumber,
+                clock.instant());
+
+        MappingDecisionResult response =
+                new MappingDecisionResult(ReviewDecisionView.from(decision), ReviewSnapshotView.from(successor));
+        idempotency.recordResponse(SCOPE_MAPPING, resourceKey, command.requestId(), 200, response);
+        return CommandResult.ok(response);
+    }
+
+    @Transactional
+    public CommandResult<ReviewDecisionView> requestSupplement(RequestSupplementCommand command) {
+        String resourceKey = command.caseId().toString();
+        String requestHash = fingerprint.requestSupplement(command);
+        RequestIdempotencyStore.BeginResult begin =
+                idempotency.begin(SCOPE_SUPPLEMENT, resourceKey, command.requestId(), requestHash);
+        if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
+            return replay(replay.response(), ReviewDecisionView.class);
+        }
+
+        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
+        requireReviewPending(invoiceCase);
+        beginWrite(invoiceCase, command.expectedCaseVersion());
+
+        ReviewSnapshot target = requireTarget(invoiceCase, command.reviewSnapshotId(), command.reviewPayloadHash());
+        currentness.requireCurrent(invoiceCase, target);
+        String reason = requireReason(command.reason());
+
+        Instant now = clock.instant();
+        ReviewDecision decision = recordSimpleDecision(
+                command.caseId(), target, ReviewDecisionType.SUPPLEMENT_REQUESTED, actor(command.decidedBy()), reason, now);
+        decisions.saveAndFlush(decision);
+
+        invoiceCase.transitionTo(InvoiceCaseStatus.SUPPLEMENT_REQUIRED, now);
+        invoiceCases.saveAndFlush(invoiceCase);
+
+        ReviewDecisionView view = ReviewDecisionView.from(decision);
+        idempotency.recordResponse(SCOPE_SUPPLEMENT, resourceKey, command.requestId(), 200, view);
+        return CommandResult.ok(view);
+    }
+
+    @Transactional
+    public CommandResult<ReviewDecisionView> reject(RejectReviewCommand command) {
+        String resourceKey = command.caseId().toString();
+        String requestHash = fingerprint.reject(command);
+        RequestIdempotencyStore.BeginResult begin =
+                idempotency.begin(SCOPE_REJECT, resourceKey, command.requestId(), requestHash);
+        if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
+            return replay(replay.response(), ReviewDecisionView.class);
+        }
+
+        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
+        requireReviewPending(invoiceCase);
+        beginWrite(invoiceCase, command.expectedCaseVersion());
+
+        ReviewSnapshot target = requireTarget(invoiceCase, command.reviewSnapshotId(), command.reviewPayloadHash());
+        currentness.requireCurrent(invoiceCase, target);
+        String reason = requireReason(command.reason());
+
+        Instant now = clock.instant();
+        ReviewDecision decision = recordSimpleDecision(
+                command.caseId(), target, ReviewDecisionType.REJECTED, actor(command.decidedBy()), reason, now);
+        decisions.saveAndFlush(decision);
+
+        invoiceCase.transitionTo(InvoiceCaseStatus.REJECTED, now);
+        invoiceCases.saveAndFlush(invoiceCase);
+
+        ReviewDecisionView view = ReviewDecisionView.from(decision);
+        idempotency.recordResponse(SCOPE_REJECT, resourceKey, command.requestId(), 200, view);
+        return CommandResult.ok(view);
+    }
+
+    private ReviewDecision recordSimpleDecision(
+            UUID caseId,
+            ReviewSnapshot target,
+            ReviewDecisionType type,
+            String decidedBy,
+            String reason,
+            Instant now) {
+        int decisionNumber = decisions.maxDecisionNumber(caseId) + 1;
+        return ReviewDecision.record(
+                UUID.randomUUID(),
+                caseId,
+                target.id(),
+                decisionNumber,
+                type,
+                decidedBy,
+                reason,
+                reasonPayload(reason),
+                target.payloadHash(),
+                now);
+    }
+
+    private ReviewSnapshot buildAndSaveSnapshot(
+            InvoiceCase invoiceCase,
+            EvidenceBundle bundle,
+            MatchResult result,
+            List<com.invoicematch.core.matching.application.AppliedMapping> appliedMappings,
+            CurrentPurchaseOrderSnapshot purchasing,
+            int snapshotNumber,
+            Instant now) {
+        EvidenceBundlePayload bundlePayload = bundleHasher.parse(bundle.payload());
+        ReviewSnapshotPayloadInput input = new ReviewSnapshotPayloadInput(
+                invoiceCase.id().value(),
+                invoiceCase.version(),
+                bundle.id(),
+                bundle.versionNumber(),
+                bundle.payloadHash(),
+                result.id(),
+                result.resultNumber(),
+                result.resultHash(),
+                result.mappingWatermark(),
+                result.payload(),
+                appliedMappings,
+                bundlePayload.lines(),
+                purchasing.aggregate().snapshotVersion(),
+                purchasing.aggregate().purchaseOrder().version(),
+                purchasing.payloadHash());
+        ReviewSnapshotPayloadBuilder.CanonicalPayload canonical = payloadBuilder.canonicalize(input);
+        ReviewSnapshot snapshot = ReviewSnapshot.freeze(
+                UUID.randomUUID(),
+                invoiceCase.id().value(),
+                bundle.id(),
+                result.id(),
+                result.resultNumber(),
+                snapshotNumber,
+                invoiceCase.version(),
+                bundle.versionNumber(),
+                purchasing.aggregate().snapshotVersion(),
+                purchasing.payloadHash(),
+                result.mappingWatermark(),
+                canonical.hash(),
+                canonical.json(),
+                now);
+        return snapshots.saveAndFlush(snapshot);
+    }
+
+    private ReviewSnapshot requireTarget(InvoiceCase invoiceCase, UUID reviewSnapshotId, String reviewPayloadHash) {
+        ReviewSnapshot snapshot = currentness.loadSnapshot(invoiceCase.id().value(), reviewSnapshotId);
+        if (reviewPayloadHash == null || !snapshot.payloadHash().equals(reviewPayloadHash)) {
+            throw new ReviewStateConflictException(
+                    invoiceCase.id().value(),
+                    "review payload hash does not match the target snapshot " + reviewSnapshotId);
+        }
+        return snapshot;
+    }
+
+    private void requireLineExists(EvidenceBundle bundle, int lineNumber) {
+        EvidenceBundlePayload payload = bundleHasher.parse(bundle.payload());
+        boolean exists = payload.lines().stream().anyMatch(line -> line.lineNumber() == lineNumber);
+        if (!exists) {
+            throw new ReviewTargetInvalidException(
+                    bundle.invoiceCaseId(),
+                    "invoice line " + lineNumber + " is not part of the target evidence bundle "
+                            + bundle.versionNumber());
+        }
+    }
+
+    private String resolveUniquePurchaseOrderLine(
+            UUID caseId, CurrentPurchaseOrderSnapshot purchasing, String itemId) {
+        List<PurchaseOrderLineFacts> candidates = purchasing.aggregate().purchaseOrder().lines().stream()
+                .filter(line -> line.itemId().equals(itemId))
+                .toList();
+        if (candidates.size() != 1) {
+            throw new ReviewTargetInvalidException(
+                    caseId,
+                    "item " + itemId + " resolves to " + candidates.size()
+                            + " active purchase order lines of the current purchase order");
+        }
+        return candidates.get(0).purchaseOrderLineId();
+    }
+
+    private CurrentPurchaseOrderSnapshot requireCurrentPurchasing(InvoiceCase invoiceCase) {
+        return purchaseOrderSnapshots
+                .findCurrentSnapshot(PurchaseOrderId.of(invoiceCase.purchaseOrder().value()))
+                .orElseThrow(() -> new ReviewStateConflictException(
+                        invoiceCase.id().value(),
+                        "no current purchasing snapshot exists for purchase order "
+                                + invoiceCase.purchaseOrder().value()));
+    }
+
+    private void verifyResultIsCurrent(MatchResult result, CurrentPurchaseOrderSnapshot purchasing) {
+        if (result.purchasingSnapshotVersion() != purchasing.aggregate().snapshotVersion()
+                || !result.purchasingSnapshotHash().equals(purchasing.payloadHash())) {
+            throw new ReviewStateConflictException(
+                    result.invoiceCaseId(),
+                    "the latest match result was computed against a different purchasing snapshot;"
+                            + " re-run matching before freezing a review snapshot");
+        }
+        int currentWatermark = mappingResolver
+                .resolve(result.invoiceCaseId(), result.evidenceBundleId())
+                .watermark();
+        if (currentWatermark != result.mappingWatermark()) {
+            throw new ReviewStateConflictException(
+                    result.invoiceCaseId(),
+                    "the latest match result does not reflect the current effective mappings;"
+                            + " re-run matching before freezing a review snapshot");
+        }
+    }
+
+    private EvidenceBundle latestBundle(UUID caseId) {
+        return evidenceBundles
+                .findFirstByInvoiceCaseIdOrderByVersionNumberDesc(caseId)
+                .orElseThrow(() -> new ReviewStateConflictException(caseId, "no frozen evidence bundle exists"));
+    }
+
+    private MatchResult latestResultForBundle(UUID caseId, UUID evidenceBundleId) {
+        return matchResults
+                .findFirstByInvoiceCaseIdAndEvidenceBundleIdOrderByResultNumberDesc(caseId, evidenceBundleId)
+                .orElseThrow(() -> new ReviewStateConflictException(
+                        caseId, "no match result exists for the latest evidence bundle"));
+    }
+
+    private InvoiceCase loadForUpdate(UUID caseId) {
+        return invoiceCases.findByIdForUpdate(caseId).orElseThrow(() -> new InvoiceCaseNotFoundException(caseId));
+    }
+
+    private static void requireReviewPending(InvoiceCase invoiceCase) {
+        if (invoiceCase.status() != InvoiceCaseStatus.REVIEW_PENDING) {
+            throw new ReviewStateConflictException(
+                    invoiceCase.id().value(),
+                    "the review workflow requires REVIEW_PENDING but status was " + invoiceCase.status());
+        }
+    }
+
+    private static void checkExpectedVersion(InvoiceCase invoiceCase, long expectedVersion) {
+        if (invoiceCase.version() != expectedVersion) {
+            throw new StaleCaseVersionException(invoiceCase.id().value(), expectedVersion, invoiceCase.version());
+        }
+    }
+
+    /**
+     * Starts a review write under the case row lock and the purchase order
+     * advisory lock. The advisory lock is held from here to commit, so a
+     * concurrent purchasing refresh cannot change the snapshot between the
+     * final currentness validation and the committed decision/snapshot. The lock
+     * order is always invoice case first, then purchase order; no other writer
+     * takes them in the opposite order, so this cannot deadlock.
+     */
+    private void beginWrite(InvoiceCase invoiceCase, long expectedVersion) {
+        checkExpectedVersion(invoiceCase, expectedVersion);
+        purchaseOrderLock.acquireXactLock(invoiceCase.purchaseOrder().value());
+        reviewLockInterceptor.afterPurchaseOrderLocked(invoiceCase.id().value());
+    }
+
+    private static String requireReason(String reason) {
+        if (reason == null || reason.isBlank()) {
+            throw new DomainValidationException("reason must not be blank");
+        }
+        String trimmed = reason.strip();
+        if (trimmed.length() > MAX_REASON_LENGTH) {
+            throw new DomainValidationException("reason must be at most " + MAX_REASON_LENGTH + " characters");
+        }
+        return trimmed;
+    }
+
+    private static String actor(String decidedBy) {
+        // TODO(P1-06): replace this client-supplied placeholder with the
+        // authenticated principal. Until then decidedBy is non-authoritative and
+        // must not be trusted for authorization, self-approval or audit.
+        if (decidedBy == null || decidedBy.isBlank()) {
+            return DEFAULT_ACTOR;
+        }
+        String trimmed = decidedBy.strip();
+        if (trimmed.length() > MAX_ACTOR_LENGTH) {
+            throw new DomainValidationException("decidedBy must be at most " + MAX_ACTOR_LENGTH + " characters");
+        }
+        return trimmed;
+    }
+
+    private String mappingPayload(int lineNumber, String itemId, String purchaseOrderLineId) {
+        ObjectNode node = mapper.createObjectNode();
+        node.put("lineNumber", lineNumber);
+        node.put("itemId", itemId);
+        node.put("purchaseOrderLineId", purchaseOrderLineId);
+        return write(node);
+    }
+
+    private String reasonPayload(String reason) {
+        ObjectNode node = mapper.createObjectNode();
+        node.put("reason", reason);
+        return write(node);
+    }
+
+    private String write(ObjectNode node) {
+        try {
+            return mapper.writeValueAsString(node);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Review decision payload serialization failed", e);
+        }
+    }
+
+    private <T> CommandResult<T> replay(RequestIdempotencyStore.StoredResponse stored, Class<T> type) {
+        return new CommandResult<>(stored.status(), idempotency.decode(stored, type));
+    }
+}

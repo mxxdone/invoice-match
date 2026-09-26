@@ -24,7 +24,8 @@ public record MatchInput(
         List<EvidenceBundlePayload.EvidenceLine> invoiceLines,
         PurchaseOrderAggregate purchasing,
         String purchasingSnapshotHash,
-        List<UUID> duplicateCaseIds) {
+        List<UUID> duplicateCaseIds,
+        List<AppliedMapping> appliedMappings) {
 
     public MatchInput {
         Objects.requireNonNull(caseId, "caseId");
@@ -32,5 +33,6 @@ public record MatchInput(
         Objects.requireNonNull(evidenceBundleId, "evidenceBundleId");
         invoiceLines = List.copyOf(Objects.requireNonNull(invoiceLines, "invoiceLines"));
         duplicateCaseIds = List.copyOf(Objects.requireNonNull(duplicateCaseIds, "duplicateCaseIds"));
+        appliedMappings = List.copyOf(Objects.requireNonNull(appliedMappings, "appliedMappings"));
     }
 }

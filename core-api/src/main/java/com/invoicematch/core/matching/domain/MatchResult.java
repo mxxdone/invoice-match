@@ -38,6 +38,15 @@ public class MatchResult {
     @Column(name = "result_hash", nullable = false, updatable = false, length = 128)
     private String resultHash;
 
+    @Column(name = "purchasing_snapshot_version", nullable = false, updatable = false)
+    private long purchasingSnapshotVersion;
+
+    @Column(name = "purchasing_snapshot_hash", nullable = false, updatable = false, length = 128)
+    private String purchasingSnapshotHash;
+
+    @Column(name = "mapping_watermark", nullable = false, updatable = false)
+    private int mappingWatermark;
+
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "payload", nullable = false, updatable = false)
     private String payload;
@@ -54,6 +63,9 @@ public class MatchResult {
             UUID evidenceBundleId,
             int resultNumber,
             String resultHash,
+            long purchasingSnapshotVersion,
+            String purchasingSnapshotHash,
+            int mappingWatermark,
             String payload,
             Instant createdAt) {
         if (resultNumber <= 0) {
@@ -62,11 +74,24 @@ public class MatchResult {
         if (resultHash == null || resultHash.isBlank()) {
             throw new DomainValidationException("resultHash must not be blank");
         }
+        if (purchasingSnapshotVersion < 0) {
+            throw new DomainValidationException(
+                    "purchasingSnapshotVersion must not be negative: " + purchasingSnapshotVersion);
+        }
+        if (purchasingSnapshotHash == null || purchasingSnapshotHash.isBlank()) {
+            throw new DomainValidationException("purchasingSnapshotHash must not be blank");
+        }
+        if (mappingWatermark < 0) {
+            throw new DomainValidationException("mappingWatermark must not be negative: " + mappingWatermark);
+        }
         this.id = Objects.requireNonNull(id, "id");
         this.invoiceCaseId = Objects.requireNonNull(invoiceCaseId, "invoiceCaseId");
         this.evidenceBundleId = Objects.requireNonNull(evidenceBundleId, "evidenceBundleId");
         this.resultNumber = resultNumber;
         this.resultHash = resultHash;
+        this.purchasingSnapshotVersion = purchasingSnapshotVersion;
+        this.purchasingSnapshotHash = purchasingSnapshotHash;
+        this.mappingWatermark = mappingWatermark;
         this.payload = Objects.requireNonNull(payload, "payload");
         this.createdAt = Objects.requireNonNull(createdAt, "createdAt");
     }
@@ -77,9 +102,22 @@ public class MatchResult {
             UUID evidenceBundleId,
             int resultNumber,
             String resultHash,
+            long purchasingSnapshotVersion,
+            String purchasingSnapshotHash,
+            int mappingWatermark,
             String payload,
             Instant createdAt) {
-        return new MatchResult(id, invoiceCaseId, evidenceBundleId, resultNumber, resultHash, payload, createdAt);
+        return new MatchResult(
+                id,
+                invoiceCaseId,
+                evidenceBundleId,
+                resultNumber,
+                resultHash,
+                purchasingSnapshotVersion,
+                purchasingSnapshotHash,
+                mappingWatermark,
+                payload,
+                createdAt);
     }
 
     public UUID id() {
@@ -100,6 +138,18 @@ public class MatchResult {
 
     public String resultHash() {
         return resultHash;
+    }
+
+    public long purchasingSnapshotVersion() {
+        return purchasingSnapshotVersion;
+    }
+
+    public String purchasingSnapshotHash() {
+        return purchasingSnapshotHash;
+    }
+
+    public int mappingWatermark() {
+        return mappingWatermark;
     }
 
     public String payload() {

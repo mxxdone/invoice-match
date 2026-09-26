@@ -340,7 +340,9 @@ class FlywayPostgresMigrationTest extends AbstractPostgresIntegrationTest {
         UUID matchResultId = UUID.randomUUID();
         jdbc.update(
                 "insert into match_result (id, invoice_case_id, evidence_bundle_id, result_number, result_hash,"
-                        + " payload, created_at) values (?, ?, ?, 1, ?, '{}'::jsonb, now())",
+                        + " purchasing_snapshot_version, purchasing_snapshot_hash, mapping_watermark,"
+                        + " payload, created_at) values (?, ?, ?, 1, ?, 5, 'purchasing-hash', 0,"
+                        + " '{}'::jsonb, now())",
                 matchResultId,
                 caseId,
                 evidenceBundleId,
@@ -351,14 +353,18 @@ class FlywayPostgresMigrationTest extends AbstractPostgresIntegrationTest {
     private UUID insertSnapshot(
             UUID caseId, UUID evidenceBundleId, UUID matchResultId, int targetBundleVersion, String payloadHash) {
         UUID snapshotId = UUID.randomUUID();
+        Integer matchResultNumber = matchResultId == null ? null : 1;
         jdbc.update(
-                "insert into review_snapshot (id, invoice_case_id, evidence_bundle_id, match_result_id, "
-                        + "target_case_version, target_evidence_bundle_version, payload_hash, payload, created_at) "
-                        + "values (?, ?, ?, ?, 0, ?, ?, '{}'::jsonb, now())",
+                "insert into review_snapshot (id, invoice_case_id, evidence_bundle_id, match_result_id,"
+                        + " match_result_number, snapshot_number, target_case_version,"
+                        + " target_evidence_bundle_version, purchasing_snapshot_version, purchasing_snapshot_hash,"
+                        + " mapping_watermark, payload_hash, payload, created_at) "
+                        + "values (?, ?, ?, ?, ?, 1, 0, ?, 5, 'purchasing-hash', 0, ?, '{}'::jsonb, now())",
                 snapshotId,
                 caseId,
                 evidenceBundleId,
                 matchResultId,
+                matchResultNumber,
                 targetBundleVersion,
                 payloadHash);
         return snapshotId;
@@ -367,8 +373,9 @@ class FlywayPostgresMigrationTest extends AbstractPostgresIntegrationTest {
     private UUID insertDecision(UUID caseId, UUID snapshotId, String payloadHash) {
         UUID decisionId = UUID.randomUUID();
         jdbc.update(
-                "insert into review_decision (id, invoice_case_id, review_snapshot_id, decision, decided_by, "
-                        + "payload_hash, decided_at) values (?, ?, ?, 'APPROVED', 'approver-1', ?, now())",
+                "insert into review_decision (id, invoice_case_id, review_snapshot_id, decision_number, decision,"
+                        + " decided_by, payload_hash, decided_at) "
+                        + "values (?, ?, ?, 1, 'APPROVED', 'approver-1', ?, now())",
                 decisionId,
                 caseId,
                 snapshotId,
