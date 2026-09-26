@@ -11,11 +11,13 @@ import java.util.UUID;
  * Read model of one persisted match result. {@code payload} is the canonical
  * JSON and {@code resultHash} is its SHA-256; both are returned unchanged from
  * storage so a re-run with the same semantic inputs reproduces the same hash.
+ * {@code resultNumber} is the per-case monotonic append order.
  */
 public record MatchResultView(
         UUID id,
         UUID invoiceCaseId,
         UUID evidenceBundleId,
+        int resultNumber,
         String resultHash,
         JsonNode payload,
         Instant createdAt) {
@@ -27,6 +29,7 @@ public record MatchResultView(
                 result.id(),
                 result.invoiceCaseId(),
                 result.evidenceBundleId(),
+                result.resultNumber(),
                 result.resultHash(),
                 parse(result.payload()),
                 result.createdAt());

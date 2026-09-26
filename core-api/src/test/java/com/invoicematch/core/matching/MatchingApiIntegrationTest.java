@@ -97,6 +97,7 @@ class MatchingApiIntegrationTest extends AbstractPostgresIntegrationTest {
         JsonNode result = runMatch(caseId, "req-match", 201);
 
         assertThat(result.get("resultHash").asText()).isNotBlank();
+        assertThat(result.get("resultNumber").asInt()).isEqualTo(1);
         assertThat(result.get("evidenceBundleId").asText()).isNotBlank();
         JsonNode payload = result.get("payload");
         assertThat(payload.get("schemaVersion").asText()).isEqualTo("match-result-v1");
@@ -241,6 +242,8 @@ class MatchingApiIntegrationTest extends AbstractPostgresIntegrationTest {
         JsonNode first = runMatch(caseId, "req-match-1", 201);
         JsonNode second = runMatch(caseId, "req-match-2", 201);
 
+        assertThat(first.get("resultNumber").asInt()).isEqualTo(1);
+        assertThat(second.get("resultNumber").asInt()).isEqualTo(2);
         assertThat(second.get("id").asText()).isNotEqualTo(first.get("id").asText());
         assertThat(second.get("resultHash").asText()).isEqualTo(first.get("resultHash").asText());
         assertThat(second.get("payload")).isEqualTo(first.get("payload"));
@@ -285,6 +288,21 @@ class MatchingApiIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     @Test
+    void supplementRequiredStateIsRejectedBecauseEvidenceIsStale() throws Exception {
+        String caseId = submittedCaseWithLine("req-1", 1, "A4 Paper", 10, 2500, ITEM_A);
+        forceSupplementRequired(caseId);
+
+        MvcResult result = mockMvc.perform(post("/api/invoice-cases/{id}/match", caseId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(matchBody("req-match")))
+                .andReturn();
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(409);
+        assertThat(read(result).get("code").asText()).isEqualTo("MATCH_STATE_CONFLICT");
+        assertThat(count("match_result")).isZero();
+    }
+
+    @Test
     void unknownCaseIsNotFoundAndMissingResultIsNotFound() throws Exception {
         UUID unknown = UUID.randomUUID();
         mockMvc.perform(post("/api/invoice-cases/{id}/match", unknown)
@@ -303,6 +321,14 @@ class MatchingApiIntegrationTest extends AbstractPostgresIntegrationTest {
     private void refreshSnapshot() {
         purchasingReferenceService.refresh(
                 new RefreshPurchaseOrderCommand(PurchaseOrderId.of(PO_ID), SupplierId.of(SUPPLIER)));
+    }
+
+    private void forceSupplementRequired(String caseId) {
+        int updated = jdbc.update(
+                "update invoice_case set status = 'SUPPLEMENT_REQUIRED', version = version + 1,"
+                        + " updated_at = updated_at + interval '1 second' where id = ?",
+                UUID.fromString(caseId));
+        assertThat(updated).isEqualTo(1);
     }
 
     private String submittedCaseWithLine(

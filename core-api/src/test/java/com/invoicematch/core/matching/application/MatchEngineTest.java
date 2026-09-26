@@ -20,7 +20,9 @@ import com.invoicematch.core.shared.domain.SupplierId;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -338,6 +340,138 @@ class MatchEngineTest {
                 assertThat(planned).isEqualTo(invoiceQuantity);
             }
         }
+    }
+
+    @Test
+    void twoInvoiceLinesSharingOneReceiptLineCannotOverbook() {
+        MatchInput input = input(
+                List.of(
+                        invoice(1, "A4 Paper", 40, 2500, "ITEM-A"),
+                        invoice(2, "A4 Paper", 40, 2500, "ITEM-A")),
+                List.of(poLine("POL-1", "ITEM-A", 100, 2500)),
+                List.of(receipt("R-1", "2026-01-05", 2, rline("RL-1", 1, "POL-1", 60))),
+                List.of());
+
+        JsonNode payload = compute(input);
+
+        JsonNode first = payload.get("lineOutcomes").get(0);
+        JsonNode second = payload.get("lineOutcomes").get(1);
+        assertThat(first.get("availableConfirmedQuantity").asLong()).isEqualTo(60L);
+        assertThat(first.get("plannedQuantity").asLong()).isEqualTo(40L);
+        assertThat(first.get("exceptions")).isEmpty();
+        assertThat(second.get("availableConfirmedQuantity").asLong()).isEqualTo(20L);
+        assertThat(second.get("plannedQuantity").asLong()).isEqualTo(20L);
+        assertThat(second.get("exceptions").get(0).get("type").asText())
+                .isEqualTo("QUANTITY_EXCEEDS_RECEIPT_BALANCE");
+
+        assertThat(totalPlannedForReceiptLine(payload, "RL-1")).isLessThanOrEqualTo(60L);
+        assertThat(payload.get("normal").asBoolean()).isFalse();
+    }
+
+    @Test
+    void aggregateAvailabilityIsLongAndDoesNotWrap() {
+        MatchInput input = input(
+                List.of(invoice(1, "A4 Paper", 5, 2500, "ITEM-A")),
+                List.of(poLine("POL-1", "ITEM-A", 100, 2500)),
+                List.of(
+                        receipt("R-1", "2026-01-05", 1, rline("RL-1", 1, "POL-1", Integer.MAX_VALUE)),
+                        receipt("R-2", "2026-01-06", 1, rline("RL-2", 1, "POL-1", Integer.MAX_VALUE))),
+                List.of());
+
+        JsonNode line = compute(input).get("lineOutcomes").get(0);
+
+        assertThat(line.get("availableConfirmedQuantity").asLong())
+                .isEqualTo(2L * Integer.MAX_VALUE);
+        assertThat(line.get("plannedQuantity").asLong()).isEqualTo(5L);
+        assertThat(line.get("expectedAllocationPlan").get(0).get("plannedQuantity").asInt())
+                .isEqualTo(5);
+    }
+
+    @Test
+    void multiLineShuffledOrderStillProducesIdenticalCanonicalJsonAndHash() {
+        List<EvidenceBundlePayload.EvidenceLine> invoiceLines = List.of(
+                invoice(1, "A4 Paper", 40, 2500, "ITEM-A"),
+                invoice(2, "A4 Paper", 30, 2500, "ITEM-A"),
+                invoice(3, "A4 Paper", 50, 2600, "ITEM-A"));
+        List<PurchaseOrderLineFacts> poLines = List.of(poLine("POL-1", "ITEM-A", 100, 2500));
+        List<ReceiptFacts> receipts = List.of(
+                receipt("R-B", "2026-01-06", 2, rline("RL-2", 1, "POL-1", 30)),
+                receipt("R-A", "2026-01-05", 2, rline("RL-1", 1, "POL-1", 20)));
+
+        MatchComputation first = engine.compute(input(invoiceLines, poLines, receipts, List.of()));
+
+        List<EvidenceBundlePayload.EvidenceLine> shuffledInvoice = new ArrayList<>(invoiceLines);
+        Collections.reverse(shuffledInvoice);
+        List<ReceiptFacts> shuffledReceipts = new ArrayList<>(receipts);
+        Collections.reverse(shuffledReceipts);
+
+        MatchComputation second = engine.compute(input(shuffledInvoice, poLines, shuffledReceipts, List.of()));
+
+        assertThat(second.canonicalJson()).isEqualTo(first.canonicalJson());
+        assertThat(second.resultHash()).isEqualTo(first.resultHash());
+    }
+
+    @Test
+    void randomizedMultiLinePlansNeverExceedAnyReceiptConfirmedQuantity() throws Exception {
+        Random random = new Random(20260926L);
+        for (int iteration = 0; iteration < 200; iteration++) {
+            int lineCount = 1 + random.nextInt(4);
+            List<EvidenceBundlePayload.EvidenceLine> invoiceLines = new ArrayList<>();
+            for (int i = 0; i < lineCount; i++) {
+                invoiceLines.add(invoice(i + 1, "A4 Paper", 1 + random.nextInt(80), 2500, "ITEM-A"));
+            }
+            int receiptCount = 1 + random.nextInt(4);
+            List<ReceiptFacts> receipts = new ArrayList<>();
+            Map<String, Integer> confirmedByReceiptLine = new HashMap<>();
+            for (int i = 0; i < receiptCount; i++) {
+                int confirmed = random.nextInt(51);
+                String receiptLineId = "RL-" + i;
+                confirmedByReceiptLine.put(receiptLineId, confirmed);
+                receipts.add(receipt(
+                        "R-" + i,
+                        LocalDate.of(2026, 1, 1).plusDays(random.nextInt(5)).toString(),
+                        1,
+                        rline(receiptLineId, 1, "POL-1", confirmed)));
+            }
+            Collections.shuffle(invoiceLines, random);
+            Collections.shuffle(receipts, random);
+
+            JsonNode payload = compute(input(invoiceLines, List.of(poLine("POL-1", "ITEM-A", 100, 2500)), receipts,
+                    List.of()));
+
+            Map<String, Long> plannedByReceiptLine = new HashMap<>();
+            for (JsonNode line : payload.get("lineOutcomes")) {
+                long planned = line.get("plannedQuantity").asLong();
+                long plannedSum = 0L;
+                for (JsonNode allocation : line.get("expectedAllocationPlan")) {
+                    String receiptLineId = allocation.get("receiptLineId").asText();
+                    long plannedHere = allocation.get("plannedQuantity").asLong();
+                    assertThat(plannedHere).isPositive();
+                    assertThat(plannedHere)
+                            .isLessThanOrEqualTo(allocation.get("confirmedQuantity").asLong());
+                    plannedSum += plannedHere;
+                    plannedByReceiptLine.merge(receiptLineId, plannedHere, Long::sum);
+                }
+                assertThat(plannedSum).isEqualTo(planned);
+                assertThat(planned).isLessThanOrEqualTo(line.get("availableConfirmedQuantity").asLong());
+            }
+            for (Map.Entry<String, Long> entry : plannedByReceiptLine.entrySet()) {
+                assertThat(entry.getValue())
+                        .isLessThanOrEqualTo((long) confirmedByReceiptLine.get(entry.getKey()));
+            }
+        }
+    }
+
+    private static long totalPlannedForReceiptLine(JsonNode payload, String receiptLineId) {
+        long total = 0L;
+        for (JsonNode line : payload.get("lineOutcomes")) {
+            for (JsonNode allocation : line.get("expectedAllocationPlan")) {
+                if (allocation.get("receiptLineId").asText().equals(receiptLineId)) {
+                    total += allocation.get("plannedQuantity").asLong();
+                }
+            }
+        }
+        return total;
     }
 
     private JsonNode compute(MatchInput input) {

@@ -70,12 +70,18 @@ public class InvoiceCaseQueryService {
 
     /**
      * Loads the case header and its latest frozen evidence bundle for the
-     * matching module. A case without a frozen bundle cannot be matched, which
-     * is a state conflict rather than a missing resource.
+     * matching module while holding the invoice case row
+     * {@code PESSIMISTIC_WRITE} lock. Taking the case lock before reading the
+     * bundle is the same case-then-child ordering every P1-03 writer uses, so a
+     * concurrent submit or state transition that changes the case version
+     * cannot interleave between the state read and the bundle read. A case
+     * without a frozen bundle cannot be matched, which is a state conflict
+     * rather than a missing resource.
      */
+    @Transactional
     public MatchCaseSnapshot loadForMatching(UUID caseId) {
         InvoiceCase invoiceCase =
-                invoiceCases.findById(caseId).orElseThrow(() -> new InvoiceCaseNotFoundException(caseId));
+                invoiceCases.findByIdForUpdate(caseId).orElseThrow(() -> new InvoiceCaseNotFoundException(caseId));
         EvidenceBundle bundle = evidenceBundles
                 .findFirstByInvoiceCaseIdOrderByVersionNumberDesc(caseId)
                 .orElseThrow(() -> new CaseStateConflictException(

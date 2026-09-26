@@ -13,9 +13,9 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * P1-04 migration checks: the append-only match_result history, its index and
- * the composite foreign keys that keep a result tied to a bundle of the same
- * case.
+ * P1-04 migration checks: the append-only match_result history, its per-case
+ * monotonic result number, the mandatory evidence bundle and the composite
+ * foreign keys that keep a result tied to a bundle of the same case.
  */
 class MatchResultMigrationTest extends AbstractPostgresIntegrationTest {
 
@@ -30,7 +30,7 @@ class MatchResultMigrationTest extends AbstractPostgresIntegrationTest {
     @Test
     void matchResultHistoryIndexExists() {
         Integer indexCount = jdbc.queryForObject(
-                "select count(*) from pg_indexes where indexname = 'ix_match_result_case_created_at'",
+                "select count(*) from pg_indexes where indexname = 'ix_match_result_case_result_number'",
                 Integer.class);
         assertThat(indexCount).isEqualTo(1);
     }
@@ -39,7 +39,7 @@ class MatchResultMigrationTest extends AbstractPostgresIntegrationTest {
     void matchResultUpdateAndDeleteAreRejected() {
         UUID caseId = seedCase();
         UUID bundleId = seedBundle(caseId, seedSealedDraft(caseId, 1), 1);
-        UUID matchResultId = insertMatchResult(caseId, bundleId);
+        UUID matchResultId = insertMatchResult(caseId, bundleId, 1);
 
         assertThatRejected(
                 () -> jdbc.update("update match_result set result_hash = 'tampered' where id = ?", matchResultId));
@@ -53,19 +53,44 @@ class MatchResultMigrationTest extends AbstractPostgresIntegrationTest {
         UUID bundleId = seedBundle(caseId, seedSealedDraft(caseId, 1), 1);
         UUID otherCaseId = seedCase();
 
-        assertThatThrownBy(() -> insertMatchResult(otherCaseId, bundleId))
+        assertThatThrownBy(() -> insertMatchResult(otherCaseId, bundleId, 1))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
-    void repeatedResultsForTheSameBundleAreAppendable() {
+    void matchResultEvidenceBundleIsMandatory() {
+        UUID caseId = seedCase();
+
+        assertThatThrownBy(() -> jdbc.update(
+                        "insert into match_result (id, invoice_case_id, evidence_bundle_id, result_number,"
+                                + " result_hash, payload, created_at)"
+                                + " values (?, ?, null, 1, 'hash', '{}'::jsonb, now())",
+                        UUID.randomUUID(),
+                        caseId))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThat(jdbc.queryForObject("select count(*) from match_result", Integer.class)).isZero();
+    }
+
+    @Test
+    void repeatedResultsForTheSameBundleAreAppendableWithDistinctNumbers() {
         UUID caseId = seedCase();
         UUID bundleId = seedBundle(caseId, seedSealedDraft(caseId, 1), 1);
 
-        insertMatchResult(caseId, bundleId);
-        insertMatchResult(caseId, bundleId);
+        insertMatchResult(caseId, bundleId, 1);
+        insertMatchResult(caseId, bundleId, 2);
 
         assertThat(jdbc.queryForObject("select count(*) from match_result", Integer.class)).isEqualTo(2);
+    }
+
+    @Test
+    void duplicateResultNumberForTheSameCaseIsRejected() {
+        UUID caseId = seedCase();
+        UUID bundleId = seedBundle(caseId, seedSealedDraft(caseId, 1), 1);
+
+        insertMatchResult(caseId, bundleId, 1);
+
+        assertThatThrownBy(() -> insertMatchResult(caseId, bundleId, 1))
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     private static void assertThatRejected(Runnable statement) {
@@ -108,14 +133,15 @@ class MatchResultMigrationTest extends AbstractPostgresIntegrationTest {
         return bundleId;
     }
 
-    private UUID insertMatchResult(UUID caseId, UUID evidenceBundleId) {
+    private UUID insertMatchResult(UUID caseId, UUID evidenceBundleId, int resultNumber) {
         UUID matchResultId = UUID.randomUUID();
         jdbc.update(
-                "insert into match_result (id, invoice_case_id, evidence_bundle_id, result_hash, payload, created_at)"
-                        + " values (?, ?, ?, ?, '{}'::jsonb, now())",
+                "insert into match_result (id, invoice_case_id, evidence_bundle_id, result_number, result_hash,"
+                        + " payload, created_at) values (?, ?, ?, ?, ?, '{}'::jsonb, now())",
                 matchResultId,
                 caseId,
                 evidenceBundleId,
+                resultNumber,
                 "result-hash");
         return matchResultId;
     }

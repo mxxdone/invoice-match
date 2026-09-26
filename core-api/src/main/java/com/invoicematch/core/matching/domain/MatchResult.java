@@ -29,8 +29,11 @@ public class MatchResult {
     @Column(name = "invoice_case_id", nullable = false, updatable = false)
     private UUID invoiceCaseId;
 
-    @Column(name = "evidence_bundle_id", updatable = false)
+    @Column(name = "evidence_bundle_id", nullable = false, updatable = false)
     private UUID evidenceBundleId;
+
+    @Column(name = "result_number", nullable = false, updatable = false)
+    private int resultNumber;
 
     @Column(name = "result_hash", nullable = false, updatable = false, length = 128)
     private String resultHash;
@@ -46,21 +49,37 @@ public class MatchResult {
     }
 
     private MatchResult(
-            UUID id, UUID invoiceCaseId, UUID evidenceBundleId, String resultHash, String payload, Instant createdAt) {
+            UUID id,
+            UUID invoiceCaseId,
+            UUID evidenceBundleId,
+            int resultNumber,
+            String resultHash,
+            String payload,
+            Instant createdAt) {
+        if (resultNumber <= 0) {
+            throw new DomainValidationException("resultNumber must be positive: " + resultNumber);
+        }
         if (resultHash == null || resultHash.isBlank()) {
             throw new DomainValidationException("resultHash must not be blank");
         }
         this.id = Objects.requireNonNull(id, "id");
         this.invoiceCaseId = Objects.requireNonNull(invoiceCaseId, "invoiceCaseId");
-        this.evidenceBundleId = evidenceBundleId;
+        this.evidenceBundleId = Objects.requireNonNull(evidenceBundleId, "evidenceBundleId");
+        this.resultNumber = resultNumber;
         this.resultHash = resultHash;
         this.payload = Objects.requireNonNull(payload, "payload");
         this.createdAt = Objects.requireNonNull(createdAt, "createdAt");
     }
 
     public static MatchResult record(
-            UUID id, UUID invoiceCaseId, UUID evidenceBundleId, String resultHash, String payload, Instant createdAt) {
-        return new MatchResult(id, invoiceCaseId, evidenceBundleId, resultHash, payload, createdAt);
+            UUID id,
+            UUID invoiceCaseId,
+            UUID evidenceBundleId,
+            int resultNumber,
+            String resultHash,
+            String payload,
+            Instant createdAt) {
+        return new MatchResult(id, invoiceCaseId, evidenceBundleId, resultNumber, resultHash, payload, createdAt);
     }
 
     public UUID id() {
@@ -73,6 +92,10 @@ public class MatchResult {
 
     public UUID evidenceBundleId() {
         return evidenceBundleId;
+    }
+
+    public int resultNumber() {
+        return resultNumber;
     }
 
     public String resultHash() {

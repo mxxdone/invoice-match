@@ -67,17 +67,21 @@ no `ReceiptAllocation` is created or receipt balance consumed in this ticket.
 | `GET` | `/api/invoice-cases/{id}/match` | Read the latest match result |
 | `GET` | `/api/invoice-cases/{id}/matches` | Read the append-only match result history, oldest first |
 
-A match only runs when the case is `REVIEW_PENDING` or `SUPPLEMENT_REQUIRED` and
-has a frozen bundle; otherwise it is `409 MATCH_STATE_CONFLICT` (or the case-level
-`409 CASE_STATE_CONFLICT`). An unknown case is `404`, and `GET` of the latest
-result before any match (or of an unknown case) is `404`.
+A match only runs when the case is `REVIEW_PENDING` and has a frozen bundle;
+`SUPPLEMENT_REQUIRED` is rejected with `409 MATCH_STATE_CONFLICT` because its
+frozen evidence is already known to be stale and awaiting correction (as is any
+other state). An unknown case is `404`, and `GET` of the latest result before any
+match (or of an unknown case) is `404`.
 
-The response contains `id`, `invoiceCaseId`, `evidenceBundleId`, `resultHash`,
-`createdAt` and the canonical `payload` object. The payload records the bundle
-id/version/hash, the purchasing snapshot version/payload hash and receipt
-versions, the input invoice values, the compared purchase order values, the
-confirmed/available receipt values, the `expectedAllocationPlan` and every
-exception with machine-readable values, so a person can recompute the result.
+The response contains `id`, `invoiceCaseId`, `evidenceBundleId`, `resultNumber`,
+`resultHash`, `createdAt` and the canonical `payload` object. `resultNumber` is a
+per-case monotonic append number enforced by the database; latest and history
+read by it, so equal timestamps or concurrent requests cannot reorder results.
+The payload records the bundle id/version/hash, the purchasing snapshot
+version/payload hash and receipt versions, the input invoice values, the compared
+purchase order values, the confirmed/available receipt values, the
+`expectedAllocationPlan` and every exception with machine-readable values, so a
+person can recompute the result.
 
 | Exception type | Meaning |
 | --- | --- |
@@ -97,7 +101,11 @@ order lines by external id, receipts by receipt id, receipt lines by
 `receiptDate` then external receipt line id then receipt id, exceptions by line
 number then type then values). The same inputs always produce the same hash
 regardless of repository or list ordering; the result id and creation time are
-not part of the hash.
+not part of the hash. Invoice lines are processed in line-number order against
+one shared remaining-receipt ledger keyed by structured receipt identity, so
+several lines mapped to the same purchase order line cannot overbook it, and
+aggregate availability uses `long` so summing `Integer.MAX_VALUE` receipt lines
+cannot wrap.
 
 The `expectedAllocationPlan` is an expected, non-consuming FIFO plan
 (`allocationPlan.consuming = false`, `allocationPlan.mode =

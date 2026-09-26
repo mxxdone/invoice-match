@@ -18,6 +18,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -43,6 +44,7 @@ public class MatchingService {
     private final MatchCommandFingerprint fingerprint;
     private final RequestIdempotencyStore idempotency;
     private final EvidenceBundlePayloadHasher bundleHasher;
+    private final MatchLockInterceptor matchLockInterceptor;
     private final Clock clock;
 
     public MatchingService(
@@ -53,6 +55,7 @@ public class MatchingService {
             MatchCommandFingerprint fingerprint,
             RequestIdempotencyStore idempotency,
             EvidenceBundlePayloadHasher bundleHasher,
+            ObjectProvider<MatchLockInterceptor> matchLockInterceptors,
             Clock clock) {
         this.invoiceCaseQueries = invoiceCaseQueries;
         this.purchaseOrderSnapshots = purchaseOrderSnapshots;
@@ -61,6 +64,7 @@ public class MatchingService {
         this.fingerprint = fingerprint;
         this.idempotency = idempotency;
         this.bundleHasher = bundleHasher;
+        this.matchLockInterceptor = matchLockInterceptors.getIfAvailable(() -> MatchLockInterceptor.NONE);
         this.clock = clock;
     }
 
@@ -76,7 +80,13 @@ public class MatchingService {
                     idempotency.decode(replay.response(), MatchResultView.class));
         }
 
+        // Lock the case row before reading its state or its latest bundle, and
+        // hold it through the result insert and idempotency response. A
+        // concurrent submit or state transition that locks the case first either
+        // commits before this lock or waits for it, so this match can never mix
+        // an old case version with a new bundle.
         MatchCaseSnapshot caseSnapshot = invoiceCaseQueries.loadForMatching(command.caseId());
+        matchLockInterceptor.afterCaseLocked(command.caseId());
         requireReviewable(caseSnapshot);
 
         CurrentPurchaseOrderSnapshot purchasing = purchaseOrderSnapshots
@@ -108,10 +118,15 @@ public class MatchingService {
 
         MatchComputation computation = engine.compute(input);
 
+        // The case row lock serializes matching for this case, so max+1 is a
+        // safe per-case monotonic append number for latest/history ordering.
+        int resultNumber = matchResults.maxResultNumber(caseSnapshot.caseId()) + 1;
+
         MatchResult saved = matchResults.saveAndFlush(MatchResult.record(
                 UUID.randomUUID(),
                 caseSnapshot.caseId(),
                 caseSnapshot.evidenceBundleId(),
+                resultNumber,
                 computation.resultHash(),
                 computation.canonicalJson(),
                 clock.instant()));
@@ -125,7 +140,7 @@ public class MatchingService {
     public MatchResultView latest(UUID caseId) {
         invoiceCaseQueries.requireCase(caseId);
         return matchResults
-                .findFirstByInvoiceCaseIdOrderByCreatedAtDescIdDesc(caseId)
+                .findFirstByInvoiceCaseIdOrderByResultNumberDesc(caseId)
                 .map(MatchResultView::from)
                 .orElseThrow(() -> new MatchResultNotFoundException(caseId));
     }
@@ -133,17 +148,17 @@ public class MatchingService {
     @Transactional(readOnly = true)
     public List<MatchResultView> list(UUID caseId) {
         invoiceCaseQueries.requireCase(caseId);
-        return matchResults.findByInvoiceCaseIdOrderByCreatedAtAscIdAsc(caseId).stream()
+        return matchResults.findByInvoiceCaseIdOrderByResultNumberAsc(caseId).stream()
                 .map(MatchResultView::from)
                 .toList();
     }
 
     private static void requireReviewable(MatchCaseSnapshot caseSnapshot) {
         InvoiceCaseStatus status = caseSnapshot.status();
-        if (status != InvoiceCaseStatus.REVIEW_PENDING && status != InvoiceCaseStatus.SUPPLEMENT_REQUIRED) {
+        if (status != InvoiceCaseStatus.REVIEW_PENDING) {
             throw new MatchStateConflictException(
                     caseSnapshot.caseId(),
-                    "matching requires REVIEW_PENDING or SUPPLEMENT_REQUIRED but status was " + status);
+                    "matching requires REVIEW_PENDING but status was " + status);
         }
     }
 }

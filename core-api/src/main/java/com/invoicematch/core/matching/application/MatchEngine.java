@@ -76,12 +76,13 @@ public class MatchEngine {
                         PurchaseOrderLineFacts::itemId, LinkedHashMap::new, Collectors.toList()));
 
         Map<String, List<ReceiptLineCandidate>> receiptCandidatesByPoLine = receiptCandidates(input);
+        Map<ReceiptKey, Long> remainingByReceiptLine = initialConfirmedBalances(receiptCandidatesByPoLine);
 
         List<MatchLineOutcome> outcomes = new ArrayList<>();
         List<MatchException> exceptions = new ArrayList<>();
         for (EvidenceBundlePayload.EvidenceLine invoiceLine : invoiceLines) {
             MatchLineOutcome outcome =
-                    matchLine(invoiceLine, poLinesByItem, receiptCandidatesByPoLine);
+                    matchLine(invoiceLine, poLinesByItem, receiptCandidatesByPoLine, remainingByReceiptLine);
             outcomes.add(outcome);
             exceptions.addAll(outcome.exceptions());
         }
@@ -99,10 +100,27 @@ public class MatchEngine {
         return new MatchComputation(json, sha256Hex(json));
     }
 
+    /**
+     * Initializes the shared remaining-receipt ledger from the confirmed receipt
+     * lines. Keyed by structured receipt identity (receipt id and receipt line
+     * id), never by a delimiter-concatenated string.
+     */
+    private static Map<ReceiptKey, Long> initialConfirmedBalances(
+            Map<String, List<ReceiptLineCandidate>> receiptCandidatesByPoLine) {
+        Map<ReceiptKey, Long> remaining = new HashMap<>();
+        for (List<ReceiptLineCandidate> candidates : receiptCandidatesByPoLine.values()) {
+            for (ReceiptLineCandidate candidate : candidates) {
+                remaining.merge(candidate.key(), (long) candidate.confirmedQuantity(), Long::sum);
+            }
+        }
+        return remaining;
+    }
+
     private MatchLineOutcome matchLine(
             EvidenceBundlePayload.EvidenceLine invoiceLine,
             Map<String, List<PurchaseOrderLineFacts>> poLinesByItem,
-            Map<String, List<ReceiptLineCandidate>> receiptCandidatesByPoLine) {
+            Map<String, List<ReceiptLineCandidate>> receiptCandidatesByPoLine,
+            Map<ReceiptKey, Long> remainingByReceiptLine) {
         int lineNumber = invoiceLine.lineNumber();
         String confirmedItemId = blankToNull(invoiceLine.confirmedItemId());
 
@@ -120,9 +138,9 @@ public class MatchEngine {
                     null,
                     invoiceLine.quantity(),
                     invoiceLine.unitPrice(),
-                    0,
+                    0L,
                     List.of(),
-                    0,
+                    0L,
                     List.of(exception));
         }
 
@@ -147,18 +165,46 @@ public class MatchEngine {
                     null,
                     invoiceLine.quantity(),
                     invoiceLine.unitPrice(),
-                    0,
+                    0L,
                     List.of(),
-                    0,
+                    0L,
                     List.of(exception));
         }
 
         PurchaseOrderLineFacts poLine = candidates.get(0);
         List<ReceiptLineCandidate> receiptCandidates =
                 receiptCandidatesByPoLine.getOrDefault(poLine.purchaseOrderLineId(), List.of());
-        int available = receiptCandidates.stream().mapToInt(ReceiptLineCandidate::confirmedQuantity).sum();
-        List<PlannedAllocation> plan = fifoPlan(invoiceLine.quantity(), receiptCandidates);
-        int planned = plan.stream().mapToInt(PlannedAllocation::plannedQuantity).sum();
+
+        // Aggregate remaining for this purchase order line immediately before
+        // this invoice line's plan. Consuming it here carries the deduction to
+        // every later invoice line that shares the same purchase order line.
+        long available = 0L;
+        for (ReceiptLineCandidate candidate : receiptCandidates) {
+            available += remainingByReceiptLine.getOrDefault(candidate.key(), 0L);
+        }
+
+        List<PlannedAllocation> plan = new ArrayList<>();
+        long remainingToPlan = invoiceLine.quantity();
+        for (ReceiptLineCandidate candidate : receiptCandidates) {
+            if (remainingToPlan <= 0L) {
+                break;
+            }
+            long remaining = remainingByReceiptLine.getOrDefault(candidate.key(), 0L);
+            if (remaining <= 0L) {
+                continue;
+            }
+            long take = Math.min(remainingToPlan, remaining);
+            plan.add(new PlannedAllocation(
+                    candidate.receiptId(),
+                    candidate.receiptLineId(),
+                    candidate.receiptDate(),
+                    candidate.receiptLineVersion(),
+                    candidate.confirmedQuantity(),
+                    (int) take));
+            remainingByReceiptLine.put(candidate.key(), remaining - take);
+            remainingToPlan -= take;
+        }
+        long planned = invoiceLine.quantity() - remainingToPlan;
 
         List<MatchException> lineExceptions = new ArrayList<>();
         if (invoiceLine.quantity() > available) {
@@ -214,29 +260,6 @@ public class MatchEngine {
         }
         byPoLine.values().forEach(candidates -> candidates.sort(RECEIPT_LINE_ORDER));
         return byPoLine;
-    }
-
-    private static List<PlannedAllocation> fifoPlan(int invoiceQuantity, List<ReceiptLineCandidate> ordered) {
-        int remaining = invoiceQuantity;
-        List<PlannedAllocation> plan = new ArrayList<>();
-        for (ReceiptLineCandidate candidate : ordered) {
-            if (remaining <= 0) {
-                break;
-            }
-            int take = Math.min(remaining, candidate.confirmedQuantity());
-            if (take <= 0) {
-                continue;
-            }
-            plan.add(new PlannedAllocation(
-                    candidate.receiptId(),
-                    candidate.receiptLineId(),
-                    candidate.receiptDate(),
-                    candidate.receiptLineVersion(),
-                    candidate.confirmedQuantity(),
-                    take));
-            remaining -= take;
-        }
-        return plan;
     }
 
     private static void addDuplicateException(MatchInput input, List<MatchException> exceptions) {
@@ -435,5 +458,17 @@ public class MatchEngine {
         private int confirmedQuantity() {
             return confirmedQuantity;
         }
+
+        private ReceiptKey key() {
+            return new ReceiptKey(receiptId, receiptLineId);
+        }
+    }
+
+    /**
+     * Structured identity of one receipt line in the shared remaining balance
+     * ledger. Using a record rather than a delimiter-joined string means receipt
+     * and receipt-line ids containing the delimiter can never collide.
+     */
+    private record ReceiptKey(String receiptId, String receiptLineId) {
     }
 }

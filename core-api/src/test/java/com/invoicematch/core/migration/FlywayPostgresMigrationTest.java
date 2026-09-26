@@ -192,8 +192,9 @@ class FlywayPostgresMigrationTest extends AbstractPostgresIntegrationTest {
     void rejectsReviewSnapshotMatchResultFromAnotherCase() {
         UUID caseId = seedCase("REVIEW_PENDING");
         UUID bundleId = seedBundle(caseId, seedSealedDraft(caseId, 1), 1);
-        UUID otherCaseId = seedCase("SUBMITTED");
-        UUID matchResultOfOtherCase = insertMatchResult(otherCaseId, null);
+        UUID otherCaseId = seedCase("REVIEW_PENDING");
+        UUID otherBundleId = seedBundle(otherCaseId, seedSealedDraft(otherCaseId, 1), 1);
+        UUID matchResultOfOtherCase = insertMatchResult(otherCaseId, otherBundleId);
 
         assertThatThrownBy(() -> insertSnapshot(caseId, bundleId, matchResultOfOtherCase, 1, "hash"))
                 .isInstanceOf(DataIntegrityViolationException.class);
@@ -338,8 +339,8 @@ class FlywayPostgresMigrationTest extends AbstractPostgresIntegrationTest {
     private UUID insertMatchResult(UUID caseId, UUID evidenceBundleId) {
         UUID matchResultId = UUID.randomUUID();
         jdbc.update(
-                "insert into match_result (id, invoice_case_id, evidence_bundle_id, result_hash, payload, created_at) "
-                        + "values (?, ?, ?, ?, '{}'::jsonb, now())",
+                "insert into match_result (id, invoice_case_id, evidence_bundle_id, result_number, result_hash,"
+                        + " payload, created_at) values (?, ?, ?, 1, ?, '{}'::jsonb, now())",
                 matchResultId,
                 caseId,
                 evidenceBundleId,
