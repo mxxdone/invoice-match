@@ -175,6 +175,63 @@ UUID 보존, 비활성화, 참조 변경, 동시 최초 refresh, refresh 중 일
 
 관련 커밋: `5f5cf7e`
 
+## P1-05 — append-only 이력의 안전한 스키마 진화
+
+### 문제
+
+V5가 기존 `MatchResult`, `ReviewSnapshot`, `ReviewDecision`에 새 source 필드를 추가하고 값을 backfill하려 했지만, 이 테이블들은 V1부터 UPDATE를 거부하는 append-only trigger로 보호되고 있었다. 빈 데이터베이스에서 전체 migration을 실행하는 테스트는 통과했지만, 실제 V4 데이터가 있는 환경에서는 V5 적용 자체가 실패했다.
+
+### 해결
+
+- 하나의 migration transaction 안에서 해당 append-only trigger만 명시적으로 비활성화했다.
+- 기존 관계를 기준으로 source version, hash와 watermark를 backfill했다.
+- backfill 직후 trigger를 다시 활성화하고 새 NOT NULL·복합 외래키 제약을 적용했다.
+- V4까지만 적용한 데이터베이스에 실제 이력 행을 넣은 뒤 V5로 올리는 전용 upgrade test를 추가했다.
+
+### 검증과 교훈
+
+업그레이드 후 backfill 값과 Flyway 이력을 확인하고, 비활성 상태로 남은 trigger가 0개인지 검증했다. 새 설치 테스트만으로는 운영 migration을 보장할 수 없다. 불변 이력 테이블의 스키마를 진화시킬 때는 과거 데이터, 보호 trigger와 제약 적용 순서를 포함한 `N-1 → N` 시험이 필요하다.
+
+관련 커밋: `1d06710`
+
+## P1-05 — 검토 결정과 외부 사실 갱신의 원자성
+
+### 문제
+
+검토 쓰기가 청구 사건만 잠근 상태에서 구매 snapshot을 검증하면, 검증 직후 refresh가 새 구매 사실을 commit할 수 있었다. 그러면 이미 stale이 된 사실을 근거로 매핑·보완·거절 결정이나 후속 snapshot이 저장될 수 있다. 여러 query가 같은 transaction에 있다는 사실만으로 서로 다른 aggregate의 변경은 막히지 않았다.
+
+### 해결
+
+- 구매 refresh와 검토 write가 동일한 transaction advisory lock을 사용하도록 `PurchaseOrderSnapshotLock`으로 잠금 계약을 통합했다.
+- 검토 write의 잠금 순서를 `invoice_case → purchase order advisory lock → currentness 검증 → 결정/commit`으로 고정했다.
+- snapshot과 source match result의 bundle, 결과 번호, 구매 version/hash, mapping watermark를 복합 후보키·외래키로 묶었다.
+- mapping decision도 대상 snapshot의 정확한 bundle과 일치하도록 DB 관계로 강제했다.
+
+### 검증과 교훈
+
+실제 PostgreSQL에서 검토 write와 refresh가 각각 먼저 잠금을 소유하는 양방향 interleaving을 재현했고, 잘못된 source 조합을 삽입하는 음성 테스트를 추가했다. stale 검사는 조회 함수 하나가 아니라 변경 주체들이 공유하는 잠금 프로토콜과 DB 제약을 함께 가져야 승인 근거로 사용할 수 있다.
+
+관련 커밋: `1d06710`
+
+## P1-05 — 사람의 매핑은 품목과 발주 라인의 결합된 선택
+
+### 문제
+
+사람이 `ITEM-A`를 `POL-1`에 매핑했어도 발주 데이터 갱신 후 기존 mapping이 item ID만으로 재해석되면 다른 발주 라인으로 이동할 수 있었다. 발주 라인 ID를 저장한 뒤에도 동일 `POL-1`의 품목이 `ITEM-B`로 교체되는 경우를 검사하지 않으면, payload에 서로 다른 품목이 기록된 채 정상 `MATCHED`가 될 수 있었다.
+
+### 해결
+
+- `AppliedMapping`에 사람이 선택한 `purchaseOrderLineId`를 보존했다.
+- 현재 active 발주 라인의 `(itemId, purchaseOrderLineId)`가 저장된 쌍과 모두 일치할 때만 매핑을 적용했다.
+- 라인 소멸, 다른 라인으로의 이동, 동일 라인의 품목 교체는 모두 `EVIDENCE_INSUFFICIENT`로 처리하고 진단 정보를 남겼다.
+- 변경된 사실에 대해서는 새로운 사람의 매핑 결정이 있어야만 후속 snapshot이 `MATCHED`가 되도록 했다.
+
+### 검증과 교훈
+
+라인 소멸, 같은 품목의 다른 라인 등장, 동일 라인 ID의 품목 교체를 단위·API 통합 테스트로 재현했다. 기존 검토 대상은 stale로 거부되고 새 매핑 후에만 정상 결과가 생성됨을 확인했다. 사람의 결정은 검색 힌트가 아니라 당시 선택한 복합 업무 정체성이므로, 부분 식별자로 다시 추론하면 안 된다.
+
+관련 커밋: `1d06710`, `8490b8c`
+
 ## 앞으로 추가할 때의 형식
 
 새 사례는 아래 항목을 중심으로 짧게 추가한다.
