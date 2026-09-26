@@ -9,6 +9,7 @@
 - 업무 규칙을 변경해야 하면 코드보다 `docs/Spec.md`, `CONTEXT.md`와 사건 기반 테스트를 먼저 갱신한다.
 - Ticket의 Acceptance Criteria와 검증을 통과하지 못하면 다음 Ticket으로 넘어가지 않는다.
 - 변경 범위에 맞는 테스트, lint, build와 smoke test를 실행하고 실패 원인을 수정한다.
+- Ticket 인수 과정에서 재현된 유의미한 정합성·동시성·복구·성능·운영 문제가 있으면 해결과 검증이 끝난 뒤 `docs/EngineeringNotes.md`에 결과 중심으로 추가한다. 단순 컴파일 오류나 일회성 시행착오는 기록하지 않는다.
 - 문서와 코드가 충돌하면 임의로 해석하지 않고 Head에게 보고한다.
 
 ## 위임과 교차 검증
