@@ -256,7 +256,7 @@ public class ApprovalService {
                         .thenComparing(ReceiptAllocation::receiptLineId)
                         .thenComparing(ReceiptAllocation::receiptId))
                 .toList();
-        long allocatedQuantityTotal = ApprovalAggregates.sumAllocatedQuantity(orderedAllocations);
+        long allocatedQuantityTotal = sumCommittedQuantity(command.caseId(), snapshot.id(), orderedAllocations);
         if (allocatedQuantityTotal != plannedQuantityTotal) {
             throw new IllegalStateException("committed allocation total does not equal the planned total");
         }
@@ -441,7 +441,7 @@ public class ApprovalService {
                 shortfalls.add(new ReceiptBalanceShortfall(
                         row.receiptId(),
                         row.receiptLineId(),
-                        (int) confirmed,
+                        confirmed,
                         allocated,
                         remaining,
                         entry.getValue()));
@@ -466,6 +466,18 @@ public class ApprovalService {
         } catch (ArithmeticException overflow) {
             throw new ApprovalNotPermittedException(
                     caseId, snapshotId, List.of("the approved allocation quantity total overflows"));
+        }
+    }
+
+    private long sumCommittedQuantity(UUID caseId, UUID snapshotId, List<ReceiptAllocation> allocations) {
+        try {
+            return ApprovalAggregates.sumAllocatedQuantity(allocations);
+        } catch (ArithmeticException overflow) {
+            // Defensive: the planned total already fits in a long and every
+            // committed allocation mirrors the plan, so this is a stable failure
+            // contract rather than a raw overflow escaping the write.
+            throw new ApprovalNotPermittedException(
+                    caseId, snapshotId, List.of("the committed allocation quantity total overflows"));
         }
     }
 

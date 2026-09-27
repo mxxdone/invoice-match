@@ -152,7 +152,19 @@ BEGIN
     -- 2. the same purchase order advisory lock the refresh/approval protocol uses.
     PERFORM pg_advisory_xact_lock(1, hashtext(NEW.purchase_order_id));
 
-    -- 3. validate the exact decision subject.
+    -- 3. lock the exact receipt line in the canonical order.
+    SELECT purchase_order_id, receipt_id, receipt_line_id, purchase_order_line_id,
+           receipt_line_version, confirmed_quantity, active
+      INTO receipt_row
+      FROM receipt_line_snapshot
+     WHERE id = NEW.receipt_line_snapshot_id
+       FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'receipt allocation references a missing receipt line %', NEW.receipt_line_snapshot_id
+            USING ERRCODE = '23514';
+    END IF;
+
+    -- 4. validate the exact decision subject.
     SELECT id, decision, decision_number, invoice_case_id, review_snapshot_id, payload_hash
       INTO decision_row
       FROM review_decision
@@ -172,6 +184,7 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
+    -- 5. validate the exact snapshot subject.
     SELECT invoice_case_id, evidence_bundle_id, payload_hash
       INTO snapshot_row
       FROM review_snapshot
@@ -187,6 +200,7 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
+    -- 6. the invoice line must belong to the bundle's sealed draft revision.
     SELECT count(*) INTO invoice_line_found
       FROM evidence_bundle b
       JOIN invoice_line l ON l.draft_revision_id = b.draft_revision_id
@@ -200,17 +214,7 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
-    -- 4. lock the exact receipt line.
-    SELECT purchase_order_id, receipt_id, receipt_line_id, purchase_order_line_id,
-           receipt_line_version, confirmed_quantity, active
-      INTO receipt_row
-      FROM receipt_line_snapshot
-     WHERE id = NEW.receipt_line_snapshot_id
-       FOR UPDATE;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'receipt allocation references a missing receipt line %', NEW.receipt_line_snapshot_id
-            USING ERRCODE = '23514';
-    END IF;
+    -- 7. the locked receipt row must be active and match every stated fact.
     IF NOT receipt_row.active THEN
         RAISE EXCEPTION 'receipt allocation references an inactive receipt line %', NEW.receipt_line_id
             USING ERRCODE = '23514';
@@ -226,7 +230,7 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
-    -- 5. checked balance (the row lock is already held).
+    -- 8. checked balance (the row lock is already held).
     SELECT COALESCE(SUM(allocated_quantity), 0) INTO allocated
       FROM receipt_allocation
      WHERE receipt_line_snapshot_id = NEW.receipt_line_snapshot_id;
@@ -473,7 +477,8 @@ BEGIN
                 USING ERRCODE = '23514';
         END IF;
         SELECT id, decision, decision_number, invoice_case_id, review_snapshot_id, payload_hash,
-               decided_by, approved_case_version_before, approved_case_version_after
+               decided_by, approved_amount, approved_currency,
+               approved_case_version_before, approved_case_version_after
           INTO decision_row
           FROM review_decision
          WHERE id = NEW.target_id::uuid;
@@ -492,6 +497,9 @@ BEGIN
         IF NEW.request_id IS NULL OR btrim(NEW.request_id) = '' THEN
             RAISE EXCEPTION 'APPROVE audit requires a request id' USING ERRCODE = '23514';
         END IF;
+        IF NEW.trace_id IS NULL OR btrim(NEW.trace_id) = '' THEN
+            RAISE EXCEPTION 'APPROVE audit requires a trace id' USING ERRCODE = '23514';
+        END IF;
         IF NEW.before_state IS NULL OR NEW.after_state IS NULL THEN
             RAISE EXCEPTION 'APPROVE audit requires before and after state' USING ERRCODE = '23514';
         END IF;
@@ -506,6 +514,13 @@ BEGIN
         IF NEW.before_state->>'caseVersion' IS DISTINCT FROM decision_row.approved_case_version_before::text
             OR NEW.after_state->>'caseVersion' IS DISTINCT FROM decision_row.approved_case_version_after::text THEN
             RAISE EXCEPTION 'APPROVE audit case versions do not match the approved decision'
+                USING ERRCODE = '23514';
+        END IF;
+        -- The before-state must also name the exact snapshot/hash the decision
+        -- approved, so a forged before-snapshot cannot slip through.
+        IF NEW.before_state->>'reviewSnapshotId' IS DISTINCT FROM decision_row.review_snapshot_id::text
+            OR NEW.before_state->>'reviewPayloadHash' IS DISTINCT FROM decision_row.payload_hash THEN
+            RAISE EXCEPTION 'APPROVE audit before-snapshot facts do not match the approved decision'
                 USING ERRCODE = '23514';
         END IF;
         IF NEW.after_state->>'decisionId' IS DISTINCT FROM decision_row.id::text
@@ -532,6 +547,13 @@ BEGIN
             OR NEW.after_state->>'amount' IS DISTINCT FROM payment_row.amount::text
             OR NEW.after_state->>'currency' IS DISTINCT FROM payment_row.currency THEN
             RAISE EXCEPTION 'APPROVE audit money/key fact does not match the payment request'
+                USING ERRCODE = '23514';
+        END IF;
+        -- The emitted money must also equal the decision's persisted approved
+        -- money, so the audit can never disagree with the authoritative decision.
+        IF NEW.after_state->>'amount' IS DISTINCT FROM decision_row.approved_amount::text
+            OR NEW.after_state->>'currency' IS DISTINCT FROM decision_row.approved_currency THEN
+            RAISE EXCEPTION 'APPROVE audit amount does not match the approved decision'
                 USING ERRCODE = '23514';
         END IF;
 

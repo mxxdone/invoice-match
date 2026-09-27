@@ -672,9 +672,27 @@ class ApprovalWorkflowIntegrationTest extends AbstractPostgresIntegrationTest {
                                 List.of(allocationJson(1, receiptId, receiptLineId, allocatedQuantity)))))
                 .isInstanceOf(DataIntegrityViolationException.class);
         assertThatThrownBy(() -> insertApproveAudit(caseId, decisionId, caseVersionAfter,
+                        approveBeforeJson(caseVersionBefore, UUID.randomUUID().toString(), payloadHash),
+                        approveAfterJson(caseVersionAfter, decisionId, decisionNumber, snapshotId, payloadHash,
+                                paymentId, externalKey, amount, allocatedQuantity,
+                                List.of(allocationJson(1, receiptId, receiptLineId, allocatedQuantity)))))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> insertApproveAudit(caseId, decisionId, caseVersionAfter,
+                        approveBeforeJson(caseVersionBefore, snapshotId, "forged-before-hash"),
+                        approveAfterJson(caseVersionAfter, decisionId, decisionNumber, snapshotId, payloadHash,
+                                paymentId, externalKey, amount, allocatedQuantity,
+                                List.of(allocationJson(1, receiptId, receiptLineId, allocatedQuantity)))))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> insertApproveAudit(caseId, decisionId, caseVersionAfter,
                         approveBeforeJson(caseVersionBefore, snapshotId, payloadHash),
                         approveAfterJson(caseVersionAfter, decisionId, decisionNumber + 1, snapshotId, payloadHash,
                                 paymentId, externalKey, amount, allocatedQuantity,
+                                List.of(allocationJson(1, receiptId, receiptLineId, allocatedQuantity)))))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> insertApproveAudit(caseId, decisionId, caseVersionAfter,
+                        approveBeforeJson(caseVersionBefore, snapshotId, payloadHash),
+                        approveAfterJson(caseVersionAfter, decisionId, decisionNumber, snapshotId, payloadHash,
+                                paymentId, externalKey, amount + 1, allocatedQuantity,
                                 List.of(allocationJson(1, receiptId, receiptLineId, allocatedQuantity)))))
                 .isInstanceOf(DataIntegrityViolationException.class);
         assertThatThrownBy(() -> insertApproveAudit(caseId, decisionId, caseVersionAfter,

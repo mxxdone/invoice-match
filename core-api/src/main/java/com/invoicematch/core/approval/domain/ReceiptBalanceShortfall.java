@@ -9,7 +9,7 @@ package com.invoicematch.core.approval.domain;
 public record ReceiptBalanceShortfall(
         String receiptId,
         String receiptLineId,
-        int confirmedQuantity,
+        long confirmedQuantity,
         long allocatedQuantity,
         long remainingQuantity,
         long requestedQuantity) {

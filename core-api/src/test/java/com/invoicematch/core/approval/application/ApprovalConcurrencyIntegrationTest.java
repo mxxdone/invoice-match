@@ -262,7 +262,8 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
                             caseId))
                     .isZero();
             assertThat(jdbc.queryForObject(
-                            "select count(*) from idempotency_record where request_id = ?",
+                            "select count(*) from idempotency_record where scope = 'invoice-case:approve'"
+                                    + " and actor = 'approver' and request_id = ?",
                             Integer.class,
                             target.requestId()))
                     .isZero();
@@ -515,6 +516,158 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
         }
     }
 
+    @Test
+    void rawAllocationInsertWaitsForTheCanonicalCaseThenReceiptLockWithoutDeadlock() throws Exception {
+        STUB.respond(200, spareLinePayload().toJson());
+        UUID caseId = frozenCase("INV-1", 40);
+        assertThat(attempt(target(caseId))).isInstanceOf(ApprovalResult.class);
+        ApprovedSubject subject = approvedSubject(caseId);
+        ReceiptFact spare = receiptFact("RCL-B-1001");
+
+        CountDownLatch caseLocked = new CountDownLatch(1);
+        CountDownLatch lockSpareReceipt = new CountDownLatch(1);
+        TransactionTemplate holder = new TransactionTemplate(transactionManager);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            // Connection A is the exact reverse-order acquisition the old
+            // two-trigger schema could deadlock on: hold the case row, then lock
+            // the receipt line the raw writer wants.
+            Future<?> held = pool.submit(() -> holder.executeWithoutResult(status -> {
+                jdbc.queryForList("select id from invoice_case where id = ? for update", caseId);
+                caseLocked.countDown();
+                try {
+                    lockSpareReceipt.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                jdbc.queryForList("select id from receipt_line_snapshot where id = ? for update", spare.id());
+            }));
+            assertThat(caseLocked.await(10, TimeUnit.SECONDS)).isTrue();
+
+            // Connection B raw-inserts a valid allocation for that same receipt
+            // line. The single canonical guard must take the case lock first, so
+            // B waits on A without ever holding the receipt; a reverse guard
+            // would make PostgreSQL report a deadlock.
+            Future<Integer> insert = pool.submit(() -> rawInsertAllocation(caseId, subject, 1, spare, 1));
+
+            Thread.sleep(500);
+            assertThat(insert.isDone())
+                    .as("raw insert must wait on the case lock before touching the receipt")
+                    .isFalse();
+
+            lockSpareReceipt.countDown();
+            held.get(30, TimeUnit.SECONDS);
+            assertThat(insert.get(30, TimeUnit.SECONDS)).isEqualTo(1);
+            assertThat(count("receipt_allocation")).isEqualTo(2);
+        } finally {
+            lockSpareReceipt.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void reverseOrderRawMultiRowAllocationsOnTheSamePurchaseOrderDoNotDeadlock() throws Exception {
+        STUB.respond(200, reverseMultiRowPayload().toJson());
+        UUID first = frozenMultiLineCase(PO_ID, "INV-1", 10, 10);
+        UUID second = frozenMultiLineCase(PO_ID, "INV-2", 10, 10);
+        assertThat(attempt(target(first))).isInstanceOf(ApprovalResult.class);
+        assertThat(attempt(target(second))).isInstanceOf(ApprovalResult.class);
+        ApprovedSubject firstSubject = approvedSubject(first);
+        ApprovedSubject secondSubject = approvedSubject(second);
+        ReceiptFact receiptB = receiptFact("RCL-B-1001");
+        ReceiptFact receiptC = receiptFact("RCL-C-1001");
+
+        CountDownLatch start = new CountDownLatch(1);
+        TransactionTemplate writerTx = new TransactionTemplate(transactionManager);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            // Two raw writers each insert two rows in one transaction, touching
+            // the same two receipt lines in opposite order. They share the
+            // purchase order advisory lock, so the second writer waits before any
+            // receipt lock instead of forming a cycle.
+            Future<Integer> forward = pool.submit(() -> {
+                start.await(10, TimeUnit.SECONDS);
+                return writerTx.execute(status -> rawInsertAllocation(first, firstSubject, 1, receiptB, 1)
+                        + rawInsertAllocation(first, firstSubject, 2, receiptC, 1));
+            });
+            Future<Integer> reverse = pool.submit(() -> {
+                start.await(10, TimeUnit.SECONDS);
+                return writerTx.execute(status -> rawInsertAllocation(second, secondSubject, 2, receiptC, 1)
+                        + rawInsertAllocation(second, secondSubject, 1, receiptB, 1));
+            });
+            start.countDown();
+            assertThat(forward.get(30, TimeUnit.SECONDS)).isEqualTo(2);
+            assertThat(reverse.get(30, TimeUnit.SECONDS)).isEqualTo(2);
+            assertThat(count("receipt_allocation")).isEqualTo(8);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    private int rawInsertAllocation(
+            UUID caseId, ApprovedSubject subject, int invoiceLineNumber, ReceiptFact receipt, int quantity) {
+        return jdbc.update(
+                "insert into receipt_allocation (id, invoice_case_id, purchase_order_id, review_decision_id,"
+                        + " review_snapshot_id, review_payload_hash, evidence_bundle_id, invoice_line_number,"
+                        + " receipt_line_snapshot_id, receipt_id, receipt_line_id, purchase_order_line_id,"
+                        + " receipt_line_version, confirmed_quantity_at_approval, allocated_quantity, created_at)"
+                        + " values (?, ?, 'PO-1001', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())",
+                UUID.randomUUID(),
+                caseId,
+                subject.decisionId(),
+                subject.snapshotId(),
+                subject.payloadHash(),
+                subject.bundleId(),
+                invoiceLineNumber,
+                receipt.id(),
+                receipt.receiptId(),
+                receipt.receiptLineId(),
+                receipt.purchaseOrderLineId(),
+                receipt.receiptLineVersion(),
+                receipt.confirmedQuantity(),
+                quantity);
+    }
+
+    private ApprovedSubject approvedSubject(UUID caseId) {
+        UUID decisionId = jdbc.queryForObject(
+                "select id from review_decision where invoice_case_id = ? and decision = 'APPROVED'",
+                UUID.class,
+                caseId);
+        UUID snapshotId = jdbc.queryForObject(
+                "select review_snapshot_id from payment_request where invoice_case_id = ?", UUID.class, caseId);
+        UUID bundleId = jdbc.queryForObject(
+                "select evidence_bundle_id from payment_request where invoice_case_id = ?", UUID.class, caseId);
+        String payloadHash = jdbc.queryForObject(
+                "select review_payload_hash from payment_request where invoice_case_id = ?", String.class, caseId);
+        return new ApprovedSubject(decisionId, snapshotId, bundleId, payloadHash);
+    }
+
+    private ReceiptFact receiptFact(String receiptLineId) {
+        return jdbc.queryForObject(
+                "select id, receipt_id, receipt_line_id, purchase_order_line_id, receipt_line_version,"
+                        + " confirmed_quantity from receipt_line_snapshot where receipt_line_id = ?",
+                (rs, rowNum) -> new ReceiptFact(
+                        rs.getObject("id", UUID.class),
+                        rs.getString("receipt_id"),
+                        rs.getString("receipt_line_id"),
+                        rs.getString("purchase_order_line_id"),
+                        rs.getLong("receipt_line_version"),
+                        rs.getInt("confirmed_quantity")),
+                receiptLineId);
+    }
+
+    private PurchasingPayloads reverseMultiRowPayload() {
+        return new PurchasingPayloads()
+                .snapshotVersion(5)
+                .addLine("POL-1001-1", ITEM_A, "Premium Copy Paper A4 80g", 100, 2500)
+                .addReceipt("RCV-A-1001", "CONFIRMED", "2026-01-05", 2,
+                        PurchasingPayloads.receiptLine("RCL-A-1001", 2, "POL-1001-1", 1000))
+                .addReceipt("RCV-B-1001", "CONFIRMED", "2026-01-06", 2,
+                        PurchasingPayloads.receiptLine("RCL-B-1001", 2, "POL-1001-1", 1000))
+                .addReceipt("RCV-C-1001", "CONFIRMED", "2026-01-07", 2,
+                        PurchasingPayloads.receiptLine("RCL-C-1001", 2, "POL-1001-1", 1000));
+    }
+
     private Object attempt(ApprovalTarget target) {
         try {
             return TestActors.call("approver", "APPROVER", () -> approvals
@@ -646,6 +799,18 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
 
     private record ApprovalTarget(
             UUID caseId, String requestId, long version, UUID snapshotId, String payloadHash) {
+    }
+
+    private record ApprovedSubject(UUID decisionId, UUID snapshotId, UUID bundleId, String payloadHash) {
+    }
+
+    private record ReceiptFact(
+            UUID id,
+            String receiptId,
+            String receiptLineId,
+            String purchaseOrderLineId,
+            long receiptLineVersion,
+            int confirmedQuantity) {
     }
 
     enum ApprovalInterceptorStage {
