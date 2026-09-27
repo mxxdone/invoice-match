@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -109,6 +111,88 @@ class AuditStateSummarizerTest {
 
         String arrayJson = summarizer.summarize(java.util.List.of(3, 1, 2));
         assertThat(arrayJson).isEqualTo("[3,1,2]");
+    }
+
+    @Test
+    void objectNodesWithOppositeInsertionOrderAreByteIdentical() {
+        ObjectNode ascending = MAPPER.createObjectNode();
+        ascending.put("a", 1);
+        ascending.put("b", 2);
+        ObjectNode descending = MAPPER.createObjectNode();
+        descending.put("b", 2);
+        descending.put("a", 1);
+
+        assertThat(summarizer.summarize(ascending)).isEqualTo(summarizer.summarize(descending));
+        assertThat(summarizer.summarize(ascending)).isEqualTo("{\"a\":1,\"b\":2}");
+    }
+
+    @Test
+    void overLimitObjectNodesWithOppositeInsertionOrderShareTheEnvelopeAndHash() {
+        ObjectNode ascending = MAPPER.createObjectNode();
+        ascending.put("a", "z".repeat(MAX));
+        ascending.put("b", "z".repeat(MAX));
+        ObjectNode descending = MAPPER.createObjectNode();
+        descending.put("b", "z".repeat(MAX));
+        descending.put("a", "z".repeat(MAX));
+
+        String first = summarizer.summarize(ascending);
+        String second = summarizer.summarize(descending);
+
+        assertThat(first).isEqualTo(second);
+        JsonNode envelope = read(first);
+        assertThat(envelope.get("truncated").asBoolean()).isTrue();
+        assertThat(envelope.get("sha256").asText()).hasSize(64);
+    }
+
+    @Test
+    void nestedObjectNodesAreSortedRecursively() {
+        ObjectNode outer = MAPPER.createObjectNode();
+        ObjectNode inner = outer.putObject("wrapper");
+        inner.put("z", 1);
+        inner.put("a", 2);
+        ObjectNode otherOuter = MAPPER.createObjectNode();
+        ObjectNode otherInner = otherOuter.putObject("wrapper");
+        otherInner.put("a", 2);
+        otherInner.put("z", 1);
+
+        assertThat(summarizer.summarize(outer)).isEqualTo(summarizer.summarize(otherOuter));
+        assertThat(summarizer.summarize(outer)).isEqualTo("{\"wrapper\":{\"a\":2,\"z\":1}}");
+    }
+
+    @Test
+    void arraysPreserveOrderAndDifferentOrderChangesOutputAndHash() {
+        ArrayNode forward = MAPPER.createArrayNode();
+        forward.add(1);
+        forward.add(2);
+        forward.add(3);
+        ArrayNode reversed = MAPPER.createArrayNode();
+        reversed.add(3);
+        reversed.add(2);
+        reversed.add(1);
+
+        assertThat(summarizer.summarize(forward)).isEqualTo("[1,2,3]");
+        assertThat(summarizer.summarize(forward)).isNotEqualTo(summarizer.summarize(reversed));
+
+        ObjectNode forwardHolder = MAPPER.createObjectNode();
+        forwardHolder.set("values", forward);
+        ObjectNode reversedHolder = MAPPER.createObjectNode();
+        reversedHolder.set("values", reversed);
+        assertThat(summarizer.summarize(forwardHolder))
+                .isNotEqualTo(summarizer.summarize(reversedHolder));
+    }
+
+    @Test
+    void doesNotMutateCallerOwnedNodes() {
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("b", 1);
+        node.put("a", 2);
+
+        summarizer.summarize(node);
+
+        java.util.List<String> names = new java.util.ArrayList<>();
+        node.fieldNames().forEachRemaining(names::add);
+        assertThat(names).containsExactly("b", "a");
+        assertThat(node.toString()).isEqualTo("{\"b\":1,\"a\":2}");
     }
 
     private static boolean truncated(String json) {
