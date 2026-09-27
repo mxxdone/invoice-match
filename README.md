@@ -1,6 +1,6 @@
 # Invoice Match
 
-P1-00 provides a runnable baseline for the invoice matching project. It has one Java 21 Spring Boot 3 API, a Next.js TypeScript web app, PostgreSQL, and a minimal Mock ERP process. P1-01 adds the domain contract and PostgreSQL schema baseline (invoice case, draft revision, evidence bundle, match result, review snapshot and decision). P1-02 adds a read-only external purchasing system Mock (`mock-purchasing`), a read-only Core API adapter and a PostgreSQL-backed current snapshot of suppliers' purchase orders, lines, receipts and receipt lines with external versions. P1-03 adds the first business write APIs: manual invoice case creation validated against the external purchase order, atomic current-draft editing, submission that freezes a canonical hashed `EvidenceBundle` version, supplement revisions that copy the previous frozen lines, past bundle version reads and request-id idempotency. P1-04 adds the deterministic, AI-free 3-way match: the latest frozen bundle is compared with zero tolerance against the current purchasing snapshot and an immutable, canonically hashed `MatchResult` with per-line calculation evidence, an exception taxonomy and a non-consuming expected FIFO allocation plan is appended. P1-05 adds the human review workflow: a frozen `ReviewSnapshot` approval subject with a canonical payload hash, case-local item mapping with deterministic re-match and a successor snapshot, supplement request and rejection, machine-checkable freshness/staleness, and request-id idempotency. P1-06 adds role-based authorization for `SUBMITTER`, `APPROVER` and `OPERATOR` with local demo identities, an authoritative server-derived `submittedBy`/review actor (the client `decidedBy` is ignored), a request trace id, and an append-only, transactionally recorded audit history. Approval/allocation, payment/outbox and AI remain out of scope.
+P1-00 provides a runnable baseline for the invoice matching project. It has one Java 21 Spring Boot 3 API, a Next.js TypeScript web app, PostgreSQL, and a minimal Mock ERP process. P1-01 adds the domain contract and PostgreSQL schema baseline (invoice case, draft revision, evidence bundle, match result, review snapshot and decision). P1-02 adds a read-only external purchasing system Mock (`mock-purchasing`), a read-only Core API adapter and a PostgreSQL-backed current snapshot of suppliers' purchase orders, lines, receipts and receipt lines with external versions. P1-03 adds the first business write APIs: manual invoice case creation validated against the external purchase order, atomic current-draft editing, submission that freezes a canonical hashed `EvidenceBundle` version, supplement revisions that copy the previous frozen lines, past bundle version reads and request-id idempotency. P1-04 adds the deterministic, AI-free 3-way match: the latest frozen bundle is compared with zero tolerance against the current purchasing snapshot and an immutable, canonically hashed `MatchResult` with per-line calculation evidence, an exception taxonomy and a non-consuming expected FIFO allocation plan is appended. P1-05 adds the human review workflow: a frozen `ReviewSnapshot` approval subject with a canonical payload hash, case-local item mapping with deterministic re-match and a successor snapshot, supplement request and rejection, machine-checkable freshness/staleness, and request-id idempotency. P1-06 adds role-based authorization for `SUBMITTER`, `APPROVER` and `OPERATOR` with local demo identities, an authoritative server-derived `submittedBy`/review actor (the client `decidedBy` is ignored), a request trace id, and an append-only, transactionally recorded audit history. P1-07 adds atomic approval: one APPROVER command consumes the exact frozen `ReviewSnapshot` into append-only `ReceiptAllocation` rows, one APPROVED `ReviewDecision`, one internal `PaymentRequest` and an `APPROVE` audit, all in one transaction with deterministic PostgreSQL row/advisory locking. Outbox/ERP relay and AI remain out of scope.
 
 ## Run all services
 
@@ -220,6 +220,7 @@ boundary:
 | Read case / evidence bundles | `GET /api/invoice-cases/{id}`, `.../evidence-bundles*` | own only | any | any |
 | Replace draft / submit / open revision | `PUT /{id}/draft`, `POST /{id}/submit`, `POST /{id}/revisions` | own only | — | — |
 | Freeze snapshot / mapping / supplement / reject | `POST /{id}/review-snapshots`, `.../mapping-decisions`, `.../supplement-requests`, `.../reject` | — | any | — |
+| Approve (allocate + payment request) | `POST /{id}/approve` | — | any (not the submitter) | — |
 | Read review snapshots / decisions | `GET /{id}/review-snapshots*`, `.../review-decisions` | — | any | any |
 | Run deterministic match / reprocess | `POST /{id}/match` | — | — | any |
 | Read match results | `GET /{id}/match`, `.../matches` | — | any | any |
@@ -244,8 +245,8 @@ Every audited write appends one row to `audit_entry` in the **same transaction**
 as the business mutation, so an audit failure rolls the mutation back. Audited
 actions: `CASE_CREATED`, `DRAFT_LINES_REPLACED`, `CASE_SUBMITTED`,
 `SUPPLEMENT_REVISION_OPENED`, `MATCH_RUN`, `REVIEW_SNAPSHOT_FROZEN`,
-`ITEM_MAPPED`, `SUPPLEMENT_REQUESTED`, `CASE_REJECTED` (approval adds its own
-action when implemented). Each entry stores the actor, roles, action,
+`ITEM_MAPPED`, `SUPPLEMENT_REQUESTED`, `CASE_REJECTED`, `APPROVE`. Each entry
+stores the actor, roles, action,
 case/target, case business version, structured before/after change, `requestId`
 and `traceId`. Credentials, `Authorization` headers and raw documents are never
 stored, and an idempotent replay records no second entry. A mapping replacement
@@ -296,6 +297,52 @@ and an oversize body is rejected with `413` **before** any transaction, and a
 draft may have at most 100 lines (a larger list is `400`). The body cap is
 enforced by reading the stream, so chunked requests without `Content-Length` are
 bounded too.
+
+## Atomic approval API (P1-07)
+
+Approval consumes the exact review snapshot the approver was shown into the
+local allocation ledger, one APPROVED decision, one internal payment request and
+one case transition, in a single transaction. There is no partial approval.
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/invoice-cases/{id}/approve` | Approve the exact review snapshot (requires `requestId`, `expectedCaseVersion`, `reviewSnapshotId`, `reviewPayloadHash`) |
+
+The body carries no actor and no amounts: the actor is the authenticated
+`APPROVER` and the allocation/amount come from the frozen snapshot. The external
+purchasing aggregate is fetched and validated **before** the approval
+transaction opens, then applied atomically inside it, so no HTTP call is ever
+made while a transaction or row/advisory lock is held. The transaction lock
+order is: authoritative invoice case → APPROVER and actor ≠ immutable
+`submittedBy` → actor-scoped request id → the shared purchasing advisory lock →
+apply the prepared snapshot → revalidate case state/version, the exact snapshot
+id/hash, evidence bundle, match result, mapping watermark and purchasing
+currentness → lock every referenced active receipt line in the deterministic
+order (receipt date, external receipt line id, receipt id, stable UUID) →
+recompute `remaining = confirmed − committed` → write all allocations, the
+decision, the payment request and the audit, then move to `EXPORT_PENDING`.
+
+`ReceiptAllocation` is append-only (`UPDATE`/`DELETE` rejected), references the
+exact case, approved decision, snapshot/evidence bundle and receipt line with
+same-case composite foreign keys, and a database trigger locks the receipt line
+and rejects any insert that would exceed the externally confirmed quantity.
+`PaymentRequest` is created exactly once per approval with the deterministic
+global key `PAYMENT:{caseId}:{snapshotId}`, the frozen KRW amount, and a DB
+unique on `(case, snapshot)`. P1-08 adds the Outbox and ERP relay; this ticket
+creates only the internal `PENDING` record.
+
+A shared receipt line is the concurrency boundary: with remaining 60 and two
+concurrent approvals of 40 each, exactly one succeeds and the loser gets `409`
+`INSUFFICIENT_RECEIPT_BALANCE` with the current `confirmedQuantity`,
+`allocatedQuantity`, `remainingQuantity` and `requestedQuantity` per line, and no
+decision/allocation/payment/audit is written. A stale, superseded or mismatched
+subject returns `409` (`STALE_CASE_VERSION`, `STALE_REVIEW_TARGET` with explicit
+reasons, or `REVIEW_STATE_CONFLICT`); a current snapshot with an abnormal match,
+an incomplete plan or an inconsistent total returns `409`
+`APPROVAL_NOT_PERMITTED`. Reusing a `requestId` with the same payload and actor
+replays the stored response without an external call or new effects; a different
+payload is an actor-local `409` conflict, and a different actor cannot inherit
+another actor's replay.
 
 OpenAPI-style example:
 

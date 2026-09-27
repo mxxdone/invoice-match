@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Minimal HTTP stub for the external purchasing aggregate endpoint. It lets a
@@ -26,6 +27,7 @@ public final class StubPurchasingServer implements AutoCloseable {
     private volatile String body = "{}";
     private volatile Duration delay = Duration.ZERO;
     private final Map<String, String> perPurchaseOrderBodies = new ConcurrentHashMap<>();
+    private final AtomicInteger requestCount = new AtomicInteger();
 
     public StubPurchasingServer() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -35,6 +37,7 @@ public final class StubPurchasingServer implements AutoCloseable {
     }
 
     private void handle(HttpExchange exchange) throws IOException {
+        requestCount.incrementAndGet();
         Duration currentDelay = delay;
         if (!currentDelay.isZero()) {
             try {
@@ -80,6 +83,11 @@ public final class StubPurchasingServer implements AutoCloseable {
 
     public String baseUrl() {
         return "http://127.0.0.1:" + server.getAddress().getPort();
+    }
+
+    /** Number of aggregate fetches served, used to prove a replay makes no external call. */
+    public int requestCount() {
+        return requestCount.get();
     }
 
     @Override

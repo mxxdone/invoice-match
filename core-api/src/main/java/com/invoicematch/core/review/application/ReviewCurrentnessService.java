@@ -67,9 +67,42 @@ public class ReviewCurrentnessService {
     /**
      * Evaluates freshness against an already-loaded, locked case. Used by write
      * commands that hold the case row lock so the comparison observes exactly
-     * the state they will mutate.
+     * the state they will mutate. The current purchasing snapshot is read
+     * through its own consistent read transaction.
      */
     public ReviewFreshness evaluate(InvoiceCase invoiceCase, ReviewSnapshot snapshot) {
+        Optional<CurrentPurchaseOrderSnapshot> currentPurchasing = purchaseOrderSnapshots
+                .findCurrentSnapshot(PurchaseOrderId.of(invoiceCase.purchaseOrder().value()));
+        return evaluate(
+                invoiceCase,
+                snapshot,
+                currentPurchasing.map(current -> current.aggregate().snapshotVersion()).orElse(null),
+                currentPurchasing.map(CurrentPurchaseOrderSnapshot::payloadHash).orElse(null),
+                currentPurchasing);
+    }
+
+    /**
+     * Evaluates freshness against an already-loaded, locked case and an
+     * explicitly supplied current purchasing version/hash. This is the seam
+     * approval uses after it has atomically applied the externally prepared
+     * snapshot inside its own transaction: a {@code REQUIRES_NEW} read would not
+     * observe the uncommitted apply and could wrongly pass, so the caller passes
+     * the version/hash it just wrote.
+     */
+    public ReviewFreshness evaluate(
+            InvoiceCase invoiceCase,
+            ReviewSnapshot snapshot,
+            Long currentPurchasingVersion,
+            String currentPurchasingHash) {
+        return evaluate(invoiceCase, snapshot, currentPurchasingVersion, currentPurchasingHash, Optional.empty());
+    }
+
+    private ReviewFreshness evaluate(
+            InvoiceCase invoiceCase,
+            ReviewSnapshot snapshot,
+            Long currentPurchasingVersion,
+            String currentPurchasingHash,
+            Optional<CurrentPurchaseOrderSnapshot> currentPurchasing) {
         UUID caseId = invoiceCase.id().value();
         List<StaleReason> reasons = new ArrayList<>();
 
@@ -102,11 +135,10 @@ public class ReviewCurrentnessService {
             reasons.add(StaleReason.MAPPING);
         }
 
-        Optional<CurrentPurchaseOrderSnapshot> currentPurchasing = purchaseOrderSnapshots
-                .findCurrentSnapshot(PurchaseOrderId.of(invoiceCase.purchaseOrder().value()));
-        boolean purchasingCurrent = currentPurchasing.isPresent()
-                && currentPurchasing.get().aggregate().snapshotVersion() == snapshot.purchasingSnapshotVersion()
-                && currentPurchasing.get().payloadHash().equals(snapshot.purchasingSnapshotHash());
+        boolean purchasingCurrent = currentPurchasingVersion != null
+                && currentPurchasingHash != null
+                && currentPurchasingVersion == snapshot.purchasingSnapshotVersion()
+                && currentPurchasingHash.equals(snapshot.purchasingSnapshotHash());
         if (!purchasingCurrent) {
             reasons.add(StaleReason.PURCHASING_SNAPSHOT);
         }
@@ -147,6 +179,25 @@ public class ReviewCurrentnessService {
      */
     public ReviewFreshness requireCurrent(InvoiceCase invoiceCase, ReviewSnapshot snapshot) {
         ReviewFreshness freshness = evaluate(invoiceCase, snapshot);
+        if (!freshness.current()) {
+            throw new com.invoicematch.core.review.domain.StaleReviewTargetException(
+                    invoiceCase.id().value(), snapshot.id(), freshness.reasons());
+        }
+        return freshness;
+    }
+
+    /**
+     * Requires the target to be current against an explicitly supplied current
+     * purchasing version/hash (the value approval just applied in its own
+     * transaction). Throws a 409 with explicit stale reasons otherwise.
+     */
+    public ReviewFreshness requireCurrent(
+            InvoiceCase invoiceCase,
+            ReviewSnapshot snapshot,
+            long currentPurchasingVersion,
+            String currentPurchasingHash) {
+        ReviewFreshness freshness =
+                evaluate(invoiceCase, snapshot, currentPurchasingVersion, currentPurchasingHash);
         if (!freshness.current()) {
             throw new com.invoicematch.core.review.domain.StaleReviewTargetException(
                     invoiceCase.id().value(), snapshot.id(), freshness.reasons());

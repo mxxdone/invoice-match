@@ -312,6 +312,37 @@ reflection 기반 경계 테스트와 직접 service 호출 테스트로 공개 
 
 관련 커밋: `cbff43a`, `7eb675d`, `488f36d`
 
+## P1-07 — 승인 트랜잭션 안에서 갱신한 외부 snapshot을 REQUIRES_NEW로 읽을 수 없음
+
+### 문제
+
+승인은 외부 구매 snapshot을 트랜잭션 시작 전에 fetch하고 트랜잭션 안에서 적용한 뒤, 검토 스냅샷이 그 snapshot과 같은 version/hash인지 재검증해야 한다. 기존 currentness 검증은 구매 snapshot을 `REQUIRES_NEW` REPEATABLE_READ 트랜잭션으로 읽어, 승인 트랜잭션이 아직 commit하지 않은 적용 결과를 보지 못한다. 외부 version이 바뀐 경우에도 옛 값과 비교해 stale을 놓칠 수 있었다.
+
+### 해결
+
+- 승인 트랜잭션 안에서 방금 적용한 `purchase_order_snapshot` version/hash를 같은 트랜잭션으로 읽고, 그 값을 currentness 검증에 명시적으로 전달하는 overload를 추가했다.
+- 외부 fetch는 트랜잭션 밖에서, 적용은 승인 트랜잭션 안에서 수행해 HTTP 호출 중 잠금을 유지하지 않는다.
+
+### 검증과 교훈
+
+외부 version이 승인 전에 바뀌면 `STALE_REVIEW_TARGET(PURCHASING_SNAPSHOT)`로 side effect 없이 실패하고, 동시 refresh는 승인 advisory lock 뒤에서 직렬화되어 version이 섞이지 않음을 실제 PostgreSQL 테스트로 확인했다. 다른 트랜잭션 경계의 read를 재사용할 때는 isolation/propagation이 그 트랜잭션의 미확정 쓰기를 볼 수 있는지 먼저 확인해야 한다.
+
+## P1-07 — 검수 잔량 경합과 결정적 잠금 순서
+
+### 문제
+
+같은 검수 라인의 잔량 60을 두 사건이 40씩 동시에 승인하면 하나만 성공해야 하고, 실패한 쪽은 최신 잔량을 반환해야 한다. 여러 검수 라인을 잠그는 순서가 다르면 deadlock 위험이 있다.
+
+### 해결
+
+- 승인은 검수 라인을 (검수일, 외부 receipt line id, receipt id, UUID) 고정 순서로 잠그고, 잠금 후 `confirmed - sum(allocation)`을 다시 계산한다.
+- DB trigger가 대상 검수 라인을 `FOR UPDATE`로 잠그고 초과 배분을 거부해 raw SQL에서도 같은 규칙을 지킨다.
+- 승인과 refresh가 같은 구매 advisory lock을 공유해 같은 PO의 승인이 직렬화된다.
+
+### 검증과 교훈
+
+실제 PostgreSQL에서 40+40 경합(한 건 성공, 패자는 현재 confirmed/allocated/remaining 409), 같은 requestId 병렬 승인(효과 1세트 + replay), 다른 PO 다중 라인 동시 승인(deadlock 없음), decision/allocation/payment 단계별 실패 주입(전량 rollback)을 반복 검증했다. 공유 자원 경합은 JVM 락이 아니라 DB 행 잠금과 제약으로 닫아야 한다.
+
 ## 앞으로 추가할 때의 형식
 
 새 사례는 아래 항목을 중심으로 짧게 추가한다.
