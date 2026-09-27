@@ -3,6 +3,7 @@ package com.invoicematch.core.purchasingreference.application;
 import com.invoicematch.core.purchasingreference.domain.ExternalSnapshotConflictException;
 import com.invoicematch.core.purchasingreference.domain.PurchaseOrderAggregate;
 import com.invoicematch.core.purchasingreference.domain.PurchaseOrderFacts;
+import com.invoicematch.core.purchasingreference.domain.ReceiptAllocationProtectedException;
 import com.invoicematch.core.purchasingreference.domain.ReceiptFacts;
 import com.invoicematch.core.purchasingreference.domain.ReceiptLineFacts;
 import com.invoicematch.core.purchasingreference.domain.RefreshOutcome;
@@ -47,18 +48,21 @@ public class PurchaseOrderSnapshotStore {
     private final ReceiptSnapshotRepository receipts;
     private final ReceiptLineSnapshotRepository receiptLines;
     private final PurchaseOrderSnapshotLock purchaseOrderLock;
+    private final ReceiptAllocationCommitmentReader allocationCommitments;
 
     public PurchaseOrderSnapshotStore(
             PurchaseOrderSnapshotRepository snapshots,
             PurchaseOrderLineSnapshotRepository lines,
             ReceiptSnapshotRepository receipts,
             ReceiptLineSnapshotRepository receiptLines,
-            PurchaseOrderSnapshotLock purchaseOrderLock) {
+            PurchaseOrderSnapshotLock purchaseOrderLock,
+            ReceiptAllocationCommitmentReader allocationCommitments) {
         this.snapshots = snapshots;
         this.lines = lines;
         this.receipts = receipts;
         this.receiptLines = receiptLines;
         this.purchaseOrderLock = purchaseOrderLock;
+        this.allocationCommitments = allocationCommitments;
     }
 
     @Transactional
@@ -177,6 +181,14 @@ public class PurchaseOrderSnapshotStore {
                     receiptLines.save(
                             ReceiptLineSnapshot.create(UUID.randomUUID(), purchaseOrderId, receipt.receiptId(), facts));
                 } else {
+                    long committed = allocationCommitments.committedQuantity(row.id());
+                    if (facts.confirmedQuantity().value() < committed) {
+                        throw new ReceiptAllocationProtectedException(
+                                purchaseOrderId,
+                                facts.receiptLineId(),
+                                "confirmed quantity " + facts.confirmedQuantity().value()
+                                        + " is below the committed allocation " + committed);
+                    }
                     row.updateFrom(facts);
                 }
                 incoming.add(key);
@@ -184,6 +196,13 @@ public class PurchaseOrderSnapshotStore {
         }
         for (ReceiptLineSnapshot row : existing.values()) {
             if (!incoming.contains(new ReceiptLineKey(row.receiptId(), row.receiptLineId()))) {
+                long committed = allocationCommitments.committedQuantity(row.id());
+                if (committed > 0) {
+                    throw new ReceiptAllocationProtectedException(
+                            purchaseOrderId,
+                            row.receiptLineId(),
+                            "the receipt line has committed allocations and cannot be deactivated");
+                }
                 row.deactivate();
             }
         }

@@ -2,7 +2,6 @@ package com.invoicematch.core.audit.application;
 
 import com.invoicematch.core.audit.domain.AuditAction;
 import com.invoicematch.core.audit.domain.AuditTargetType;
-import com.invoicematch.core.security.Role;
 import com.invoicematch.core.trace.TraceContext;
 import com.invoicematch.core.trace.TraceId;
 import java.sql.Timestamp;
@@ -36,11 +35,7 @@ public class AuditRecorder {
             throw new IllegalStateException(
                     "Audit requires a role-bearing actor but got '" + event.actor().username() + "'");
         }
-        String roles = event.actor().roles().stream()
-                .sorted()
-                .map(Role::name)
-                .reduce((left, right) -> left + "," + right)
-                .orElseThrow();
+        String roles = event.actor().rolesCsv();
         jdbc.update(
                 "insert into audit_entry (id, invoice_case_id, occurred_at, actor, actor_roles, action,"
                         + " target_type, target_id, business_version, before_state, after_state, request_id,"
@@ -57,10 +52,13 @@ public class AuditRecorder {
                 summarizer.summarize(event.before()),
                 summarizer.summarize(event.after()),
                 event.requestId(),
-                resolveTraceId());
+                resolveTraceId(event.traceId()));
     }
 
-    private static String resolveTraceId() {
+    private static String resolveTraceId(String supplied) {
+        if (supplied != null) {
+            return supplied;
+        }
         String current = TraceContext.current();
         return current != null ? current : TraceId.generate();
     }

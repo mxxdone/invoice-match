@@ -1,6 +1,7 @@
 package com.invoicematch.core.review.domain;
 
 import com.invoicematch.core.shared.domain.DomainValidationException;
+import com.invoicematch.core.shared.domain.Money;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -76,6 +77,27 @@ public class ReviewDecision {
     @Column(name = "mapping_po_line_id", updatable = false, length = 64)
     private String mappingPoLineId;
 
+    @Column(name = "approved_amount", updatable = false)
+    private Money approvedAmount;
+
+    @Column(name = "approved_currency", updatable = false, length = 3)
+    private String approvedCurrency;
+
+    @Column(name = "approved_case_version_before", updatable = false)
+    private Long approvedCaseVersionBefore;
+
+    @Column(name = "approved_case_version_after", updatable = false)
+    private Long approvedCaseVersionAfter;
+
+    @Column(name = "approval_actor_roles", updatable = false, length = 255)
+    private String approvalActorRoles;
+
+    @Column(name = "approval_request_id", updatable = false, length = 128)
+    private String approvalRequestId;
+
+    @Column(name = "approval_trace_id", updatable = false, length = 64)
+    private String approvalTraceId;
+
     protected ReviewDecision() {
     }
 
@@ -93,7 +115,14 @@ public class ReviewDecision {
             UUID mappingBundleId,
             Integer mappingLineNumber,
             String mappingItemId,
-            String mappingPoLineId) {
+            String mappingPoLineId,
+            Money approvedAmount,
+            String approvedCurrency,
+            Long approvedCaseVersionBefore,
+            Long approvedCaseVersionAfter,
+            String approvalActorRoles,
+            String approvalRequestId,
+            String approvalTraceId) {
         if (decisionNumber <= 0) {
             throw new DomainValidationException("decisionNumber must be positive: " + decisionNumber);
         }
@@ -132,6 +161,37 @@ public class ReviewDecision {
         this.mappingLineNumber = mappingLineNumber;
         this.mappingItemId = mappingItemId;
         this.mappingPoLineId = mappingPoLineId;
+
+        if (decision == ReviewDecisionType.APPROVED) {
+            if (approvedAmount == null || approvedCurrency == null || approvedCurrency.isBlank()
+                    || approvedCaseVersionBefore == null || approvedCaseVersionAfter == null) {
+                throw new DomainValidationException(
+                        "An APPROVED decision requires an approved amount, currency and before/after case versions");
+            }
+            if (approvedCaseVersionAfter != approvedCaseVersionBefore + 1) {
+                throw new DomainValidationException(
+                        "An APPROVED decision after case version must be the before version plus one");
+            }
+            if (approvalActorRoles == null || approvalActorRoles.isBlank()
+                    || approvalRequestId == null || approvalRequestId.isBlank()
+                    || approvalTraceId == null || approvalTraceId.isBlank()) {
+                throw new DomainValidationException(
+                        "An APPROVED decision requires actor roles, request id and trace id");
+            }
+        } else if (approvedAmount != null || approvedCurrency != null
+                || approvedCaseVersionBefore != null || approvedCaseVersionAfter != null
+                || approvalActorRoles != null || approvalRequestId != null || approvalTraceId != null) {
+            throw new DomainValidationException(
+                    "Only an APPROVED decision may carry an approved amount/currency/versions or approval metadata,"
+                            + " but decision was " + decision);
+        }
+        this.approvedAmount = approvedAmount;
+        this.approvedCurrency = approvedCurrency;
+        this.approvedCaseVersionBefore = approvedCaseVersionBefore;
+        this.approvedCaseVersionAfter = approvedCaseVersionAfter;
+        this.approvalActorRoles = approvalActorRoles;
+        this.approvalRequestId = approvalRequestId;
+        this.approvalTraceId = approvalTraceId;
     }
 
     public static ReviewDecision record(
@@ -156,6 +216,13 @@ public class ReviewDecision {
                 decisionPayload,
                 payloadHash,
                 decidedAt,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
                 null,
                 null,
                 null,
@@ -190,7 +257,64 @@ public class ReviewDecision {
                 mappingBundleId,
                 mappingLineNumber,
                 mappingItemId,
-                mappingPoLineId);
+                mappingPoLineId,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null);
+    }
+
+    /**
+     * Records an APPROVED decision that binds the exact approved amount,
+     * currency, before/after case versions and the approval audit context, so a
+     * payment request and the APPROVE audit can be checked against persisted
+     * authoritative metadata instead of the stated summary alone. The actor roles
+     * are the server-authenticated canonical roles, the request id is the
+     * actor-scoped client idempotency input, and the trace id is validated
+     * propagated correlation metadata (not a security identity).
+     */
+    public static ReviewDecision recordApproval(
+            UUID id,
+            UUID invoiceCaseId,
+            UUID reviewSnapshotId,
+            int decisionNumber,
+            String decidedBy,
+            String reason,
+            String decisionPayload,
+            String payloadHash,
+            Instant decidedAt,
+            Money approvedAmount,
+            String approvedCurrency,
+            long approvedCaseVersionBefore,
+            long approvedCaseVersionAfter,
+            String approvalActorRoles,
+            String approvalRequestId,
+            String approvalTraceId) {
+        return new ReviewDecision(
+                id,
+                invoiceCaseId,
+                reviewSnapshotId,
+                decisionNumber,
+                ReviewDecisionType.APPROVED,
+                decidedBy,
+                reason,
+                decisionPayload,
+                payloadHash,
+                decidedAt,
+                null,
+                null,
+                null,
+                null,
+                approvedAmount,
+                approvedCurrency,
+                approvedCaseVersionBefore,
+                approvedCaseVersionAfter,
+                approvalActorRoles,
+                approvalRequestId,
+                approvalTraceId);
     }
 
     public UUID id() {
@@ -247,6 +371,34 @@ public class ReviewDecision {
 
     public String mappingPoLineId() {
         return mappingPoLineId;
+    }
+
+    public Money approvedAmount() {
+        return approvedAmount;
+    }
+
+    public String approvedCurrency() {
+        return approvedCurrency;
+    }
+
+    public Long approvedCaseVersionBefore() {
+        return approvedCaseVersionBefore;
+    }
+
+    public Long approvedCaseVersionAfter() {
+        return approvedCaseVersionAfter;
+    }
+
+    public String approvalActorRoles() {
+        return approvalActorRoles;
+    }
+
+    public String approvalRequestId() {
+        return approvalRequestId;
+    }
+
+    public String approvalTraceId() {
+        return approvalTraceId;
     }
 
     @Override

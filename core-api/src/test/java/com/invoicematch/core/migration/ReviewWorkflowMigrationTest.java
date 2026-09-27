@@ -157,9 +157,9 @@ class ReviewWorkflowMigrationTest extends AbstractPostgresIntegrationTest {
         Seed seed = seedCaseWithBundle();
         UUID snapshotId = insertSnapshot(seed, 1, seed.matchResultId, 1, "snap-hash");
 
-        assertThatThrownBy(() -> insertDecision(seed, snapshotId, "snap-hash", 0, "APPROVED"))
+        assertThatThrownBy(() -> insertDecision(seed, snapshotId, "snap-hash", 0, "SUPPLEMENT_REQUESTED"))
                 .isInstanceOf(DataIntegrityViolationException.class);
-        insertDecision(seed, snapshotId, "snap-hash", 1, "APPROVED");
+        insertDecision(seed, snapshotId, "snap-hash", 1, "SUPPLEMENT_REQUESTED");
         assertThatThrownBy(() -> insertDecision(seed, snapshotId, "snap-hash", 1, "REJECTED"))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
@@ -215,7 +215,7 @@ class ReviewWorkflowMigrationTest extends AbstractPostgresIntegrationTest {
     void reviewSnapshotAndDecisionAreAppendOnly() {
         Seed seed = seedCaseWithBundle();
         UUID snapshotId = insertSnapshot(seed, 1, seed.matchResultId, 1, "snap-hash");
-        UUID decisionId = insertDecision(seed, snapshotId, "snap-hash", 1, "APPROVED");
+        UUID decisionId = insertDecision(seed, snapshotId, "snap-hash", 1, "SUPPLEMENT_REQUESTED");
 
         assertThatRejected(() -> jdbc.update(
                 "update review_snapshot set payload_hash = 'tampered' where id = ?", snapshotId));

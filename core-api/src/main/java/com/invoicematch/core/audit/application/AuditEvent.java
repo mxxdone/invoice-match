@@ -22,7 +22,27 @@ public record AuditEvent(
         Object before,
         Object after,
         String requestId,
-        Instant occurredAt) {
+        Instant occurredAt,
+        String traceId) {
+
+    /**
+     * Convenience form for callers that do not pre-resolve a trace id; the
+     * recorder falls back to the current request trace or a generated id.
+     */
+    public AuditEvent(
+            UUID invoiceCaseId,
+            Actor actor,
+            AuditAction action,
+            AuditTargetType targetType,
+            String targetId,
+            long businessVersion,
+            Object before,
+            Object after,
+            String requestId,
+            Instant occurredAt) {
+        this(invoiceCaseId, actor, action, targetType, targetId, businessVersion, before, after, requestId, occurredAt,
+                null);
+    }
 
     public AuditEvent {
         Objects.requireNonNull(invoiceCaseId, "invoiceCaseId");

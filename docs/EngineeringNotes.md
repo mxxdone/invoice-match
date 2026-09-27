@@ -312,6 +312,64 @@ reflection 기반 경계 테스트와 직접 service 호출 테스트로 공개 
 
 관련 커밋: `cbff43a`, `7eb675d`, `488f36d`
 
+## P1-07 — 승인 트랜잭션 안에서 갱신한 외부 snapshot을 REQUIRES_NEW로 읽을 수 없음
+
+### 문제
+
+승인은 외부 구매 snapshot을 트랜잭션 시작 전에 fetch하고 트랜잭션 안에서 적용한 뒤, 검토 스냅샷이 그 snapshot과 같은 version/hash인지 재검증해야 한다. 기존 currentness 검증은 구매 snapshot을 `REQUIRES_NEW` REPEATABLE_READ 트랜잭션으로 읽어, 승인 트랜잭션이 아직 commit하지 않은 적용 결과를 보지 못한다. 외부 version이 바뀐 경우에도 옛 값과 비교해 stale을 놓칠 수 있었다.
+
+### 해결
+
+- 승인 트랜잭션 안에서 방금 적용한 `purchase_order_snapshot` version/hash를 같은 트랜잭션으로 읽고, 그 값을 currentness 검증에 명시적으로 전달하는 overload를 추가했다.
+- 외부 fetch는 트랜잭션 밖에서, 적용은 승인 트랜잭션 안에서 수행해 HTTP 호출 중 잠금을 유지하지 않는다.
+
+### 검증과 교훈
+
+외부 version이 승인 전에 바뀌면 `STALE_REVIEW_TARGET(PURCHASING_SNAPSHOT)`로 side effect 없이 실패하고, 동시 refresh는 승인 advisory lock 뒤에서 직렬화되어 version이 섞이지 않음을 실제 PostgreSQL 테스트로 확인했다. 다른 트랜잭션 경계의 read를 재사용할 때는 isolation/propagation이 그 트랜잭션의 미확정 쓰기를 볼 수 있는지 먼저 확인해야 한다.
+
+관련 커밋: `69dde46`, `5bdb6e0`, `89214db`, `d4fec02`, `b865376`, `c3648f3`
+
+## P1-07 — 검수 잔량 경합과 결정적 잠금 순서
+
+### 문제
+
+같은 검수 라인의 잔량 60을 두 사건이 40씩 동시에 승인하면 하나만 성공해야 하고, 실패한 쪽은 최신 잔량을 반환해야 한다. 여러 검수 라인을 잠그는 순서가 다르면 deadlock 위험이 있다.
+
+### 해결
+
+- 승인은 검수 라인을 (검수일, 외부 receipt line id, receipt id, UUID) 고정 순서로 잠그고, 잠금 후 `confirmed - sum(allocation)`을 다시 계산한다.
+- DB trigger는 검수 라인 잠금과 검증/잔량을 하나의 BEFORE INSERT 가드로 합치고, 케이스 `FOR UPDATE` → 동일 PO advisory lock → 검수 라인 `FOR UPDATE` → 검증/잔량 순서로만 잠근다. 알파벳순으로 따로 실행되던 validate/balance 트리거를 없애 raw SQL insert가 검수 라인을 먼저 잡고 케이스 FK를 기다리다 승인과 교착하는 경로를 제거했다.
+- 승인과 refresh가 같은 구매 advisory lock을 공유해 같은 PO의 승인이 직렬화된다.
+
+### 검증과 교훈
+
+실제 PostgreSQL에서 40+40 경합(한 건 성공, 패자는 현재 confirmed/allocated/remaining 409), 같은 requestId 병렬 승인(효과 1세트 + replay), 다른 PO 다중 라인 동시 승인(deadlock 없음), decision/allocation/payment/audit/idempotency 단계별 실패 주입(전량 rollback)을 반복 검증했다. 케이스 락을 쥔 두 번째 커넥션이 같은 검수 라인을 잠그려는 raw insert와 역순으로 맞서는 재현 테스트와, 같은 PO의 두 raw writer가 두 검수 라인을 반대 순서로 삽입하는 다중 행 테스트에서도 `ERROR: deadlock detected` 없이 advisory lock 뒤에서 직렬화됨을 확인했다. 공유 자원 경합은 JVM 락이 아니라 DB 행 잠금과 제약으로 닫아야 한다.
+
+관련 커밋: `69dde46`, `5bdb6e0`, `89214db`, `d4fec02`, `b865376`, `c3648f3`
+
+## P1-07 — 저장 JSON을 신뢰하지 않는 승인 대상 독립 재구성과 관계 봉인
+
+### 문제
+
+초기 P1-07 구현은 승인 트랜잭션에서 저장된 `review_snapshot`/`match_result`/`evidence_bundle`의 payload JSON을 파싱해 배분 계획과 금액을 읽었다. payload가 append-only라도 raw SQL로 다른 해시를 가진 행을 넣거나(jsonb는 key 순서를 보존하지 않아 재현성도 약함) FK가 표현하지 못하는 관계(승인 결정 종류, 동결 draft 라인, external receipt id/version, active 여부)는 위조될 수 있었다. 또한 직접 서비스 호출이 기존 트랜잭션 안에서 이뤄지면 외부 HTTP가 호출자 잠금을 쥔 채 실행될 수 있었다.
+
+### 해결
+
+- 승인 트랜잭션 안에서 권위 있는 관계형 사실(케이스 헤더 + 봉인된 draft 라인)로 evidence canonical payload/hash를 다시 만들고, 현재 구매 사실과 유효 매핑으로 `MatchEngine`을 재실행해 match payload/hash와 source 컬럼을, 다시 `ReviewSnapshotPayloadBuilder`로 snapshot payload/hash를 재구성해 저장값과 비교한다.
+- 배분 계획과 금액은 재계산된 typed match 결과에서만 유도하고, JSON `asInt/asLong` 강제 파싱을 제거했다(checked `Money`/`Quantity`).
+- `receipt_allocation`에 승인 결정 종류·동결 draft 라인·external receipt id/version/active를 단일 BEFORE INSERT 트리거로 강제하되, 잠금을 케이스 `FOR UPDATE` → PO advisory → 검수 라인 `FOR UPDATE` → 검증/잔량 순서로만 잡아 application/raw SQL이 같은 순서를 따르게 했다. `(decision, invoice line, receipt line)` 유일성과 검수 라인 UPDATE 가드(할당 합 이하로 confirmed 감소·할당 있는 라인 비활성 금지, 증가/버전 진화 허용), 승인 시점 confirmed quantity 저장(`confirmed_quantity_at_approval`)을 추가했다.
+- `payment_request`는 승인 결정의 `(case, snapshot, hash, approved amount/currency)` 복합 FK로 금액·주체를 고정하고, 결정적 외부 key CHECK + UPDATE/DELETE 보호 트리거를 추가했다.
+- APPROVED `review_decision`에 approval audit context를 immutable 컬럼(`approval_actor_roles`/`approval_request_id`/`approval_trace_id`)으로 저장한다. actor roles는 서버가 인증한 principal의 canonical 역할, request id는 actor-scoped command `requestId`(idempotency 유일성 입력, 클라이언트 제공), trace id는 `X-Trace-Id`를 P1-06 경계에서 검증해 전파한 correlation metadata(없거나 형식이 무효면 `trc-` 생성)에서 같은 트랜잭션으로 채운다. trace id는 인증·인가·idempotency 유일성·승인 identity가 아니며 decision↔audit 상관관계에만 쓰인다. `ck_review_decision_approval_metadata`는 APPROVED의 nonblank canonical roles/request/trace를 강제하되 NOT VALID로 legacy V6 APPROVED 행을 보존한다.
+- V6 감사 검증 함수를 V7에서 교체(V6 파일 불변)해 APPROVE가 저장된 approval actor roles/request id/trace id와 audit `actor_roles`/`request_id`/`trace_id`, 그리고 `actor == decided_by`가 정확히 일치할 것을 요구한다. 이어 before_state/after_state를 권위 있는 결정·payment_request·allocation 행에서 재구성한 정확한 JSONB 객체와 whole-object로 비교해 모든 값과 JSON 타입, 정확한 field set(위조 extra·누락 금지), 결정적으로 정렬된 allocation 배열까지 강제하고 object key 순서만 무시한다.
+- 승인 집계는 int 합/축소 대신 checked `long`(`Math.addExact`)으로 계산하고 overflow를 안정된 409/도메인 오류로 변환하며, shortfall의 confirmed/allocated/remaining/requested도 `long`으로 보고한다.
+- `ApprovalApplicationService`는 `Propagation.NEVER`로 활성 호출자 트랜잭션이 있으면 메서드 본문 전에 즉시 거부한다(중단 후 계속하지 않음). 외부 조회는 트랜잭션 없는 호출에서만 실행된다.
+
+### 검증과 교훈
+
+위조 evidence/match/snapshot payload·hash, 임의 receipt date/ID, 잘못된 타입, overflow, REJECTED 결정, 교차 사건, 중복 배분, 비활성 검수, 임의 지급 금액/key, 보호 필드 UPDATE/DELETE를 raw SQL로 재현해 모두 side effect 없이 실패함을 확인했다. APPROVE 감사는 저장 metadata와 어긋나는 actor roles(부풀린/비정규 순서/미지원 역할/빈 값), 임의의 nonblank request id, 임의 trace id, 누락된 request/trace, actor 불일치, 각 숫자 필드의 문자열·boolean·null 치환, extra/missing field를 모두 거부하고, 권위 있는 행과 저장 metadata로 재구성한 audit만 수락함을 확인했다. 다른 계층이 소유한 직렬화 경계(jsonb key 재정렬)를 넘겨 값을 재사용하면 해시 재현성이 깨질 수 있으므로, 승인 같은 고위험 판단은 저장 JSON이 아니라 권위 있는 관계형 사실에서 다시 계산하고 DB 제약으로 관계를 봉인해야 한다.
+
+관련 커밋: `69dde46`, `6077d3d`, `5bdb6e0`, `89214db`, `d4fec02`, `b865376`, `c3648f3`
+
 ## 앞으로 추가할 때의 형식
 
 새 사례는 아래 항목을 중심으로 짧게 추가한다.
