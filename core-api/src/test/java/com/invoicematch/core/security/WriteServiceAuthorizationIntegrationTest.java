@@ -9,12 +9,15 @@ import com.invoicematch.core.invoicecase.application.InvoiceCaseDetail;
 import com.invoicematch.core.invoicecase.application.InvoiceLineInput;
 import com.invoicematch.core.invoicecase.application.ReplaceDraftLinesCommand;
 import com.invoicematch.core.invoicecase.application.SubmitInvoiceCaseCommand;
+import com.invoicematch.core.invoicecase.domain.StaleCaseVersionException;
 import com.invoicematch.core.invoicecase.persistence.InvoiceCaseRepository;
 import com.invoicematch.core.matching.application.MatchingService;
 import com.invoicematch.core.matching.application.RunMatchCommand;
-import com.invoicematch.core.matching.domain.MatchStateConflictException;
 import com.invoicematch.core.review.application.FreezeReviewSnapshotCommand;
+import com.invoicematch.core.review.application.RecordMappingDecisionCommand;
 import com.invoicematch.core.review.application.ReviewService;
+import com.invoicematch.core.review.domain.ReviewSnapshot;
+import com.invoicematch.core.review.persistence.ReviewSnapshotRepository;
 import com.invoicematch.core.support.AbstractPostgresIntegrationTest;
 import com.invoicematch.core.support.PurchasingPayloads;
 import com.invoicematch.core.support.StubPurchasingServer;
@@ -73,6 +76,9 @@ class WriteServiceAuthorizationIntegrationTest extends AbstractPostgresIntegrati
 
     @Autowired
     private InvoiceCaseRepository invoiceCases;
+
+    @Autowired
+    private ReviewSnapshotRepository reviewSnapshots;
 
     @Autowired
     private JdbcTemplate jdbc;
@@ -166,57 +172,97 @@ class WriteServiceAuthorizationIntegrationTest extends AbstractPostgresIntegrati
     }
 
     @Test
-    void internalRematchRequiresApproverAndLeavesNoSideEffectWhenDenied() {
+    void explicitOperatorRunStillAppendsAnAuditedMatch() {
         UUID caseId = submittedCase();
         int matchesBefore = count("match_result");
-        int auditsBefore = count("audit_entry");
-
-        // No SecurityContext at all: the raw (non-HTTP) call must be forbidden.
-        TestActors.clear();
-        assertThatThrownBy(() -> matching.rematchForMapping(caseId))
-                .isInstanceOf(ForbiddenActionException.class);
+        int matchRunBefore = auditCount("MATCH_RUN");
 
         TestActors.as("operator", "OPERATOR");
-        assertThatThrownBy(() -> matching.rematchForMapping(caseId))
-                .isInstanceOf(ForbiddenActionException.class);
-
-        assertThat(count("match_result")).isEqualTo(matchesBefore);
-        assertThat(count("audit_entry")).isEqualTo(auditsBefore);
-    }
-
-    @Test
-    void internalRematchOnAStaleCaseIsRejectedWithoutEffects() {
-        UUID caseId = submittedCase();
-        jdbc.update(
-                "update invoice_case set status = 'SUPPLEMENT_REQUIRED', version = version + 1,"
-                        + " updated_at = updated_at + interval '1 second' where id = ?",
-                caseId);
-        int matchesBefore = count("match_result");
-        int auditsBefore = count("audit_entry");
-
-        TestActors.as("approver", "APPROVER");
-        assertThatThrownBy(() -> matching.rematchForMapping(caseId))
-                .isInstanceOf(MatchStateConflictException.class);
-
-        assertThat(count("match_result")).isEqualTo(matchesBefore);
-        assertThat(count("audit_entry")).isEqualTo(auditsBefore);
-    }
-
-    @Test
-    void internalRematchAsApproverAppendsAnAuditedResult() {
-        UUID caseId = submittedCase();
-        int matchesBefore = count("match_result");
-        int auditsBefore = count("audit_entry");
-
-        TestActors.as("approver", "APPROVER");
-        matching.rematchForMapping(caseId);
+        matching.run(new RunMatchCommand(caseId, "m-op"));
 
         assertThat(count("match_result")).isEqualTo(matchesBefore + 1);
-        assertThat(count("audit_entry")).isEqualTo(auditsBefore + 1);
+        assertThat(auditCount("MATCH_RUN")).isEqualTo(matchRunBefore + 1);
         assertThat(jdbc.queryForObject(
-                        "select count(*) from audit_entry where action = 'MATCH_RUN' and request_id is null",
+                        "select count(*) from audit_entry where action = 'MATCH_RUN' and request_id = 'm-op'",
                         Integer.class))
                 .isEqualTo(1);
+    }
+
+    @Test
+    void mappingCreatesExactlyOneMatchAndSnapshotWithAtomicItemMappedAudit() {
+        UUID caseId = frozenCase();
+        ReviewSnapshot snapshot = latestSnapshot(caseId);
+        int matchesBefore = count("match_result");
+        int snapshotsBefore = count("review_snapshot");
+        int itemMappedBefore = auditCount("ITEM_MAPPED");
+        int matchRunBefore = auditCount("MATCH_RUN");
+
+        TestActors.as("approver", "APPROVER");
+        review.recordMapping(new RecordMappingDecisionCommand(
+                caseId, "map-1", version(caseId), snapshot.id(), snapshot.payloadHash(), 1, "ITEM-A4-80"));
+
+        assertThat(count("match_result")).isEqualTo(matchesBefore + 1);
+        assertThat(count("review_snapshot")).isEqualTo(snapshotsBefore + 1);
+        assertThat(auditCount("ITEM_MAPPED")).isEqualTo(itemMappedBefore + 1);
+        // The internal re-match is covered by the atomic ITEM_MAPPED event, not a
+        // standalone operator-style MATCH_RUN.
+        assertThat(auditCount("MATCH_RUN")).isEqualTo(matchRunBefore);
+    }
+
+    @Test
+    void mappingReplayAddsNoMatchSnapshotOrAudit() {
+        UUID caseId = frozenCase();
+        ReviewSnapshot snapshot = latestSnapshot(caseId);
+        RecordMappingDecisionCommand command = new RecordMappingDecisionCommand(
+                caseId, "map-replay", version(caseId), snapshot.id(), snapshot.payloadHash(), 1, "ITEM-A4-80");
+
+        TestActors.as("approver", "APPROVER");
+        review.recordMapping(command);
+        int matches = count("match_result");
+        int snapshots = count("review_snapshot");
+        int audits = count("audit_entry");
+
+        review.recordMapping(command);
+
+        assertThat(count("match_result")).isEqualTo(matches);
+        assertThat(count("review_snapshot")).isEqualTo(snapshots);
+        assertThat(count("audit_entry")).isEqualTo(audits);
+    }
+
+    @Test
+    void mappingFailureRollsBackMatchSnapshotAndAudit() {
+        UUID caseId = frozenCase();
+        ReviewSnapshot snapshot = latestSnapshot(caseId);
+        int matches = count("match_result");
+        int snapshots = count("review_snapshot");
+        int audits = count("audit_entry");
+
+        TestActors.as("approver", "APPROVER");
+        assertThatThrownBy(() -> review.recordMapping(new RecordMappingDecisionCommand(
+                        caseId, "map-stale", version(caseId) + 100, snapshot.id(), snapshot.payloadHash(),
+                        1, "ITEM-A4-80")))
+                .isInstanceOf(StaleCaseVersionException.class);
+
+        assertThat(count("match_result")).isEqualTo(matches);
+        assertThat(count("review_snapshot")).isEqualTo(snapshots);
+        assertThat(count("audit_entry")).isEqualTo(audits);
+    }
+
+    private UUID frozenCase() {
+        UUID caseId = submittedCase();
+        TestActors.run("operator", "OPERATOR", () -> matching.run(new RunMatchCommand(caseId, "m-1")));
+        TestActors.run("approver", "APPROVER", () -> review.freezeSnapshot(
+                new FreezeReviewSnapshotCommand(caseId, "s-1", version(caseId))));
+        return caseId;
+    }
+
+    private ReviewSnapshot latestSnapshot(UUID caseId) {
+        return reviewSnapshots.findFirstByInvoiceCaseIdOrderBySnapshotNumberDesc(caseId).orElseThrow();
+    }
+
+    private int auditCount(String action) {
+        return jdbc.queryForObject(
+                "select count(*) from audit_entry where action = ?", Integer.class, action);
     }
 
     private UUID draftCase() {

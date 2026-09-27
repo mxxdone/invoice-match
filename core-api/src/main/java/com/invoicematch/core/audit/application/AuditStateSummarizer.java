@@ -2,6 +2,7 @@ package com.invoicematch.core.audit.application;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -12,6 +13,10 @@ import org.springframework.stereotype.Component;
 /**
  * Produces a bounded, UTF-8-accurate JSON serialization of an audit before/after
  * change summary.
+ *
+ * <p>Object/map keys are serialized in a canonical (sorted) order while array
+ * order is preserved, so semantically equal summaries with different map
+ * insertion order serialize and hash identically.
  *
  * <p>The limit is measured in bytes, not Java chars, so a multibyte or
  * escape-heavy summary cannot slip past a character count and then blow up the
@@ -26,7 +31,8 @@ public class AuditStateSummarizer {
 
     public static final int MAX_STATE_BYTES = 65_536;
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper canonicalMapper = new ObjectMapper()
+            .configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
 
     public String summarize(Object value) {
         if (value == null) {
@@ -34,7 +40,7 @@ public class AuditStateSummarizer {
         }
         String json;
         try {
-            json = mapper.writeValueAsString(value);
+            json = canonicalMapper.writeValueAsString(value);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Audit change summary serialization failed", e);
         }
@@ -48,12 +54,12 @@ public class AuditStateSummarizer {
         return value.getBytes(StandardCharsets.UTF_8).length;
     }
 
-    private String fallback(String original) {
-        ObjectNode node = mapper.createObjectNode();
+    private String fallback(String canonicalOriginal) {
+        ObjectNode node = canonicalMapper.createObjectNode();
         node.put("truncated", true);
         node.put("reason", "summary exceeded the audit size limit");
-        node.put("originalBytes", utf8Length(original));
-        node.put("sha256", sha256Hex(original));
+        node.put("originalBytes", utf8Length(canonicalOriginal));
+        node.put("sha256", sha256Hex(canonicalOriginal));
         return node.toString();
     }
 

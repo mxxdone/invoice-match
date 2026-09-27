@@ -249,25 +249,29 @@ action when implemented). Each entry stores the actor, roles, action,
 case/target, case business version, structured before/after change, `requestId`
 and `traceId`. Credentials, `Authorization` headers and raw documents are never
 stored, and an idempotent replay records no second entry. A mapping replacement
-records the exact previous mapping in `before` and the new mapping in `after`.
-A mapping also performs an internal deterministic re-match; that re-match is a
-separate, independently authorized and audited `MATCH_RUN` (targeting its
-`match_result`, with a null `requestId` since it is not a client request), so a
-mapping produces both an `ITEM_MAPPED` and a `MATCH_RUN` audit row. There is no
-public raw "append a match result" seam: the only two persistence paths are the
-OPERATOR `run` and the APPROVER-only internal re-match, and both enforce their
-own role, case-lock and audit contract. `audit_entry` rejects `UPDATE` and
-`DELETE`.
+records the exact previous mapping in `before` and the new mapping in `after`,
+plus the resulting match result id/number/hash and successor snapshot number.
+A mapping also performs an internal deterministic re-match; it runs inside the
+same authorized, case-locked, idempotent mapping transaction via a
+**package-private `review.application` collaborator**, and its result is covered
+by the atomic `ITEM_MAPPED` audit rather than a standalone `MATCH_RUN`. There is
+no public raw "append a match result" seam: the pure `MatchResultPlanner` cannot
+persist, `MatchingService.appendResult` is private, and match_result persistence
+is reachable only through the secured/idempotent OPERATOR `MatchingService.run`
+or the complete public `ReviewService.recordMapping` orchestration.
+`audit_entry` rejects `UPDATE` and `DELETE`.
 
-Audit before/after summaries are bounded by **UTF-8 byte length** (64 KiB), not
-character count, and line diffs store a bounded item-name preview plus its length
-and SHA-256 rather than the full 500-character name. A DTO-valid request (at most
-100 lines) therefore always audits successfully with meaningful, deterministic
-content; a summary that somehow exceeds the limit is replaced by a
-`{"truncated":true,"originalBytes":...,"sha256":...}` envelope instead of
-throwing, so the audit is never dropped, never partial and never a 500. The audit
-trigger reads the case version `FOR SHARE`, so a concurrent privileged raw-SQL
-version change cannot make a just-inserted audit immediately stale.
+Audit before/after summaries are canonical (object/map keys sorted, array order
+preserved) and bounded by **UTF-8 byte length** (64 KiB), not character count.
+Line diffs store a bounded item-name preview plus its length and SHA-256 rather
+than the full 500-character name. A DTO-valid request (at most 100 lines)
+therefore always audits successfully with meaningful, deterministic content; a
+summary that somehow exceeds the limit is replaced by a
+`{"truncated":true,"originalBytes":...,"sha256":...}` envelope (hashed over the
+canonical form) instead of throwing, so the audit is never dropped, never
+partial and never a 500. The audit trigger reads the case version `FOR SHARE`,
+so a concurrent privileged raw-SQL version change cannot make a just-inserted
+audit immediately stale.
 
 The database validates the semantic relationships the app asserts (typed target
 exists and belongs to the case, `CASE` target equals the case, actor roles are a

@@ -18,8 +18,6 @@ import com.invoicematch.core.invoicecase.domain.InvoiceCaseStatus;
 import com.invoicematch.core.invoicecase.domain.StaleCaseVersionException;
 import com.invoicematch.core.invoicecase.persistence.EvidenceBundleRepository;
 import com.invoicematch.core.invoicecase.persistence.InvoiceCaseRepository;
-import com.invoicematch.core.matching.application.MatchResultView;
-import com.invoicematch.core.matching.application.MatchingService;
 import com.invoicematch.core.matching.domain.MatchResult;
 import com.invoicematch.core.matching.persistence.MatchResultRepository;
 import com.invoicematch.core.purchasingreference.application.CurrentPurchaseOrderSnapshot;
@@ -73,7 +71,7 @@ public class ReviewService {
     private final MatchResultRepository matchResults;
     private final ReviewSnapshotRepository snapshots;
     private final ReviewDecisionRepository decisions;
-    private final MatchingService matching;
+    private final InternalMatchRematch internalRematch;
     private final ReviewEffectiveMappingResolver mappingResolver;
     private final ReviewCurrentnessService currentness;
     private final ReviewSnapshotPayloadBuilder payloadBuilder;
@@ -94,7 +92,7 @@ public class ReviewService {
             MatchResultRepository matchResults,
             ReviewSnapshotRepository snapshots,
             ReviewDecisionRepository decisions,
-            MatchingService matching,
+            InternalMatchRematch internalRematch,
             ReviewEffectiveMappingResolver mappingResolver,
             ReviewCurrentnessService currentness,
             ReviewSnapshotPayloadBuilder payloadBuilder,
@@ -112,7 +110,7 @@ public class ReviewService {
         this.matchResults = matchResults;
         this.snapshots = snapshots;
         this.decisions = decisions;
-        this.matching = matching;
+        this.internalRematch = internalRematch;
         this.mappingResolver = mappingResolver;
         this.currentness = currentness;
         this.payloadBuilder = payloadBuilder;
@@ -237,10 +235,11 @@ public class ReviewService {
         invoiceCase.markModified(now);
         invoiceCase = invoiceCases.saveAndFlush(invoiceCase);
 
-        MatchResultView resultView = matching.rematchForMapping(command.caseId());
-        MatchResult successorResult = matchResults
-                .findById(resultView.id())
-                .orElseThrow(() -> new IllegalStateException("Successor match result vanished"));
+        // Internal deterministic re-match, executed by a package-private
+        // collaborator inside this authorized, case-locked, idempotent mapping
+        // transaction. Its result is covered by the atomic ITEM_MAPPED audit
+        // below rather than a separate operator-style MATCH_RUN.
+        MatchResult successorResult = internalRematch.append(command.caseId());
 
         int snapshotNumber = snapshots.maxSnapshotNumber(command.caseId()) + 1;
         ReviewSnapshot successor = buildAndSaveSnapshot(
@@ -268,7 +267,9 @@ public class ReviewService {
                         "purchaseOrderLineId", purchaseOrderLineId,
                         "decisionNumber", decision.decisionNumber(),
                         "successorSnapshotNumber", successor.snapshotNumber(),
-                        "successorMatchResultNumber", successorResult.resultNumber()),
+                        "successorMatchResultId", successorResult.id().toString(),
+                        "successorMatchResultNumber", successorResult.resultNumber(),
+                        "successorMatchResultHash", successorResult.resultHash()),
                 command.requestId(),
                 now));
         idempotency.recordResponse(SCOPE_MAPPING, resourceKey, actor.username(), command.requestId(), 200, response);

@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -73,6 +74,41 @@ class AuditStateSummarizerTest {
         assertThat(fallback.get("truncated").asBoolean()).isTrue();
         assertThat(fallback.get("reason").asText()).contains("audit size limit");
         assertThat(fallback.get("sha256").asText()).isNotBlank();
+    }
+
+    @Test
+    void semanticallyEqualOverLimitMapsWithDifferentInsertionOrderHashTheSame() {
+        Map<String, Object> ascending = new LinkedHashMap<>();
+        ascending.put("a", "z".repeat(MAX));
+        ascending.put("b", "z".repeat(MAX));
+        Map<String, Object> descending = new LinkedHashMap<>();
+        descending.put("b", "z".repeat(MAX));
+        descending.put("a", "z".repeat(MAX));
+
+        String first = summarizer.summarize(ascending);
+        String second = summarizer.summarize(descending);
+
+        assertThat(first).isEqualTo(second);
+        JsonNode envelope = read(first);
+        assertThat(envelope.get("truncated").asBoolean()).isTrue();
+        assertThat(envelope.get("sha256").asText()).hasSize(64);
+    }
+
+    @Test
+    void mapsAreCanonicalizedByKeyButArraysKeepOrder() {
+        Map<String, Object> ascending = new LinkedHashMap<>();
+        ascending.put("a", 1);
+        ascending.put("b", 2);
+        Map<String, Object> descending = new LinkedHashMap<>();
+        descending.put("b", 2);
+        descending.put("a", 1);
+
+        String json = summarizer.summarize(ascending);
+        assertThat(json).isEqualTo(summarizer.summarize(descending));
+        assertThat(json.indexOf("\"a\"")).isLessThan(json.indexOf("\"b\""));
+
+        String arrayJson = summarizer.summarize(java.util.List.of(3, 1, 2));
+        assertThat(arrayJson).isEqualTo("[3,1,2]");
     }
 
     private static boolean truncated(String json) {
