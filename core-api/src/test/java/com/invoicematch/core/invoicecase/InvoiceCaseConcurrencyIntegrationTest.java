@@ -14,6 +14,7 @@ import com.invoicematch.core.invoicecase.application.SubmitInvoiceCaseCommand;
 import com.invoicematch.core.support.AbstractPostgresIntegrationTest;
 import com.invoicematch.core.support.PurchasingPayloads;
 import com.invoicematch.core.support.StubPurchasingServer;
+import com.invoicematch.core.support.TestActors;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -151,7 +152,8 @@ class InvoiceCaseConcurrencyIntegrationTest extends AbstractPostgresIntegrationT
     void concurrentOpenRevisionKeepsOnlyOneOpenDraft() throws Exception {
         String caseId = newDraft("INV-1", List.of(new InvoiceLineInput(1, "A4", 1, 100, null)));
         long draftVersion = queries.get(UUID.fromString(caseId)).version();
-        commands.submit(new SubmitInvoiceCaseCommand(UUID.fromString(caseId), "req-submit", draftVersion));
+        TestActors.run("submitter", "SUBMITTER",
+                () -> commands.submit(new SubmitInvoiceCaseCommand(UUID.fromString(caseId), "req-submit", draftVersion)));
         forceSupplementRequired(caseId);
         long expectedVersion = queries.get(UUID.fromString(caseId)).version();
 
@@ -190,12 +192,14 @@ class InvoiceCaseConcurrencyIntegrationTest extends AbstractPostgresIntegrationT
     }
 
     private String newDraft(String invoiceNumber, List<InvoiceLineInput> lines) {
-        CommandResult<InvoiceCaseDetail> created =
-                commands.create(new CreateInvoiceCaseCommand("req-create-" + UUID.randomUUID(), "SUP-1", "PO-1001", invoiceNumber));
-        String caseId = created.body().id().toString();
-        commands.replaceDraft(new ReplaceDraftLinesCommand(
-                UUID.fromString(caseId), "req-edit-" + UUID.randomUUID(), created.body().version(), lines));
-        return caseId;
+        return TestActors.call("submitter", "SUBMITTER", () -> {
+            CommandResult<InvoiceCaseDetail> created = commands.create(
+                    new CreateInvoiceCaseCommand("req-create-" + UUID.randomUUID(), "SUP-1", "PO-1001", invoiceNumber));
+            String caseId = created.body().id().toString();
+            commands.replaceDraft(new ReplaceDraftLinesCommand(
+                    UUID.fromString(caseId), "req-edit-" + UUID.randomUUID(), created.body().version(), lines));
+            return caseId;
+        });
     }
 
     private void forceSupplementRequired(String caseId) {
@@ -212,8 +216,15 @@ class InvoiceCaseConcurrencyIntegrationTest extends AbstractPostgresIntegrationT
             List<Future<T>> futures = new ArrayList<>();
             for (Callable<T> task : tasks) {
                 futures.add(pool.submit(() -> {
-                    barrier.await(5, TimeUnit.SECONDS);
-                    return task.call();
+                    // Direct service calls need a server-derived principal; the
+                    // HTTP filter chain is not in play here.
+                    TestActors.as("submitter", "SUBMITTER");
+                    try {
+                        barrier.await(5, TimeUnit.SECONDS);
+                        return task.call();
+                    } finally {
+                        TestActors.clear();
+                    }
                 }));
             }
             List<T> results = new ArrayList<>();

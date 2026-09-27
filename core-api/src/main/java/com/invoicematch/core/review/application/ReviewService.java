@@ -3,11 +3,13 @@ package com.invoicematch.core.review.application;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.invoicematch.core.audit.application.AuditEvent;
+import com.invoicematch.core.audit.application.AuditRecorder;
+import com.invoicematch.core.audit.domain.AuditAction;
+import com.invoicematch.core.audit.domain.AuditTargetType;
 import com.invoicematch.core.invoicecase.application.CommandResult;
 import com.invoicematch.core.invoicecase.application.EvidenceBundlePayload;
 import com.invoicematch.core.invoicecase.application.EvidenceBundlePayloadHasher;
-import com.invoicematch.core.invoicecase.application.InvoiceCaseQueryService;
-import com.invoicematch.core.invoicecase.application.MatchCaseSnapshot;
 import com.invoicematch.core.invoicecase.application.RequestIdempotencyStore;
 import com.invoicematch.core.invoicecase.domain.EvidenceBundle;
 import com.invoicematch.core.invoicecase.domain.InvoiceCase;
@@ -16,8 +18,6 @@ import com.invoicematch.core.invoicecase.domain.InvoiceCaseStatus;
 import com.invoicematch.core.invoicecase.domain.StaleCaseVersionException;
 import com.invoicematch.core.invoicecase.persistence.EvidenceBundleRepository;
 import com.invoicematch.core.invoicecase.persistence.InvoiceCaseRepository;
-import com.invoicematch.core.matching.application.MatchResultView;
-import com.invoicematch.core.matching.application.MatchingService;
 import com.invoicematch.core.matching.domain.MatchResult;
 import com.invoicematch.core.matching.persistence.MatchResultRepository;
 import com.invoicematch.core.purchasingreference.application.CurrentPurchaseOrderSnapshot;
@@ -31,6 +31,9 @@ import com.invoicematch.core.review.domain.ReviewStateConflictException;
 import com.invoicematch.core.review.domain.ReviewTargetInvalidException;
 import com.invoicematch.core.review.persistence.ReviewDecisionRepository;
 import com.invoicematch.core.review.persistence.ReviewSnapshotRepository;
+import com.invoicematch.core.security.Actor;
+import com.invoicematch.core.security.AuthorizationService;
+import com.invoicematch.core.security.Role;
 import com.invoicematch.core.shared.domain.DomainValidationException;
 import com.invoicematch.core.shared.domain.PurchaseOrderId;
 import java.time.Clock;
@@ -62,16 +65,13 @@ public class ReviewService {
     public static final String SCOPE_SUPPLEMENT = "invoice-case:supplement";
     public static final String SCOPE_REJECT = "invoice-case:reject";
     private static final int MAX_REASON_LENGTH = 1000;
-    private static final int MAX_ACTOR_LENGTH = 64;
-    private static final String DEFAULT_ACTOR = "reviewer";
 
     private final InvoiceCaseRepository invoiceCases;
-    private final InvoiceCaseQueryService invoiceCaseQueries;
     private final EvidenceBundleRepository evidenceBundles;
     private final MatchResultRepository matchResults;
     private final ReviewSnapshotRepository snapshots;
     private final ReviewDecisionRepository decisions;
-    private final MatchingService matching;
+    private final InternalMatchRematch internalRematch;
     private final ReviewEffectiveMappingResolver mappingResolver;
     private final ReviewCurrentnessService currentness;
     private final ReviewSnapshotPayloadBuilder payloadBuilder;
@@ -81,17 +81,18 @@ public class ReviewService {
     private final ReviewLockInterceptor reviewLockInterceptor;
     private final ReviewCommandFingerprint fingerprint;
     private final RequestIdempotencyStore idempotency;
+    private final AuthorizationService authorization;
+    private final AuditRecorder audit;
     private final ObjectMapper mapper = new ObjectMapper();
     private final Clock clock;
 
     public ReviewService(
             InvoiceCaseRepository invoiceCases,
-            InvoiceCaseQueryService invoiceCaseQueries,
             EvidenceBundleRepository evidenceBundles,
             MatchResultRepository matchResults,
             ReviewSnapshotRepository snapshots,
             ReviewDecisionRepository decisions,
-            MatchingService matching,
+            InternalMatchRematch internalRematch,
             ReviewEffectiveMappingResolver mappingResolver,
             ReviewCurrentnessService currentness,
             ReviewSnapshotPayloadBuilder payloadBuilder,
@@ -101,14 +102,15 @@ public class ReviewService {
             ObjectProvider<ReviewLockInterceptor> reviewLockInterceptors,
             ReviewCommandFingerprint fingerprint,
             RequestIdempotencyStore idempotency,
+            AuthorizationService authorization,
+            AuditRecorder audit,
             Clock clock) {
         this.invoiceCases = invoiceCases;
-        this.invoiceCaseQueries = invoiceCaseQueries;
         this.evidenceBundles = evidenceBundles;
         this.matchResults = matchResults;
         this.snapshots = snapshots;
         this.decisions = decisions;
-        this.matching = matching;
+        this.internalRematch = internalRematch;
         this.mappingResolver = mappingResolver;
         this.currentness = currentness;
         this.payloadBuilder = payloadBuilder;
@@ -118,20 +120,25 @@ public class ReviewService {
         this.reviewLockInterceptor = reviewLockInterceptors.getIfAvailable(() -> ReviewLockInterceptor.NONE);
         this.fingerprint = fingerprint;
         this.idempotency = idempotency;
+        this.authorization = authorization;
+        this.audit = audit;
         this.clock = clock;
     }
 
     @Transactional
     public CommandResult<ReviewSnapshotView> freezeSnapshot(FreezeReviewSnapshotCommand command) {
+        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
+        authorization.requireRole(Role.APPROVER);
+        Actor actor = authorization.actor();
+
         String resourceKey = command.caseId().toString();
         String requestHash = fingerprint.freezeSnapshot(command);
-        RequestIdempotencyStore.BeginResult begin =
-                idempotency.begin(SCOPE_SNAPSHOT, resourceKey, command.requestId(), requestHash);
+        RequestIdempotencyStore.BeginResult begin = idempotency.begin(
+                SCOPE_SNAPSHOT, resourceKey, actor.username(), command.requestId(), requestHash);
         if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
             return replay(replay.response(), ReviewSnapshotView.class);
         }
 
-        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         requireReviewPending(invoiceCase);
         beginWrite(invoiceCase, command.expectedCaseVersion());
 
@@ -152,21 +159,40 @@ public class ReviewService {
                 clock.instant());
 
         ReviewSnapshotView view = ReviewSnapshotView.from(snapshot);
-        idempotency.recordResponse(SCOPE_SNAPSHOT, resourceKey, command.requestId(), 201, view);
+        audit.record(new AuditEvent(
+                command.caseId(),
+                actor,
+                AuditAction.REVIEW_SNAPSHOT_FROZEN,
+                AuditTargetType.REVIEW_SNAPSHOT,
+                snapshot.id().toString(),
+                invoiceCase.version(),
+                null,
+                java.util.Map.of(
+                        "snapshotNumber", snapshot.snapshotNumber(),
+                        "payloadHash", snapshot.payloadHash(),
+                        "matchResultNumber", result.resultNumber(),
+                        "evidenceBundleVersion", bundle.versionNumber()),
+                command.requestId(),
+                snapshot.createdAt()));
+        idempotency.recordResponse(
+                SCOPE_SNAPSHOT, resourceKey, actor.username(), command.requestId(), 201, view);
         return CommandResult.created(view);
     }
 
     @Transactional
     public CommandResult<MappingDecisionResult> recordMapping(RecordMappingDecisionCommand command) {
+        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
+        authorization.requireRole(Role.APPROVER);
+        Actor actor = authorization.actor();
+
         String resourceKey = command.caseId().toString();
         String requestHash = fingerprint.recordMapping(command);
-        RequestIdempotencyStore.BeginResult begin =
-                idempotency.begin(SCOPE_MAPPING, resourceKey, command.requestId(), requestHash);
+        RequestIdempotencyStore.BeginResult begin = idempotency.begin(
+                SCOPE_MAPPING, resourceKey, actor.username(), command.requestId(), requestHash);
         if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
             return replay(replay.response(), MappingDecisionResult.class);
         }
 
-        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         requireReviewPending(invoiceCase);
         beginWrite(invoiceCase, command.expectedCaseVersion());
 
@@ -182,15 +208,18 @@ public class ReviewService {
         String purchaseOrderLineId =
                 resolveUniquePurchaseOrderLine(command.caseId(), purchasing, command.itemId());
 
+        // Capture the effective mapping for this line before the new decision, so
+        // the audit diff shows the exact replacement.
+        Object previousMapping = previousMappingForLine(command.caseId(), bundle.id(), command.lineNumber());
+
         Instant now = clock.instant();
-        String decidedBy = actor(command.decidedBy());
         int decisionNumber = decisions.maxDecisionNumber(command.caseId()) + 1;
         ReviewDecision decision = ReviewDecision.recordMapping(
                 UUID.randomUUID(),
                 command.caseId(),
                 target.id(),
                 decisionNumber,
-                decidedBy,
+                actor.username(),
                 null,
                 mappingPayload(command.lineNumber(), command.itemId(), purchaseOrderLineId),
                 target.payloadHash(),
@@ -206,11 +235,11 @@ public class ReviewService {
         invoiceCase.markModified(now);
         invoiceCase = invoiceCases.saveAndFlush(invoiceCase);
 
-        MatchCaseSnapshot caseSnapshot = invoiceCaseQueries.loadForMatching(command.caseId());
-        MatchResultView resultView = matching.appendResult(caseSnapshot, purchasing);
-        MatchResult successorResult = matchResults
-                .findById(resultView.id())
-                .orElseThrow(() -> new IllegalStateException("Successor match result vanished"));
+        // Internal deterministic re-match, executed by a package-private
+        // collaborator inside this authorized, case-locked, idempotent mapping
+        // transaction. Its result is covered by the atomic ITEM_MAPPED audit
+        // below rather than a separate operator-style MATCH_RUN.
+        MatchResult successorResult = internalRematch.append(command.caseId());
 
         int snapshotNumber = snapshots.maxSnapshotNumber(command.caseId()) + 1;
         ReviewSnapshot successor = buildAndSaveSnapshot(
@@ -224,21 +253,43 @@ public class ReviewService {
 
         MappingDecisionResult response =
                 new MappingDecisionResult(ReviewDecisionView.from(decision), ReviewSnapshotView.from(successor));
-        idempotency.recordResponse(SCOPE_MAPPING, resourceKey, command.requestId(), 200, response);
+        audit.record(new AuditEvent(
+                command.caseId(),
+                actor,
+                AuditAction.ITEM_MAPPED,
+                AuditTargetType.REVIEW_DECISION,
+                decision.id().toString(),
+                invoiceCase.version(),
+                previousMapping,
+                java.util.Map.of(
+                        "lineNumber", command.lineNumber(),
+                        "itemId", command.itemId(),
+                        "purchaseOrderLineId", purchaseOrderLineId,
+                        "decisionNumber", decision.decisionNumber(),
+                        "successorSnapshotNumber", successor.snapshotNumber(),
+                        "successorMatchResultId", successorResult.id().toString(),
+                        "successorMatchResultNumber", successorResult.resultNumber(),
+                        "successorMatchResultHash", successorResult.resultHash()),
+                command.requestId(),
+                now));
+        idempotency.recordResponse(SCOPE_MAPPING, resourceKey, actor.username(), command.requestId(), 200, response);
         return CommandResult.ok(response);
     }
 
     @Transactional
     public CommandResult<ReviewDecisionView> requestSupplement(RequestSupplementCommand command) {
+        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
+        authorization.requireRole(Role.APPROVER);
+        Actor actor = authorization.actor();
+
         String resourceKey = command.caseId().toString();
         String requestHash = fingerprint.requestSupplement(command);
-        RequestIdempotencyStore.BeginResult begin =
-                idempotency.begin(SCOPE_SUPPLEMENT, resourceKey, command.requestId(), requestHash);
+        RequestIdempotencyStore.BeginResult begin = idempotency.begin(
+                SCOPE_SUPPLEMENT, resourceKey, actor.username(), command.requestId(), requestHash);
         if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
             return replay(replay.response(), ReviewDecisionView.class);
         }
 
-        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         requireReviewPending(invoiceCase);
         beginWrite(invoiceCase, command.expectedCaseVersion());
 
@@ -248,28 +299,46 @@ public class ReviewService {
 
         Instant now = clock.instant();
         ReviewDecision decision = recordSimpleDecision(
-                command.caseId(), target, ReviewDecisionType.SUPPLEMENT_REQUESTED, actor(command.decidedBy()), reason, now);
+                command.caseId(), target, ReviewDecisionType.SUPPLEMENT_REQUESTED, actor.username(), reason, now);
         decisions.saveAndFlush(decision);
 
         invoiceCase.transitionTo(InvoiceCaseStatus.SUPPLEMENT_REQUIRED, now);
         invoiceCases.saveAndFlush(invoiceCase);
 
         ReviewDecisionView view = ReviewDecisionView.from(decision);
-        idempotency.recordResponse(SCOPE_SUPPLEMENT, resourceKey, command.requestId(), 200, view);
+        audit.record(new AuditEvent(
+                command.caseId(),
+                actor,
+                AuditAction.SUPPLEMENT_REQUESTED,
+                AuditTargetType.REVIEW_DECISION,
+                decision.id().toString(),
+                invoiceCase.version(),
+                java.util.Map.of("status", "REVIEW_PENDING"),
+                java.util.Map.of(
+                        "status", invoiceCase.status().name(),
+                        "decisionNumber", decision.decisionNumber(),
+                        "reason", reason,
+                        "reviewSnapshotId", target.id().toString()),
+                command.requestId(),
+                now));
+        idempotency.recordResponse(SCOPE_SUPPLEMENT, resourceKey, actor.username(), command.requestId(), 200, view);
         return CommandResult.ok(view);
     }
 
     @Transactional
     public CommandResult<ReviewDecisionView> reject(RejectReviewCommand command) {
+        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
+        authorization.requireRole(Role.APPROVER);
+        Actor actor = authorization.actor();
+
         String resourceKey = command.caseId().toString();
         String requestHash = fingerprint.reject(command);
-        RequestIdempotencyStore.BeginResult begin =
-                idempotency.begin(SCOPE_REJECT, resourceKey, command.requestId(), requestHash);
+        RequestIdempotencyStore.BeginResult begin = idempotency.begin(
+                SCOPE_REJECT, resourceKey, actor.username(), command.requestId(), requestHash);
         if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
             return replay(replay.response(), ReviewDecisionView.class);
         }
 
-        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         requireReviewPending(invoiceCase);
         beginWrite(invoiceCase, command.expectedCaseVersion());
 
@@ -279,15 +348,44 @@ public class ReviewService {
 
         Instant now = clock.instant();
         ReviewDecision decision = recordSimpleDecision(
-                command.caseId(), target, ReviewDecisionType.REJECTED, actor(command.decidedBy()), reason, now);
+                command.caseId(), target, ReviewDecisionType.REJECTED, actor.username(), reason, now);
         decisions.saveAndFlush(decision);
 
         invoiceCase.transitionTo(InvoiceCaseStatus.REJECTED, now);
         invoiceCases.saveAndFlush(invoiceCase);
 
         ReviewDecisionView view = ReviewDecisionView.from(decision);
-        idempotency.recordResponse(SCOPE_REJECT, resourceKey, command.requestId(), 200, view);
+        audit.record(new AuditEvent(
+                command.caseId(),
+                actor,
+                AuditAction.CASE_REJECTED,
+                AuditTargetType.REVIEW_DECISION,
+                decision.id().toString(),
+                invoiceCase.version(),
+                java.util.Map.of("status", "REVIEW_PENDING"),
+                java.util.Map.of(
+                        "status", invoiceCase.status().name(),
+                        "decisionNumber", decision.decisionNumber(),
+                        "reason", reason,
+                        "reviewSnapshotId", target.id().toString()),
+                command.requestId(),
+                now));
+        idempotency.recordResponse(SCOPE_REJECT, resourceKey, actor.username(), command.requestId(), 200, view);
         return CommandResult.ok(view);
+    }
+
+    private Object previousMappingForLine(UUID caseId, UUID evidenceBundleId, int lineNumber) {
+        return mappingResolver.resolve(caseId, evidenceBundleId).mappings().stream()
+                .filter(mapping -> mapping.lineNumber() == lineNumber)
+                .findFirst()
+                .<Object>map(mapping -> {
+                    java.util.Map<String, Object> node = new java.util.LinkedHashMap<>();
+                    node.put("lineNumber", mapping.lineNumber());
+                    node.put("itemId", mapping.itemId());
+                    node.put("purchaseOrderLineId", mapping.purchaseOrderLineId());
+                    return node;
+                })
+                .orElse(null);
     }
 
     private ReviewDecision recordSimpleDecision(
@@ -470,20 +568,6 @@ public class ReviewService {
         String trimmed = reason.strip();
         if (trimmed.length() > MAX_REASON_LENGTH) {
             throw new DomainValidationException("reason must be at most " + MAX_REASON_LENGTH + " characters");
-        }
-        return trimmed;
-    }
-
-    private static String actor(String decidedBy) {
-        // TODO(P1-06): replace this client-supplied placeholder with the
-        // authenticated principal. Until then decidedBy is non-authoritative and
-        // must not be trusted for authorization, self-approval or audit.
-        if (decidedBy == null || decidedBy.isBlank()) {
-            return DEFAULT_ACTOR;
-        }
-        String trimmed = decidedBy.strip();
-        if (trimmed.length() > MAX_ACTOR_LENGTH) {
-            throw new DomainValidationException("decidedBy must be at most " + MAX_ACTOR_LENGTH + " characters");
         }
         return trimmed;
     }

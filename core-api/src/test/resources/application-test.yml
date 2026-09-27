@@ -1,0 +1,19 @@
+# TEST ONLY identities. Active only under the Spring 'test' profile bound by
+# AbstractPostgresIntegrationTest, so tests can exercise real HTTP Basic
+# authentication without the demo credentials being part of the default
+# deployable configuration. Same BCrypt hashes as the local profile.
+security:
+  demo:
+    users:
+      - username: submitter
+        password: "{bcrypt}$2a$10$dy82eO2.Xqf1r/xnYb0d.umTy.YPhylxIHoWLR5gi.conT.c3lpHm"
+        roles: [SUBMITTER]
+      - username: submitter2
+        password: "{bcrypt}$2a$10$yU7d64ayCZUnbgPCLo0aC.xeH/jKDqJfVf8XjEK.9/6eXfXTeKD2S"
+        roles: [SUBMITTER]
+      - username: approver
+        password: "{bcrypt}$2a$10$zI98Q/Kc88bhkspHb/BRneFPm1bxu5d4ciVHaNBm/nUFEy9FYKE/O"
+        roles: [APPROVER]
+      - username: operator
+        password: "{bcrypt}$2a$10$43jqVAOkzegqkQVkGJi7luHB.MK5GGe1uexfRnH9C07fWEzVdcsfq"
+        roles: [OPERATOR]

@@ -158,6 +158,7 @@ class InvoiceCaseStateTransitionTest {
 
     private static InvoiceCase newCase() {
         return InvoiceCase.create(
-                InvoiceCaseId.newId(), SupplierId.of("SUP-1"), PurchaseOrderId.of("PO-1"), "INV-1", "INV1", T0);
+                InvoiceCaseId.newId(), SupplierId.of("SUP-1"), PurchaseOrderId.of("PO-1"), "INV-1", "INV1",
+                "submitter", T0);
     }
 }

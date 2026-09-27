@@ -42,6 +42,9 @@ public class InvoiceCase {
     @Column(name = "normalized_invoice_number", nullable = false, updatable = false, length = 100)
     private String normalizedInvoiceNumber;
 
+    @Column(name = "submitted_by", nullable = false, updatable = false, length = 64)
+    private String submittedBy;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
     private InvoiceCaseStatus status;
@@ -71,19 +74,23 @@ public class InvoiceCase {
             PurchaseOrderId purchaseOrderId,
             String invoiceNumber,
             String normalizedInvoiceNumber,
+            String submittedBy,
             Instant now) {
         this.id = id.value();
         this.supplierId = supplierId.value();
         this.purchaseOrderId = purchaseOrderId.value();
         this.invoiceNumber = requireText(invoiceNumber, "invoiceNumber");
         this.normalizedInvoiceNumber = requireText(normalizedInvoiceNumber, "normalizedInvoiceNumber");
+        this.submittedBy = requireText(submittedBy, "submittedBy");
         this.status = InvoiceCaseStatus.DRAFT;
         this.createdAt = Objects.requireNonNull(now, "now");
         this.updatedAt = now;
     }
 
     /**
-     * Creates a claim case in {@link InvoiceCaseStatus#DRAFT}.
+     * Creates a claim case in {@link InvoiceCaseStatus#DRAFT}. {@code submittedBy}
+     * is the authenticated creator identity and never changes: self-approval and
+     * submitter-scoped reads both depend on it.
      */
     public static InvoiceCase create(
             InvoiceCaseId id,
@@ -91,11 +98,13 @@ public class InvoiceCase {
             PurchaseOrderId purchaseOrderId,
             String invoiceNumber,
             String normalizedInvoiceNumber,
+            String submittedBy,
             Instant now) {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(supplierId, "supplierId");
         Objects.requireNonNull(purchaseOrderId, "purchaseOrderId");
-        return new InvoiceCase(id, supplierId, purchaseOrderId, invoiceNumber, normalizedInvoiceNumber, now);
+        return new InvoiceCase(
+                id, supplierId, purchaseOrderId, invoiceNumber, normalizedInvoiceNumber, submittedBy, now);
     }
 
     /**
@@ -175,6 +184,10 @@ public class InvoiceCase {
 
     public String normalizedInvoiceNumber() {
         return normalizedInvoiceNumber;
+    }
+
+    public String submittedBy() {
+        return submittedBy;
     }
 
     public InvoiceCaseStatus status() {

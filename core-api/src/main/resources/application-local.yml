@@ -1,0 +1,25 @@
+# LOCAL / DEMO ONLY identities for HTTP Basic.
+#
+# These exist so the API is runnable without a real IdP. They are deliberately
+# NOT in the default application.yml: a normal deployment fails closed (401)
+# until a real authentication provider is configured. Activate this profile with
+# `--spring.profiles.active=local` or SPRING_PROFILES_ACTIVE=local (docker
+# compose does this). Never use these credentials outside local development.
+#
+# Passwords are BCrypt hashes of, in order: submitter-pass, submitter2-pass,
+# approver-pass, operator-pass.
+security:
+  demo:
+    users:
+      - username: submitter
+        password: "{bcrypt}$2a$10$dy82eO2.Xqf1r/xnYb0d.umTy.YPhylxIHoWLR5gi.conT.c3lpHm"
+        roles: [SUBMITTER]
+      - username: submitter2
+        password: "{bcrypt}$2a$10$yU7d64ayCZUnbgPCLo0aC.xeH/jKDqJfVf8XjEK.9/6eXfXTeKD2S"
+        roles: [SUBMITTER]
+      - username: approver
+        password: "{bcrypt}$2a$10$zI98Q/Kc88bhkspHb/BRneFPm1bxu5d4ciVHaNBm/nUFEy9FYKE/O"
+        roles: [APPROVER]
+      - username: operator
+        password: "{bcrypt}$2a$10$43jqVAOkzegqkQVkGJi7luHB.MK5GGe1uexfRnH9C07fWEzVdcsfq"
+        roles: [OPERATOR]

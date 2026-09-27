@@ -15,6 +15,7 @@ import com.invoicematch.core.matching.domain.MatchStateConflictException;
 import com.invoicematch.core.support.AbstractPostgresIntegrationTest;
 import com.invoicematch.core.support.PurchasingPayloads;
 import com.invoicematch.core.support.StubPurchasingServer;
+import com.invoicematch.core.support.TestActors;
 import java.io.IOException;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -119,7 +120,8 @@ class MatchConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest {
         ExecutorService writerPool = Executors.newSingleThreadExecutor();
         try {
             Future<CommandResult<MatchResultView>> matchFuture = matchPool.submit(
-                    () -> matchingService.run(new RunMatchCommand(caseId, "m-1")));
+                    () -> TestActors.call("operator", "OPERATOR",
+                            () -> matchingService.run(new RunMatchCommand(caseId, "m-1"))));
             assertThat(INTERCEPTOR.awaitCaseLocked(10, TimeUnit.SECONDS)).isTrue();
 
             Future<Void> writerFuture = writerPool.submit(() -> {
@@ -165,7 +167,8 @@ class MatchConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest {
             assertThat(writerHoldsLock.await(10, TimeUnit.SECONDS)).isTrue();
 
             Future<CommandResult<MatchResultView>> matchFuture = matchPool.submit(
-                    () -> matchingService.run(new RunMatchCommand(caseId, "m-1")));
+                    () -> TestActors.call("operator", "OPERATOR",
+                            () -> matchingService.run(new RunMatchCommand(caseId, "m-1"))));
 
             Thread.sleep(700);
             assertThat(matchFuture.isDone())
@@ -222,14 +225,16 @@ class MatchConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     private UUID submittedCase() {
-        CommandResult<InvoiceCaseDetail> created = invoiceCaseCommands.create(
-                new CreateInvoiceCaseCommand("c-1", SUPPLIER, PO_ID, "INV-1"));
-        UUID caseId = created.body().id();
-        invoiceCaseCommands.replaceDraft(new ReplaceDraftLinesCommand(
-                caseId, "c-2", created.body().version(), List.of(new InvoiceLineInput(1, "A4 Paper", 10, 2500, ITEM_A))));
-        long version = invoiceCaseRepository.findById(caseId).orElseThrow().version();
-        invoiceCaseCommands.submit(new SubmitInvoiceCaseCommand(caseId, "c-3", version));
-        return caseId;
+        return TestActors.call("submitter", "SUBMITTER", () -> {
+            CommandResult<InvoiceCaseDetail> created = invoiceCaseCommands.create(
+                    new CreateInvoiceCaseCommand("c-1", SUPPLIER, PO_ID, "INV-1"));
+            UUID caseId = created.body().id();
+            invoiceCaseCommands.replaceDraft(new ReplaceDraftLinesCommand(
+                    caseId, "c-2", created.body().version(), List.of(new InvoiceLineInput(1, "A4 Paper", 10, 2500, ITEM_A))));
+            long version = invoiceCaseRepository.findById(caseId).orElseThrow().version();
+            invoiceCaseCommands.submit(new SubmitInvoiceCaseCommand(caseId, "c-3", version));
+            return caseId;
+        });
     }
 
     private long caseVersion(UUID caseId) {

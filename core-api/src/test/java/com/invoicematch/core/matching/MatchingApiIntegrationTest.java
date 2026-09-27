@@ -3,6 +3,7 @@ package com.invoicematch.core.matching;
 import static com.invoicematch.core.support.PurchasingPayloads.receiptLine;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -31,6 +32,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -39,9 +41,11 @@ import org.springframework.test.web.servlet.MvcResult;
 /**
  * End-to-end P1-04 tests against real PostgreSQL and the external purchasing
  * stub: the HTTP contract, determinism, append-only immutability and every
- * business exception of the deterministic 3-way match.
+ * business exception of the deterministic 3-way match. Matching is an OPERATOR
+ * action; case setup is performed as the SUBMITTER.
  */
 @AutoConfigureMockMvc
+@WithMockUser(username = "operator", roles = "OPERATOR")
 class MatchingApiIntegrationTest extends AbstractPostgresIntegrationTest {
 
     private static final String SUPPLIER = "SUP-1";
@@ -375,6 +379,7 @@ class MatchingApiIntegrationTest extends AbstractPostgresIntegrationTest {
         body.put("purchaseOrderId", PO_ID);
         body.put("invoiceNumber", invoiceNumber);
         MvcResult result = mockMvc.perform(post("/api/invoice-cases")
+                        .with(user("submitter").roles("SUBMITTER"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(body)))
                 .andReturn();
@@ -396,6 +401,7 @@ class MatchingApiIntegrationTest extends AbstractPostgresIntegrationTest {
         ArrayNode array = body.putArray("lines");
         lines.forEach(array::add);
         MvcResult result = mockMvc.perform(put("/api/invoice-cases/{id}/draft", caseId)
+                        .with(user("submitter").roles("SUBMITTER"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(body)))
                 .andReturn();
@@ -407,6 +413,7 @@ class MatchingApiIntegrationTest extends AbstractPostgresIntegrationTest {
         body.put("requestId", requestId);
         body.put("expectedCaseVersion", expectedVersion);
         MvcResult result = mockMvc.perform(post("/api/invoice-cases/{id}/submit", caseId)
+                        .with(user("submitter").roles("SUBMITTER"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(body)))
                 .andReturn();

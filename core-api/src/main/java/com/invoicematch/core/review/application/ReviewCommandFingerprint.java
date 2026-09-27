@@ -32,7 +32,6 @@ public class ReviewCommandFingerprint {
         node.put("reviewPayloadHash", command.reviewPayloadHash());
         node.put("lineNumber", command.lineNumber());
         node.put("itemId", command.itemId());
-        node.put("decidedBy", command.decidedBy());
         return sha256Hex(write(node));
     }
 
@@ -42,7 +41,6 @@ public class ReviewCommandFingerprint {
         node.put("reviewSnapshotId", command.reviewSnapshotId().toString());
         node.put("reviewPayloadHash", command.reviewPayloadHash());
         node.put("reason", command.reason());
-        node.put("decidedBy", command.decidedBy());
         return sha256Hex(write(node));
     }
 
@@ -52,7 +50,6 @@ public class ReviewCommandFingerprint {
         node.put("reviewSnapshotId", command.reviewSnapshotId().toString());
         node.put("reviewPayloadHash", command.reviewPayloadHash());
         node.put("reason", command.reason());
-        node.put("decidedBy", command.decidedBy());
         return sha256Hex(write(node));
     }
 

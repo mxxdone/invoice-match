@@ -51,8 +51,9 @@ class InvoiceCaseManualSubmissionMigrationTest extends AbstractPostgresIntegrati
     @Test
     void incompleteIdempotencyRecordIsRejectedAtCommit() {
         assertThatThrownBy(() -> jdbc.update(
-                        "insert into idempotency_record (id, scope, resource_key, request_id, request_hash, created_at)"
-                                + " values (?, 'scope', 'resource', 'req-incomplete', 'hash', ?)",
+                        "insert into idempotency_record (id, scope, resource_key, actor, request_id, request_hash,"
+                                + " created_at)"
+                                + " values (?, 'scope', 'resource', 'principal-a', 'req-incomplete', 'hash', ?)",
                         UUID.randomUUID(),
                         Timestamp.from(T0)))
                 .isInstanceOf(DataAccessException.class);
@@ -201,8 +202,8 @@ class InvoiceCaseManualSubmissionMigrationTest extends AbstractPostgresIntegrati
         UUID id = UUID.randomUUID();
         jdbc.update(
                 "insert into invoice_case (id, supplier_id, purchase_order_id, invoice_number,"
-                        + " normalized_invoice_number, status, version, created_at, updated_at)"
-                        + " values (?, 'SUP-1', 'PO-1', 'INV-1', 'INV1', 'DRAFT', 0, ?, ?)",
+                        + " normalized_invoice_number, submitted_by, status, version, created_at, updated_at)"
+                        + " values (?, 'SUP-1', 'PO-1', 'INV-1', 'INV1', 'legacy', 'DRAFT', 0, ?, ?)",
                 id,
                 Timestamp.from(T0),
                 Timestamp.from(T0));
@@ -247,9 +248,9 @@ class InvoiceCaseManualSubmissionMigrationTest extends AbstractPostgresIntegrati
 
     private void insertCompleteIdempotency(String requestId) {
         jdbc.update(
-                "insert into idempotency_record (id, scope, resource_key, request_id, request_hash,"
+                "insert into idempotency_record (id, scope, resource_key, actor, request_id, request_hash,"
                         + " response_status, response_body, created_at)"
-                        + " values (?, 'scope', 'resource', ?, 'hash', 200, '{}', ?)",
+                        + " values (?, 'scope', 'resource', 'principal-a', ?, 'hash', 200, '{}', ?)",
                 UUID.randomUUID(),
                 requestId,
                 Timestamp.from(T0));

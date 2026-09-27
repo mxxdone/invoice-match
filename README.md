@@ -1,6 +1,6 @@
 # Invoice Match
 
-P1-00 provides a runnable baseline for the invoice matching project. It has one Java 21 Spring Boot 3 API, a Next.js TypeScript web app, PostgreSQL, and a minimal Mock ERP process. P1-01 adds the domain contract and PostgreSQL schema baseline (invoice case, draft revision, evidence bundle, match result, review snapshot and decision). P1-02 adds a read-only external purchasing system Mock (`mock-purchasing`), a read-only Core API adapter and a PostgreSQL-backed current snapshot of suppliers' purchase orders, lines, receipts and receipt lines with external versions. P1-03 adds the first business write APIs: manual invoice case creation validated against the external purchase order, atomic current-draft editing, submission that freezes a canonical hashed `EvidenceBundle` version, supplement revisions that copy the previous frozen lines, past bundle version reads and request-id idempotency. P1-04 adds the deterministic, AI-free 3-way match: the latest frozen bundle is compared with zero tolerance against the current purchasing snapshot and an immutable, canonically hashed `MatchResult` with per-line calculation evidence, an exception taxonomy and a non-consuming expected FIFO allocation plan is appended. P1-05 adds the human review workflow: a frozen `ReviewSnapshot` approval subject with a canonical payload hash, case-local item mapping with deterministic re-match and a successor snapshot, supplement request and rejection, machine-checkable freshness/staleness, and request-id idempotency. Approval/allocation, roles/audit and AI remain out of scope.
+P1-00 provides a runnable baseline for the invoice matching project. It has one Java 21 Spring Boot 3 API, a Next.js TypeScript web app, PostgreSQL, and a minimal Mock ERP process. P1-01 adds the domain contract and PostgreSQL schema baseline (invoice case, draft revision, evidence bundle, match result, review snapshot and decision). P1-02 adds a read-only external purchasing system Mock (`mock-purchasing`), a read-only Core API adapter and a PostgreSQL-backed current snapshot of suppliers' purchase orders, lines, receipts and receipt lines with external versions. P1-03 adds the first business write APIs: manual invoice case creation validated against the external purchase order, atomic current-draft editing, submission that freezes a canonical hashed `EvidenceBundle` version, supplement revisions that copy the previous frozen lines, past bundle version reads and request-id idempotency. P1-04 adds the deterministic, AI-free 3-way match: the latest frozen bundle is compared with zero tolerance against the current purchasing snapshot and an immutable, canonically hashed `MatchResult` with per-line calculation evidence, an exception taxonomy and a non-consuming expected FIFO allocation plan is appended. P1-05 adds the human review workflow: a frozen `ReviewSnapshot` approval subject with a canonical payload hash, case-local item mapping with deterministic re-match and a successor snapshot, supplement request and rejection, machine-checkable freshness/staleness, and request-id idempotency. P1-06 adds role-based authorization for `SUBMITTER`, `APPROVER` and `OPERATOR` with local demo identities, an authoritative server-derived `submittedBy`/review actor (the client `decidedBy` is ignored), a request trace id, and an append-only, transactionally recorded audit history. Approval/allocation, payment/outbox and AI remain out of scope.
 
 ## Run all services
 
@@ -25,10 +25,11 @@ receipt) and <http://localhost:8082/api/purchase-orders/PO-1002> (unconfirmed or
 
 ## Invoice case API (P1-03)
 
-All write endpoints require a `requestId`. Repeating a request with the same
-`requestId` and the same payload replays the original response without repeating
-the side effect; the same `requestId` with a different payload is a `409`
-conflict.
+All write endpoints require a `requestId`. The idempotency key is namespaced by
+the authenticated principal (see P1-06 below). Repeating a request with the same
+`requestId` and the same payload **as the same principal** replays the original
+response without repeating the side effect; the same `requestId` with a
+different payload is a `409` conflict (actor-local).
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
@@ -177,15 +178,133 @@ cannot change the purchasing snapshot between the validation and the committed
 decision or snapshot. The lock order is always invoice case first, then purchase
 order, and no writer takes them in the opposite order.
 
-`decidedBy` is an optional, unauthenticated client-supplied placeholder until
-P1-06. It is stored for Phase 1 traceability only and is **not** an
-authorization, self-approval or audit source; P1-06 replaces it with the
-authenticated principal and removes it from the write contract.
+`decidedBy` from P1-05 is accepted only for backward compatibility and is
+**ignored**; the recorded reviewer is the authenticated principal. It is never
+an authorization, self-approval or audit source.
 
 The canonical snapshot payload sorts every collection and excludes the
 snapshot's generated identity/time and decision ids from its SHA-256, so the
 same semantic inputs hash equally regardless of repository or list ordering.
-Approval, allocation, payment, roles, audit and AI are out of scope for P1-05.
+
+## Roles, identity and audit (P1-06)
+
+Every `/api/**` route requires authentication; the actuator health probes stay
+public. **Unauthenticated protected access is `401` and an authenticated but
+forbidden action is `403`** (both use the shared `{code,message}` error body).
+Spring Security HTTP Basic is used with local demo identities. The default
+deployable configuration ships **no** credentials and fails closed (every
+protected call is `401`); the demo identities exist only in the `local` profile
+(activated by `docker compose`, or `SPRING_PROFILES_ACTIVE=local` /
+`--spring.profiles.active=local`) and in the test profile:
+
+| Username | Password | Role |
+| --- | --- | --- |
+| `submitter` | `submitter-pass` | `SUBMITTER` |
+| `submitter2` | `submitter2-pass` | `SUBMITTER` |
+| `approver` | `approver-pass` | `APPROVER` |
+| `operator` | `operator-pass` | `OPERATOR` |
+
+Passwords are stored as BCrypt hashes, never plaintext, and are demo-only. A
+production deployment replaces the demo `UserDetailsService` with a real
+IdP/OAuth resource server.
+
+Authorization matrix (least privilege; forbidden rows are `403`). Controller
+checks give early rejection, and **every write service re-checks the role and
+ownership after taking the authoritative invoice case row lock and before any
+mutation or audit**; creation enforces `SUBMITTER` inside the service/transaction
+boundary:
+
+| Action | Endpoint | SUBMITTER | APPROVER | OPERATOR |
+| --- | --- | --- | --- | --- |
+| Create case | `POST /api/invoice-cases` | any | — | — |
+| Read case / evidence bundles | `GET /api/invoice-cases/{id}`, `.../evidence-bundles*` | own only | any | any |
+| Replace draft / submit / open revision | `PUT /{id}/draft`, `POST /{id}/submit`, `POST /{id}/revisions` | own only | — | — |
+| Freeze snapshot / mapping / supplement / reject | `POST /{id}/review-snapshots`, `.../mapping-decisions`, `.../supplement-requests`, `.../reject` | — | any | — |
+| Read review snapshots / decisions | `GET /{id}/review-snapshots*`, `.../review-decisions` | — | any | any |
+| Run deterministic match / reprocess | `POST /{id}/match` | — | — | any |
+| Read match results | `GET /{id}/match`, `.../matches` | — | any | any |
+| Read audit history | `GET /{id}/audit-entries` | — | any | any |
+
+"own only" means the authenticated username equals the case's authoritative
+`submittedBy`. `submittedBy` is stored from the authentication at creation,
+is **immutable at the database** after insert, and is never taken from the
+request body; pre-P1-06 rows are backfilled with the reserved sentinel
+`__reserved__`, which no configured login may use. A request `decidedBy` cannot
+change the stored actor. The reusable P1-07 approval policy, `APPROVER` and
+not the case submitter, takes the **authoritative locked `InvoiceCase`**, never a
+caller-supplied string; P1-06 exposes no approval endpoint.
+
+Idempotency is namespaced by the authenticated principal: the request key is
+`(scope, resource, actor, requestId)`. One principal can never replay or read
+another principal's stored response (including `create` with resource `NEW`,
+and review/match writes), while a replay by the same principal still works and a
+same-request-id different-payload conflict is actor-local.
+
+Every audited write appends one row to `audit_entry` in the **same transaction**
+as the business mutation, so an audit failure rolls the mutation back. Audited
+actions: `CASE_CREATED`, `DRAFT_LINES_REPLACED`, `CASE_SUBMITTED`,
+`SUPPLEMENT_REVISION_OPENED`, `MATCH_RUN`, `REVIEW_SNAPSHOT_FROZEN`,
+`ITEM_MAPPED`, `SUPPLEMENT_REQUESTED`, `CASE_REJECTED` (approval adds its own
+action when implemented). Each entry stores the actor, roles, action,
+case/target, case business version, structured before/after change, `requestId`
+and `traceId`. Credentials, `Authorization` headers and raw documents are never
+stored, and an idempotent replay records no second entry. A mapping replacement
+records the exact previous mapping in `before` and the new mapping in `after`,
+plus the resulting match result id/number/hash and successor snapshot number.
+A mapping also performs an internal deterministic re-match; it runs inside the
+same authorized, case-locked, idempotent mapping transaction via a
+**package-private `review.application` collaborator**, and its result is covered
+by the atomic `ITEM_MAPPED` audit rather than a standalone `MATCH_RUN`. There is
+no public raw "append a match result" seam: the pure `MatchResultPlanner` cannot
+persist, `MatchingService.appendResult` is private, and match_result persistence
+is reachable only through the secured/idempotent OPERATOR `MatchingService.run`
+or the complete public `ReviewService.recordMapping` orchestration.
+`audit_entry` rejects `UPDATE` and `DELETE`.
+
+Audit before/after summaries are canonical (object/map keys sorted, array order
+preserved) and bounded by **UTF-8 byte length** (64 KiB), not character count.
+Line diffs store a bounded item-name preview plus its length and SHA-256 rather
+than the full 500-character name. A DTO-valid request (at most 100 lines)
+therefore always audits successfully with meaningful, deterministic content; a
+summary that somehow exceeds the limit is replaced by a
+`{"truncated":true,"originalBytes":...,"sha256":...}` envelope (hashed over the
+canonical form) instead of throwing, so the audit is never dropped, never
+partial and never a 500. The audit trigger reads the case version `FOR SHARE`,
+so a concurrent privileged raw-SQL version change cannot make a just-inserted
+audit immediately stale.
+
+The database validates the semantic relationships the app asserts (typed target
+exists and belongs to the case, `CASE` target equals the case, actor roles are a
+non-empty canonical subset, and the recorded business version matches the case
+version in the same transaction). It does **not** verify the actor's identity:
+authentication is a server-side application trust boundary.
+
+`GET /api/invoice-cases/{id}/audit-entries?limit=20&cursor=...` returns a
+newest-first page ordered by `(occurred_at DESC, id DESC)` plus a `nextCursor`.
+The cursor is opaque; an unreadable cursor is `400`. The query is scoped to the
+one case, so it never leaks another case's events.
+
+Every request accepts an optional `X-Trace-Id` header. A bounded token of safe
+characters is kept, anything oversized or containing control characters is
+replaced with a generated `trc-...` id, and the effective id is returned in the
+`X-Trace-Id` response header and stored on audit entries (also on `401`/`403`
+responses).
+
+Request limits keep resources bounded: a JSON request body is capped at
+`http.request.max-body-bytes` (default 256 KiB, `HTTP_MAX_BODY_BYTES` to change)
+and an oversize body is rejected with `413` **before** any transaction, and a
+draft may have at most 100 lines (a larger list is `400`). The body cap is
+enforced by reading the stream, so chunked requests without `Content-Length` are
+bounded too.
+
+OpenAPI-style example:
+
+```sh
+curl -u submitter:submitter-pass -H 'X-Trace-Id: demo-1' \
+  -H 'Content-Type: application/json' \
+  -d '{"requestId":"c-1","supplierId":"SUP-1","purchaseOrderId":"PO-1001","invoiceNumber":"INV-1"}' \
+  http://localhost:8080/api/invoice-cases
+```
 
 Check PostgreSQL connectivity and its timezone:
 
@@ -197,11 +316,11 @@ Stop the services with `docker compose down`. This preserves the named PostgreSQ
 
 ## Work on a service locally
 
-With PostgreSQL running (`docker compose up -d postgres`), set `DB_PASSWORD` to the same value as `POSTGRES_PASSWORD` in your private `.env`, then run:
+With PostgreSQL running (`docker compose up -d postgres`), set `DB_PASSWORD` to the same value as `POSTGRES_PASSWORD` in your private `.env`, then run (the `local` profile activates the demo identities; without it the API fails closed):
 
 ```sh
 cd core-api
-./gradlew bootRun
+./gradlew bootRun --args='--spring.profiles.active=local'
 ```
 
 The Gradle wrapper requires Java 21; no global Gradle install is needed. On Windows PowerShell, use `.\gradlew.bat bootRun`.
@@ -250,4 +369,4 @@ cd ../mock-purchasing
 npm test
 ```
 
-The GitHub Actions workflow runs these checks and a five-service Compose smoke test. Source layout is intentionally small: `core-api` holds one Spring application organized by feature (`invoicecase`, `matching`, `purchasingreference`, `review`, `shared`); `web/src/app` holds the Next.js routes; `mock-erp` serves only a deterministic health response; `mock-purchasing` serves deterministic read-only purchase order aggregates. P1-01 defines the Phase 1 state contract and PostgreSQL baseline, P1-02 defines the external purchasing reference snapshot and refresh version semantics, P1-03 defines manual submission, evidence bundle versioning and request-id idempotency, P1-04 defines the deterministic AI-free 3-way match, P1-05 defines the frozen review snapshot, case-local mapping with deterministic re-match, supplement/reject and freshness, but later tickets still own approval, allocation, payment, roles/audit and P1-09 behavior.
+The GitHub Actions workflow runs these checks and a five-service Compose smoke test. Source layout is intentionally small: `core-api` holds one Spring application organized by feature (`invoicecase`, `matching`, `purchasingreference`, `review`, `shared`); `web/src/app` holds the Next.js routes; `mock-erp` serves only a deterministic health response; `mock-purchasing` serves deterministic read-only purchase order aggregates. P1-01 defines the Phase 1 state contract and PostgreSQL baseline, P1-02 defines the external purchasing reference snapshot and refresh version semantics, P1-03 defines manual submission, evidence bundle versioning and request-id idempotency, P1-04 defines the deterministic AI-free 3-way match, P1-05 defines the frozen review snapshot, case-local mapping with deterministic re-match, supplement/reject and freshness, P1-06 defines role-based authorization, the authoritative submitter/reviewer identity, request trace ids and the append-only audit history, but later tickets still own approval, allocation, payment and P1-09 behavior.

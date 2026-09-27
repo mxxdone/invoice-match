@@ -26,6 +26,16 @@ purchasing-system:
   connect-timeout: ${PURCHASING_CONNECT_TIMEOUT:2s}
   read-timeout: ${PURCHASING_READ_TIMEOUT:3s}
 
+# Request body policy. The limit is enforced by reading the stream, so it also
+# bounds chunked bodies without a Content-Length.
+http:
+  request:
+    max-body-bytes: ${HTTP_MAX_BODY_BYTES:262144}
+
+# Demo identities intentionally live only in the 'local' profile
+# (application-local.yml) and the test profile, never in the default deployable
+# configuration. With no configured identities the API fails closed (401).
+
 management:
   endpoint:
     health:

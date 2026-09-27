@@ -16,6 +16,7 @@ import com.invoicematch.core.support.StubPurchasingServer;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterAll;
@@ -25,6 +26,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -33,9 +35,11 @@ import org.springframework.test.web.servlet.MvcResult;
 /**
  * HTTP contract tests for the P1-03 manual invoice and evidence bundle flow,
  * running the full stack against real PostgreSQL and a real external
- * purchasing stub.
+ * purchasing stub. Every request is made as the case SUBMITTER, so case
+ * ownership and the submitter role are exercised end to end.
  */
 @AutoConfigureMockMvc
+@WithMockUser(username = "submitter", roles = "SUBMITTER")
 class InvoiceCaseApiIntegrationTest extends AbstractPostgresIntegrationTest {
 
     private static final String SUPPLIER = "SUP-1";
@@ -414,6 +418,58 @@ class InvoiceCaseApiIntegrationTest extends AbstractPostgresIntegrationTest {
         mockMvc.perform(get("/api/invoice-cases/{id}", unknown)).andExpect(status().isNotFound());
         mockMvc.perform(get("/api/invoice-cases/{id}/evidence-bundles/{version}", unknown, 1))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void draftLineCountIsBoundedAtOneHundred() throws Exception {
+        JsonNode created = createCase("req-lines");
+        String caseId = created.get("id").asText();
+        long version = created.get("version").asLong();
+
+        List<ObjectNode> tooMany = new ArrayList<>();
+        for (int i = 1; i <= 101; i++) {
+            tooMany.add(line(i, "Item", 1, 100, null));
+        }
+        MvcResult oversize =
+                performReplaceDraft(caseId, replaceBody("req-101", version, tooMany));
+        assertThat(oversize.getResponse().getStatus()).isEqualTo(400);
+        assertThat(count("invoice_line")).isZero();
+
+        List<ObjectNode> atLimit = new ArrayList<>();
+        for (int i = 1; i <= 100; i++) {
+            atLimit.add(line(i, "Item", 1, 100, null));
+        }
+        JsonNode accepted = replaceDraft(caseId, "req-100", version, atLimit);
+        assertThat(accepted.get("lines")).hasSize(100);
+    }
+
+    @Test
+    void hundredLineUnicodeQuoteHeavyDraftIsAuditedAsABoundedSummary() throws Exception {
+        JsonNode created = createCase("req-unicode");
+        String caseId = created.get("id").asText();
+        long version = created.get("version").asLong();
+        // Korean (3 UTF-8 bytes) plus JSON-escape-amplifying quotes, near the
+        // 500-character DTO limit, repeated across 100 lines.
+        String heavyName = "\"\uAC00\uB098\uB2E4".repeat(100);
+        assertThat(heavyName.length()).isLessThanOrEqualTo(500);
+
+        List<ObjectNode> lines = new ArrayList<>();
+        for (int i = 1; i <= 100; i++) {
+            lines.add(line(i, heavyName, 1, 100, null));
+        }
+
+        JsonNode accepted = replaceDraft(caseId, "req-unicode-100", version, lines);
+        assertThat(accepted.get("lines")).hasSize(100);
+
+        String afterState = jdbc.queryForObject(
+                "select after_state::text from audit_entry"
+                        + " where invoice_case_id = ? and action = 'DRAFT_LINES_REPLACED'",
+                String.class,
+                UUID.fromString(caseId));
+        assertThat(afterState.getBytes(StandardCharsets.UTF_8).length)
+                .isLessThanOrEqualTo(65_536);
+        assertThat(afterState).doesNotContain("\"truncated\":true");
+        assertThat(afterState).contains("rawItemNameSha256");
     }
 
     private String prepareDraftWithLines(String createRequestId, List<ObjectNode> lines) throws Exception {

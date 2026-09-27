@@ -20,6 +20,7 @@ import com.invoicematch.core.shared.domain.SupplierId;
 import com.invoicematch.core.support.AbstractPostgresIntegrationTest;
 import com.invoicematch.core.support.PurchasingPayloads;
 import com.invoicematch.core.support.StubPurchasingServer;
+import com.invoicematch.core.support.TestActors;
 import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
@@ -125,8 +126,9 @@ class ReviewPurchasingLockIntegrationTest extends AbstractPostgresIntegrationTes
         ExecutorService reviewPool = Executors.newSingleThreadExecutor();
         ExecutorService refreshPool = Executors.newSingleThreadExecutor();
         try {
-            Future<?> review = reviewPool.submit(() -> reviewService.recordMapping(new RecordMappingDecisionCommand(
-                    caseId, "map-1", version, snapshot.id(), snapshot.payloadHash(), 1, ITEM_A, "reviewer")));
+            Future<?> review = reviewPool.submit(() -> TestActors.call("approver", "APPROVER",
+                    () -> reviewService.recordMapping(new RecordMappingDecisionCommand(
+                            caseId, "map-1", version, snapshot.id(), snapshot.payloadHash(), 1, ITEM_A))));
             assertThat(INTERCEPTOR.awaitPurchaseOrderLocked(10, TimeUnit.SECONDS)).isTrue();
 
             Future<?> refresh = refreshPool.submit(() -> purchasingReferenceService.refresh(
@@ -178,8 +180,9 @@ class ReviewPurchasingLockIntegrationTest extends AbstractPostgresIntegrationTes
             });
             assertThat(held.await(10, TimeUnit.SECONDS)).isTrue();
 
-            Future<?> review = reviewPool.submit(() -> reviewService.recordMapping(new RecordMappingDecisionCommand(
-                    caseId, "map-1", version, snapshot.id(), snapshot.payloadHash(), 1, ITEM_A, "reviewer")));
+            Future<?> review = reviewPool.submit(() -> TestActors.call("approver", "APPROVER",
+                    () -> reviewService.recordMapping(new RecordMappingDecisionCommand(
+                            caseId, "map-1", version, snapshot.id(), snapshot.payloadHash(), 1, ITEM_A))));
 
             Thread.sleep(700);
             assertThat(review.isDone())
@@ -198,18 +201,22 @@ class ReviewPurchasingLockIntegrationTest extends AbstractPostgresIntegrationTes
     }
 
     private UUID frozenCase() {
-        UUID caseId = invoiceCaseCommands
-                .create(new CreateInvoiceCaseCommand("c-1", SUPPLIER, PO_ID, "INV-1"))
-                .body()
-                .id();
-        invoiceCaseCommands.replaceDraft(new ReplaceDraftLinesCommand(
-                caseId,
-                "c-2",
-                caseVersion(caseId),
-                List.of(new InvoiceLineInput(1, "Premium Copy Paper A4", 10, 2500, null))));
-        invoiceCaseCommands.submit(new SubmitInvoiceCaseCommand(caseId, "c-3", caseVersion(caseId)));
-        matchingService.run(new RunMatchCommand(caseId, "m-1"));
-        reviewService.freezeSnapshot(new FreezeReviewSnapshotCommand(caseId, "s-1", caseVersion(caseId)));
+        UUID caseId = TestActors.call("submitter", "SUBMITTER", () -> {
+            UUID id = invoiceCaseCommands
+                    .create(new CreateInvoiceCaseCommand("c-1", SUPPLIER, PO_ID, "INV-1"))
+                    .body()
+                    .id();
+            invoiceCaseCommands.replaceDraft(new ReplaceDraftLinesCommand(
+                    id,
+                    "c-2",
+                    caseVersion(id),
+                    List.of(new InvoiceLineInput(1, "Premium Copy Paper A4", 10, 2500, null))));
+            invoiceCaseCommands.submit(new SubmitInvoiceCaseCommand(id, "c-3", caseVersion(id)));
+            return id;
+        });
+        TestActors.run("operator", "OPERATOR", () -> matchingService.run(new RunMatchCommand(caseId, "m-1")));
+        TestActors.run("approver", "APPROVER", () -> reviewService.freezeSnapshot(
+                new FreezeReviewSnapshotCommand(caseId, "s-1", caseVersion(caseId))));
         return caseId;
     }
 

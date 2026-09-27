@@ -10,7 +10,7 @@ import java.util.List;
 public record ReplaceDraftLinesRequest(
         @NotBlank @Size(max = 128) String requestId,
         @NotNull @Min(0) Long expectedCaseVersion,
-        @NotNull @Valid List<@NotNull @Valid LineRequest> lines) {
+        @NotNull @Size(max = 100) @Valid List<@NotNull @Valid LineRequest> lines) {
 
     public record LineRequest(
             @Min(1) int lineNumber,

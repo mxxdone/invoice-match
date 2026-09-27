@@ -10,11 +10,9 @@ import java.util.UUID;
  * Confirms a case-local item mapping for one invoice line of the exact review
  * snapshot the person saw.
  *
- * <p><strong>Non-authoritative until P1-06:</strong> {@code decidedBy} is a
- * client-supplied, unauthenticated placeholder. It is recorded for traceability
- * during Phase 1 only and must not be trusted for authorization, self-approval
- * or audit. P1-06 replaces it with the authenticated principal and removes the
- * client-supplied actor from the contract.
+ * <p>{@code decidedBy} is accepted only for backward compatibility with P1-05
+ * clients and is ignored: the recorded actor is the authenticated principal.
+ * It is never an authorization, self-approval or audit source.
  */
 public record RecordMappingDecisionRequest(
         @NotBlank @Size(max = 128) String requestId,
@@ -23,5 +21,5 @@ public record RecordMappingDecisionRequest(
         @NotBlank @Size(max = 128) String reviewPayloadHash,
         @Min(1) int lineNumber,
         @NotBlank @Size(max = 64) String itemId,
-        @Size(max = 64) String decidedBy) {
+        @Deprecated @Size(max = 64) String decidedBy) {
 }
