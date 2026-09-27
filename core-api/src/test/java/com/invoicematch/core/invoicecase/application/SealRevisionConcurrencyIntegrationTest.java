@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.invoicematch.core.invoicecase.domain.InvoiceCaseStatus;
 import com.invoicematch.core.support.AbstractPostgresIntegrationTest;
+import com.invoicematch.core.support.TestActors;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -88,7 +89,8 @@ class SealRevisionConcurrencyIntegrationTest extends AbstractPostgresIntegration
             assertThat(lineInserted.await(5, TimeUnit.SECONDS)).isTrue();
 
             Future<CommandResult<SubmissionResult>> submission = pool.submit(
-                    () -> commands.submit(new SubmitInvoiceCaseCommand(caseId, "req-submit", 1L)));
+                    () -> TestActors.call("submitter", "SUBMITTER",
+                            () -> commands.submit(new SubmitInvoiceCaseCommand(caseId, "req-submit", 1L))));
             Thread.sleep(300);
             assertThat(submission.isDone()).isFalse();
 
@@ -116,7 +118,8 @@ class SealRevisionConcurrencyIntegrationTest extends AbstractPostgresIntegration
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
             Future<CommandResult<SubmissionResult>> submission = pool.submit(
-                    () -> commands.submit(new SubmitInvoiceCaseCommand(caseId, "req-submit", 1L)));
+                    () -> TestActors.call("submitter", "SUBMITTER",
+                            () -> commands.submit(new SubmitInvoiceCaseCommand(caseId, "req-submit", 1L))));
             assertThat(INTERCEPTOR.awaitLocked(10, TimeUnit.SECONDS)).isTrue();
 
             Future<String> mutation =
@@ -162,7 +165,7 @@ class SealRevisionConcurrencyIntegrationTest extends AbstractPostgresIntegration
         jdbc.update(
                 "insert into invoice_case (id, supplier_id, purchase_order_id, invoice_number,"
                         + " normalized_invoice_number, submitted_by, status, version, created_at, updated_at)"
-                        + " values (?, 'SUP-1', 'PO-1', 'INV-1', 'INV1', 'legacy', 'DRAFT', 0, ?, ?)",
+                        + " values (?, 'SUP-1', 'PO-1', 'INV-1', 'INV1', 'submitter', 'DRAFT', 0, ?, ?)",
                 caseId,
                 now,
                 now);

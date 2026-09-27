@@ -25,10 +25,11 @@ receipt) and <http://localhost:8082/api/purchase-orders/PO-1002> (unconfirmed or
 
 ## Invoice case API (P1-03)
 
-All write endpoints require a `requestId`. Repeating a request with the same
-`requestId` and the same payload replays the original response without repeating
-the side effect; the same `requestId` with a different payload is a `409`
-conflict.
+All write endpoints require a `requestId`. The idempotency key is namespaced by
+the authenticated principal (see P1-06 below). Repeating a request with the same
+`requestId` and the same payload **as the same principal** replays the original
+response without repeating the side effect; the same `requestId` with a
+different payload is a `409` conflict (actor-local).
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
@@ -190,8 +191,11 @@ same semantic inputs hash equally regardless of repository or list ordering.
 Every `/api/**` route requires authentication; the actuator health probes stay
 public. **Unauthenticated protected access is `401` and an authenticated but
 forbidden action is `403`** (both use the shared `{code,message}` error body).
-Spring Security HTTP Basic is used with local demo identities (placeholders,
-not real secrets, overridable by environment):
+Spring Security HTTP Basic is used with local demo identities. The default
+deployable configuration ships **no** credentials and fails closed (every
+protected call is `401`); the demo identities exist only in the `local` profile
+(activated by `docker compose`, or `SPRING_PROFILES_ACTIVE=local` /
+`--spring.profiles.active=local`) and in the test profile:
 
 | Username | Password | Role |
 | --- | --- | --- |
@@ -200,15 +204,19 @@ not real secrets, overridable by environment):
 | `approver` | `approver-pass` | `APPROVER` |
 | `operator` | `operator-pass` | `OPERATOR` |
 
-The `DEMO_*_USERNAME` / `DEMO_*_PASSWORD` environment variables override these.
-A production deployment replaces the demo `UserDetailsService` with a real
+Passwords are stored as BCrypt hashes, never plaintext, and are demo-only. A
+production deployment replaces the demo `UserDetailsService` with a real
 IdP/OAuth resource server.
 
-Authorization matrix (least privilege; forbidden rows are `403`):
+Authorization matrix (least privilege; forbidden rows are `403`). Controller
+checks give early rejection, and **every write service re-checks the role and
+ownership after taking the authoritative invoice case row lock and before any
+mutation or audit**; creation enforces `SUBMITTER` inside the service/transaction
+boundary:
 
 | Action | Endpoint | SUBMITTER | APPROVER | OPERATOR |
 | --- | --- | --- | --- | --- |
-| Create case | `POST /api/invoice-cases` | own | — | — |
+| Create case | `POST /api/invoice-cases` | any | — | — |
 | Read case / evidence bundles | `GET /api/invoice-cases/{id}`, `.../evidence-bundles*` | own only | any | any |
 | Replace draft / submit / open revision | `PUT /{id}/draft`, `POST /{id}/submit`, `POST /{id}/revisions` | own only | — | — |
 | Freeze snapshot / mapping / supplement / reject | `POST /{id}/review-snapshots`, `.../mapping-decisions`, `.../supplement-requests`, `.../reject` | — | any | — |
@@ -218,21 +226,37 @@ Authorization matrix (least privilege; forbidden rows are `403`):
 | Read audit history | `GET /{id}/audit-entries` | — | any | any |
 
 "own only" means the authenticated username equals the case's authoritative
-`submittedBy`. `submittedBy` is stored from the authentication at creation and
-never taken from the request body; a request `decidedBy` cannot change the
-stored actor. A reusable `APPROVER`-and-not-`submittedBy` policy is provided for
-P1-07's approval transaction; P1-06 exposes no approval endpoint.
+`submittedBy`. `submittedBy` is stored from the authentication at creation,
+is **immutable at the database** after insert, and is never taken from the
+request body; pre-P1-06 rows are backfilled with the reserved sentinel
+`__reserved__`, which no configured login may use. A request `decidedBy` cannot
+change the stored actor. The reusable P1-07 approval policy, `APPROVER` and
+not the case submitter, takes the **authoritative locked `InvoiceCase`**, never a
+caller-supplied string; P1-06 exposes no approval endpoint.
+
+Idempotency is namespaced by the authenticated principal: the request key is
+`(scope, resource, actor, requestId)`. One principal can never replay or read
+another principal's stored response (including `create` with resource `NEW`,
+and review/match writes), while a replay by the same principal still works and a
+same-request-id different-payload conflict is actor-local.
 
 Every audited write appends one row to `audit_entry` in the **same transaction**
 as the business mutation, so an audit failure rolls the mutation back. Audited
 actions: `CASE_CREATED`, `DRAFT_LINES_REPLACED`, `CASE_SUBMITTED`,
 `SUPPLEMENT_REVISION_OPENED`, `MATCH_RUN`, `REVIEW_SNAPSHOT_FROZEN`,
-`ITEM_MAPPED`, `SUPPLEMENT_REQUESTED`, `CASE_REJECTED` (`APPROVE` is reserved
-for P1-07). Each entry stores the actor, roles, action, case/target, case
-business version, structured before/after change, `requestId` and `traceId`.
-Credentials, `Authorization` headers and raw documents are never stored, and an
-idempotent replay records no second entry. `audit_entry` rejects `UPDATE` and
-`DELETE` through a database trigger.
+`ITEM_MAPPED`, `SUPPLEMENT_REQUESTED`, `CASE_REJECTED` (approval adds its own
+action when implemented). Each entry stores the actor, roles, action,
+case/target, case business version, structured before/after change, `requestId`
+and `traceId`. Credentials, `Authorization` headers and raw documents are never
+stored, and an idempotent replay records no second entry. A mapping replacement
+records the exact previous mapping in `before` and the new mapping in `after`.
+`audit_entry` rejects `UPDATE` and `DELETE`.
+
+The database validates the semantic relationships the app asserts (typed target
+exists and belongs to the case, `CASE` target equals the case, actor roles are a
+non-empty canonical subset, and the recorded business version matches the case
+version in the same transaction). It does **not** verify the actor's identity:
+authentication is a server-side application trust boundary.
 
 `GET /api/invoice-cases/{id}/audit-entries?limit=20&cursor=...` returns a
 newest-first page ordered by `(occurred_at DESC, id DESC)` plus a `nextCursor`.
@@ -244,6 +268,13 @@ characters is kept, anything oversized or containing control characters is
 replaced with a generated `trc-...` id, and the effective id is returned in the
 `X-Trace-Id` response header and stored on audit entries (also on `401`/`403`
 responses).
+
+Request limits keep resources bounded: a JSON request body is capped at
+`http.request.max-body-bytes` (default 256 KiB, `HTTP_MAX_BODY_BYTES` to change)
+and an oversize body is rejected with `413` **before** any transaction, and a
+draft may have at most 100 lines (a larger list is `400`). The body cap is
+enforced by reading the stream, so chunked requests without `Content-Length` are
+bounded too.
 
 OpenAPI-style example:
 
@@ -264,11 +295,11 @@ Stop the services with `docker compose down`. This preserves the named PostgreSQ
 
 ## Work on a service locally
 
-With PostgreSQL running (`docker compose up -d postgres`), set `DB_PASSWORD` to the same value as `POSTGRES_PASSWORD` in your private `.env`, then run:
+With PostgreSQL running (`docker compose up -d postgres`), set `DB_PASSWORD` to the same value as `POSTGRES_PASSWORD` in your private `.env`, then run (the `local` profile activates the demo identities; without it the API fails closed):
 
 ```sh
 cd core-api
-./gradlew bootRun
+./gradlew bootRun --args='--spring.profiles.active=local'
 ```
 
 The Gradle wrapper requires Java 21; no global Gradle install is needed. On Windows PowerShell, use `.\gradlew.bat bootRun`.

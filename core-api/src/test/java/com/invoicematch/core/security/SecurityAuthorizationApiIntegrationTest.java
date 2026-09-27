@@ -2,6 +2,7 @@ package com.invoicematch.core.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.httpBasic;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -288,6 +289,96 @@ class SecurityAuthorizationApiIntegrationTest extends AbstractPostgresIntegratio
         assertThat(result.getResponse().getStatus()).isEqualTo(404);
     }
 
+    @Test
+    void twoSubmittersCannotReplayEachOthersCreateRequest() throws Exception {
+        String body = objectMapper.writeValueAsString(createBodyFor("shared-create", "INV-X"));
+
+        MvcResult first = performAs(SUBMITTER, post("/api/invoice-cases")
+                .contentType(MediaType.APPLICATION_JSON).content(body));
+        assertThat(first.getResponse().getStatus()).isEqualTo(201);
+        String firstId = read(first).get("id").asText();
+
+        MvcResult second = performAs(SUBMITTER2, post("/api/invoice-cases")
+                .contentType(MediaType.APPLICATION_JSON).content(body));
+        assertThat(second.getResponse().getStatus()).isEqualTo(201);
+        String secondId = read(second).get("id").asText();
+        assertThat(secondId).isNotEqualTo(firstId);
+
+        MvcResult replay = performAs(SUBMITTER, post("/api/invoice-cases")
+                .contentType(MediaType.APPLICATION_JSON).content(body));
+        assertThat(read(replay).get("id").asText()).isEqualTo(firstId);
+        assertThat(count("invoice_case")).isEqualTo(2);
+    }
+
+    @Test
+    void requestIdConflictIsActorLocalAndReplayStillWorksForTheSamePrincipal() throws Exception {
+        String firstPayload = objectMapper.writeValueAsString(createBodyFor("conflict-1", "INV-1"));
+        String conflictingPayload = objectMapper.writeValueAsString(createBodyFor("conflict-1", "INV-2"));
+
+        assertThat(performAs(SUBMITTER, post("/api/invoice-cases")
+                        .contentType(MediaType.APPLICATION_JSON).content(firstPayload))
+                .getResponse().getStatus())
+                .isEqualTo(201);
+        assertThat(performAs(SUBMITTER, post("/api/invoice-cases")
+                        .contentType(MediaType.APPLICATION_JSON).content(firstPayload))
+                .getResponse().getStatus())
+                .isEqualTo(201);
+        assertThat(performAs(SUBMITTER, post("/api/invoice-cases")
+                        .contentType(MediaType.APPLICATION_JSON).content(conflictingPayload))
+                .getResponse().getStatus())
+                .isEqualTo(409);
+        // A different principal has its own namespace, so the same request id is free.
+        assertThat(performAs(SUBMITTER2, post("/api/invoice-cases")
+                        .contentType(MediaType.APPLICATION_JSON).content(conflictingPayload))
+                .getResponse().getStatus())
+                .isEqualTo(201);
+    }
+
+    @Test
+    void twoApproversDoNotReplayOneAnothersResponse() throws Exception {
+        String caseId = submittedCase(SUBMITTER);
+        runMatch(caseId);
+        String body = freezeBody("s-shared", currentVersion(caseId, APPROVER));
+
+        MvcResult first = performAs(APPROVER, post("/api/invoice-cases/{id}/review-snapshots", caseId)
+                .contentType(MediaType.APPLICATION_JSON).content(body));
+        assertThat(first.getResponse().getStatus()).isEqualTo(201);
+        String firstId = read(first).get("id").asText();
+
+        MvcResult otherApprover = performAsUser("approver2", "APPROVER",
+                post("/api/invoice-cases/{id}/review-snapshots", caseId)
+                        .contentType(MediaType.APPLICATION_JSON).content(body));
+        assertThat(otherApprover.getResponse().getStatus()).isEqualTo(201);
+        assertThat(read(otherApprover).get("id").asText()).isNotEqualTo(firstId);
+
+        MvcResult replay = performAs(APPROVER, post("/api/invoice-cases/{id}/review-snapshots", caseId)
+                .contentType(MediaType.APPLICATION_JSON).content(body));
+        assertThat(read(replay).get("id").asText()).isEqualTo(firstId);
+        assertThat(count("review_snapshot")).isEqualTo(2);
+    }
+
+    @Test
+    void twoOperatorsDoNotReplayOneAnothersResponse() throws Exception {
+        String caseId = submittedCase(SUBMITTER);
+        String body = "{\"requestId\":\"m-shared\"}";
+
+        MvcResult first = performAs(OPERATOR, post("/api/invoice-cases/{id}/match", caseId)
+                .contentType(MediaType.APPLICATION_JSON).content(body));
+        assertThat(first.getResponse().getStatus()).isEqualTo(201);
+        String firstId = read(first).get("id").asText();
+
+        MvcResult otherOperator = performAsUser("operator2", "OPERATOR",
+                post("/api/invoice-cases/{id}/match", caseId)
+                        .contentType(MediaType.APPLICATION_JSON).content(body));
+        assertThat(otherOperator.getResponse().getStatus()).isEqualTo(201);
+        assertThat(read(otherOperator).get("id").asText()).isNotEqualTo(firstId);
+
+        MvcResult replay = performAs(OPERATOR, post("/api/invoice-cases/{id}/match", caseId)
+                .contentType(MediaType.APPLICATION_JSON).content(body));
+        assertThat(read(replay).get("id").asText()).isEqualTo(firstId);
+        assertThat(count("match_result")).isEqualTo(2);
+    }
+
     private String submittedCase(String submitter) throws Exception {
         String caseId = createCase(submitter, "INV-1");
         long version = currentVersion(caseId, submitter);
@@ -350,12 +441,16 @@ class SecurityAuthorizationApiIntegrationTest extends AbstractPostgresIntegratio
     }
 
     private String createBody() throws Exception {
+        return objectMapper.writeValueAsString(createBodyFor("forbidden-" + UUID.randomUUID(), "INV-forbidden"));
+    }
+
+    private ObjectNode createBodyFor(String requestId, String invoiceNumber) {
         ObjectNode body = objectMapper.createObjectNode();
-        body.put("requestId", "forbidden-" + UUID.randomUUID());
+        body.put("requestId", requestId);
         body.put("supplierId", SUPPLIER);
         body.put("purchaseOrderId", PO_ID);
-        body.put("invoiceNumber", "INV-forbidden");
-        return objectMapper.writeValueAsString(body);
+        body.put("invoiceNumber", invoiceNumber);
+        return body;
     }
 
     private MvcResult getCase(String caseId, String actor) throws Exception {
@@ -364,6 +459,11 @@ class SecurityAuthorizationApiIntegrationTest extends AbstractPostgresIntegratio
 
     private MvcResult performAs(String actor, MockHttpServletRequestBuilder builder) throws Exception {
         return mockMvc.perform(builder.with(httpBasic(actor, password(actor)))).andReturn();
+    }
+
+    private MvcResult performAsUser(String username, String role, MockHttpServletRequestBuilder builder)
+            throws Exception {
+        return mockMvc.perform(builder.with(user(username).roles(role))).andReturn();
     }
 
     private static String password(String actor) {

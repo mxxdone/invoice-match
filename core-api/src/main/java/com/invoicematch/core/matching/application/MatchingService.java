@@ -17,7 +17,9 @@ import com.invoicematch.core.matching.domain.MatchStateConflictException;
 import com.invoicematch.core.matching.persistence.MatchResultRepository;
 import com.invoicematch.core.purchasingreference.application.CurrentPurchaseOrderSnapshot;
 import com.invoicematch.core.purchasingreference.application.PurchaseOrderSnapshotReader;
+import com.invoicematch.core.security.Actor;
 import com.invoicematch.core.security.AuthorizationService;
+import com.invoicematch.core.security.Role;
 import com.invoicematch.core.shared.domain.PurchaseOrderId;
 import java.time.Clock;
 import java.time.Instant;
@@ -86,16 +88,6 @@ public class MatchingService {
 
     @Transactional
     public CommandResult<MatchResultView> run(RunMatchCommand command) {
-        String resourceKey = command.caseId().toString();
-        String requestHash = fingerprint.runMatch(command);
-        RequestIdempotencyStore.BeginResult begin =
-                idempotency.begin(SCOPE_MATCH, resourceKey, command.requestId(), requestHash);
-        if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
-            return new CommandResult<>(
-                    replay.response().status(),
-                    idempotency.decode(replay.response(), MatchResultView.class));
-        }
-
         // Lock the case row before reading its state or its latest bundle, and
         // hold it through the result insert and idempotency response. A
         // concurrent submit or state transition that locks the case first either
@@ -103,13 +95,26 @@ public class MatchingService {
         // an old case version with a new bundle.
         MatchCaseSnapshot caseSnapshot = invoiceCaseQueries.loadForMatching(command.caseId());
         matchLockInterceptor.afterCaseLocked(command.caseId());
+        // Authoritative role check at the transaction/lock boundary.
+        authorization.requireRole(Role.OPERATOR);
+        Actor actor = authorization.actor();
+
+        String resourceKey = command.caseId().toString();
+        String requestHash = fingerprint.runMatch(command);
+        RequestIdempotencyStore.BeginResult begin = idempotency.begin(
+                SCOPE_MATCH, resourceKey, actor.username(), command.requestId(), requestHash);
+        if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
+            return new CommandResult<>(
+                    replay.response().status(),
+                    idempotency.decode(replay.response(), MatchResultView.class));
+        }
         requireReviewable(caseSnapshot);
 
         CurrentPurchaseOrderSnapshot purchasing = requireCurrentPurchasingSnapshot(caseSnapshot);
         MatchResultView view = appendResult(caseSnapshot, purchasing);
         audit.record(new AuditEvent(
                 caseSnapshot.caseId(),
-                authorization.actor(),
+                actor,
                 AuditAction.MATCH_RUN,
                 AuditTargetType.MATCH_RESULT,
                 view.id().toString(),
@@ -123,7 +128,7 @@ public class MatchingService {
                         "purchasingSnapshotVersion", view.purchasingSnapshotVersion()),
                 command.requestId(),
                 view.createdAt()));
-        idempotency.recordResponse(SCOPE_MATCH, resourceKey, command.requestId(), 201, view);
+        idempotency.recordResponse(SCOPE_MATCH, resourceKey, actor.username(), command.requestId(), 201, view);
         return CommandResult.created(view);
     }
 

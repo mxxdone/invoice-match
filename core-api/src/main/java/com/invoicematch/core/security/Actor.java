@@ -28,7 +28,7 @@ public record Actor(String username, Set<Role> roles) {
      * self-approval rule that requires a real role.
      */
     public static Actor system() {
-        return new Actor("system", Set.of());
+        return new Actor(SecurityPrincipals.SYSTEM, Set.of());
     }
 
     public boolean hasRole(Role role) {

@@ -24,6 +24,13 @@ import org.springframework.transaction.annotation.Transactional;
 @Component
 public class AuditRecorder {
 
+    /**
+     * Upper bound on a serialized before/after change summary. Inputs are already
+     * bounded (line count, field lengths), so this is a defensive invariant that
+     * keeps the database free of unexpectedly large JSON.
+     */
+    public static final int MAX_AUDIT_JSON_BYTES = 65_536;
+
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -33,11 +40,15 @@ public class AuditRecorder {
 
     @Transactional(propagation = Propagation.MANDATORY)
     public void record(AuditEvent event) {
+        if (event.actor().roles().isEmpty()) {
+            throw new IllegalStateException(
+                    "Audit requires a role-bearing actor but got '" + event.actor().username() + "'");
+        }
         String roles = event.actor().roles().stream()
                 .sorted()
                 .map(Role::name)
                 .reduce((left, right) -> left + "," + right)
-                .orElse("");
+                .orElseThrow();
         jdbc.update(
                 "insert into audit_entry (id, invoice_case_id, occurred_at, actor, actor_roles, action,"
                         + " target_type, target_id, business_version, before_state, after_state, request_id,"
@@ -67,7 +78,11 @@ public class AuditRecorder {
             return null;
         }
         try {
-            return mapper.writeValueAsString(value);
+            String json = mapper.writeValueAsString(value);
+            if (json.length() > MAX_AUDIT_JSON_BYTES) {
+                throw new IllegalStateException("Audit change summary exceeds " + MAX_AUDIT_JSON_BYTES + " bytes");
+            }
+            return json;
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Audit change summary serialization failed", e);
         }

@@ -20,6 +20,7 @@ import com.invoicematch.core.review.persistence.ReviewSnapshotRepository;
 import com.invoicematch.core.support.AbstractPostgresIntegrationTest;
 import com.invoicematch.core.support.PurchasingPayloads;
 import com.invoicematch.core.support.StubPurchasingServer;
+import com.invoicematch.core.support.TestActors;
 import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
@@ -107,8 +108,9 @@ class ReviewConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest {
         try {
             Callable<MappingDecisionResult> task = () -> {
                 gate.await(10, TimeUnit.SECONDS);
-                return reviewService.recordMapping(new RecordMappingDecisionCommand(
-                                caseId, "map-same", version, snapshot.id(), snapshot.payloadHash(), 1, ITEM_A))
+                return TestActors.call("approver", "APPROVER", () -> reviewService.recordMapping(
+                                new RecordMappingDecisionCommand(
+                                        caseId, "map-same", version, snapshot.id(), snapshot.payloadHash(), 1, ITEM_A)))
                         .body();
             };
             Future<MappingDecisionResult> first = pool.submit(task);
@@ -137,16 +139,18 @@ class ReviewConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest {
         AtomicInteger successes = new AtomicInteger();
         AtomicInteger conflicts = new AtomicInteger();
         try {
-            Future<Void> mapping = pool.submit(() -> race(gate, successes, conflicts, () -> {
-                reviewService.recordMapping(new RecordMappingDecisionCommand(
-                        caseId, "map-race", version, snapshot.id(), snapshot.payloadHash(), 1, ITEM_A));
-                return null;
-            }));
-            Future<Void> supplement = pool.submit(() -> race(gate, successes, conflicts, () -> {
-                reviewService.requestSupplement(new RequestSupplementCommand(
-                        caseId, "supp-race", version, snapshot.id(), snapshot.payloadHash(), "need correction"));
-                return null;
-            }));
+            Future<Void> mapping = pool.submit(() -> race(gate, successes, conflicts, () ->
+                    TestActors.call("approver", "APPROVER", () -> {
+                        reviewService.recordMapping(new RecordMappingDecisionCommand(
+                                caseId, "map-race", version, snapshot.id(), snapshot.payloadHash(), 1, ITEM_A));
+                        return null;
+                    })));
+            Future<Void> supplement = pool.submit(() -> race(gate, successes, conflicts, () ->
+                    TestActors.call("approver", "APPROVER", () -> {
+                        reviewService.requestSupplement(new RequestSupplementCommand(
+                                caseId, "supp-race", version, snapshot.id(), snapshot.payloadHash(), "need correction"));
+                        return null;
+                    })));
             gate.countDown();
             mapping.get(30, TimeUnit.SECONDS);
             supplement.get(30, TimeUnit.SECONDS);
@@ -176,8 +180,9 @@ class ReviewConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest {
         try {
             Callable<Integer> task = () -> {
                 gate.await(10, TimeUnit.SECONDS);
-                return reviewService.freezeSnapshot(
-                                new FreezeReviewSnapshotCommand(caseId, UUID.randomUUID().toString(), caseVersion(caseId)))
+                return TestActors.call("approver", "APPROVER", () -> reviewService.freezeSnapshot(
+                                new FreezeReviewSnapshotCommand(
+                                        caseId, UUID.randomUUID().toString(), caseVersion(caseId))))
                         .body()
                         .snapshotNumber();
             };
@@ -194,16 +199,20 @@ class ReviewConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     private UUID frozenCase() {
-        CreateInvoiceCaseCommand create = new CreateInvoiceCaseCommand("c-1", SUPPLIER, PO_ID, "INV-1");
-        UUID caseId = invoiceCaseCommands.create(create).body().id();
-        invoiceCaseCommands.replaceDraft(new ReplaceDraftLinesCommand(
-                caseId,
-                "c-2",
-                caseVersion(caseId),
-                List.of(new InvoiceLineInput(1, "Premium Copy Paper A4", 10, 2500, null))));
-        invoiceCaseCommands.submit(new SubmitInvoiceCaseCommand(caseId, "c-3", caseVersion(caseId)));
-        matchingService.run(new RunMatchCommand(caseId, "m-1"));
-        reviewService.freezeSnapshot(new FreezeReviewSnapshotCommand(caseId, "s-1", caseVersion(caseId)));
+        UUID caseId = TestActors.call("submitter", "SUBMITTER", () -> {
+            CreateInvoiceCaseCommand create = new CreateInvoiceCaseCommand("c-1", SUPPLIER, PO_ID, "INV-1");
+            UUID id = invoiceCaseCommands.create(create).body().id();
+            invoiceCaseCommands.replaceDraft(new ReplaceDraftLinesCommand(
+                    id,
+                    "c-2",
+                    caseVersion(id),
+                    List.of(new InvoiceLineInput(1, "Premium Copy Paper A4", 10, 2500, null))));
+            invoiceCaseCommands.submit(new SubmitInvoiceCaseCommand(id, "c-3", caseVersion(id)));
+            return id;
+        });
+        TestActors.run("operator", "OPERATOR", () -> matchingService.run(new RunMatchCommand(caseId, "m-1")));
+        TestActors.run("approver", "APPROVER", () -> reviewService.freezeSnapshot(
+                new FreezeReviewSnapshotCommand(caseId, "s-1", caseVersion(caseId))));
         return caseId;
     }
 

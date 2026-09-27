@@ -54,7 +54,7 @@ class V6UpgradeFromV5MigrationTest extends AbstractPostgresIntegrationTest {
 
             Map<String, Object> row = upgradeJdbc.queryForMap(
                     "select submitted_by from invoice_case where id = ?", caseId);
-            assertThat(row).containsEntry("submitted_by", "legacy");
+            assertThat(row).containsEntry("submitted_by", "__reserved__");
 
             Integer auditTable = upgradeJdbc.queryForObject(
                     "select count(*) from information_schema.tables where table_name = 'audit_entry'",

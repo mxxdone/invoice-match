@@ -249,6 +249,55 @@ class AuditApiIntegrationTest extends AbstractPostgresIntegrationTest {
         assertThat(createEntry.get("traceId").asText()).isEqualTo("trace-create-1");
     }
 
+    @Test
+    void remappingAuditContainsTheExactSemanticDiff() throws Exception {
+        String caseId = createAndSubmit("INV-1");
+        runMatch(caseId, "m-1");
+        JsonNode first = freeze(caseId, "snap-1");
+        recordMapping(caseId, first, "ITEM-A4-80", "map-a");
+        JsonNode successor = read(performAs("approver",
+                get("/api/invoice-cases/{id}/review-snapshots/latest", caseId)));
+        recordMapping(caseId, successor, "ITEM-TONER-BK", "map-b");
+
+        List<JsonNode> mapped = new ArrayList<>();
+        for (JsonNode entry : audit(caseId, null, 100).get("entries")) {
+            if (entry.get("action").asText().equals("ITEM_MAPPED")) {
+                mapped.add(entry);
+            }
+        }
+        assertThat(mapped).hasSize(2);
+
+        JsonNode replacement = mapped.get(0);
+        assertThat(replacement.get("before").get("itemId").asText()).isEqualTo("ITEM-A4-80");
+        assertThat(replacement.get("before").get("lineNumber").asInt()).isEqualTo(1);
+        assertThat(replacement.get("after").get("itemId").asText()).isEqualTo("ITEM-TONER-BK");
+        assertThat(replacement.get("after").get("lineNumber").asInt()).isEqualTo(1);
+
+        JsonNode initial = mapped.get(1);
+        assertThat(initial.get("before").isNull()).isTrue();
+        assertThat(initial.get("after").get("itemId").asText()).isEqualTo("ITEM-A4-80");
+    }
+
+    @Test
+    void oversizedRequestBodyIsRejectedWithoutBusinessOrAuditEffect() throws Exception {
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("requestId", "oversize");
+        body.put("supplierId", SUPPLIER);
+        body.put("purchaseOrderId", PO_ID);
+        body.put("invoiceNumber", "X".repeat(300_000));
+        int casesBefore = count("invoice_case");
+        int auditsBefore = count("audit_entry");
+
+        MvcResult result = performAs("submitter", post("/api/invoice-cases")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(body)));
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(413);
+        assertThat(read(result).get("code").asText()).isEqualTo("PAYLOAD_TOO_LARGE");
+        assertThat(count("invoice_case")).isEqualTo(casesBefore);
+        assertThat(count("audit_entry")).isEqualTo(auditsBefore);
+    }
+
     private String fullAuditedFlow() throws Exception {
         String caseId = createAndSubmit("INV-1");
         runMatch(caseId, "m-1");

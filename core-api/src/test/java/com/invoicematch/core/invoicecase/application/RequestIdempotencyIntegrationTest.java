@@ -28,6 +28,7 @@ class RequestIdempotencyIntegrationTest extends AbstractPostgresIntegrationTest 
 
     private static final String SCOPE = "test:scope";
     private static final String RESOURCE = "resource";
+    private static final String ACTOR = "principal-a";
     private static final String REQUEST = "req";
     private static final String HASH = "hash";
     private static final Instant T0 = Instant.parse("2026-01-01T10:00:00Z");
@@ -55,16 +56,17 @@ class RequestIdempotencyIntegrationTest extends AbstractPostgresIntegrationTest 
         jdbc.execute("alter table idempotency_record disable trigger trg_idempotency_record_complete");
         try {
             jdbc.update(
-                    "insert into idempotency_record (id, scope, resource_key, request_id, request_hash, created_at)"
-                            + " values (?, ?, ?, ?, ?, ?)",
+                    "insert into idempotency_record (id, scope, resource_key, actor, request_id, request_hash,"
+                            + " created_at) values (?, ?, ?, ?, ?, ?, ?)",
                     UUID.randomUUID(),
                     SCOPE,
                     RESOURCE,
+                    ACTOR,
                     REQUEST,
                     HASH,
                     Timestamp.from(T0));
 
-            assertThatThrownBy(() -> idempotency.find(SCOPE, RESOURCE, REQUEST))
+            assertThatThrownBy(() -> idempotency.find(SCOPE, RESOURCE, ACTOR, REQUEST))
                     .isInstanceOf(IllegalStateException.class);
         } finally {
             jdbc.update("delete from idempotency_record");
@@ -81,7 +83,7 @@ class RequestIdempotencyIntegrationTest extends AbstractPostgresIntegrationTest 
             Future<?> winner = pool.submit(() -> {
                 try {
                     transactions.executeWithoutResult(status -> {
-                        idempotency.begin(SCOPE, RESOURCE, REQUEST, HASH);
+                        idempotency.begin(SCOPE, RESOURCE, ACTOR, REQUEST, HASH);
                         winnerReserved.countDown();
                         awaitQuietly(releaseWinner);
                         throw new IllegalStateException("forced rollback");
@@ -93,9 +95,10 @@ class RequestIdempotencyIntegrationTest extends AbstractPostgresIntegrationTest 
             assertThat(winnerReserved.await(5, TimeUnit.SECONDS)).isTrue();
 
             Future<RequestIdempotencyStore.BeginResult> loser = pool.submit(() -> transactions.execute(status -> {
-                RequestIdempotencyStore.BeginResult result = idempotency.begin(SCOPE, RESOURCE, REQUEST, HASH);
+                RequestIdempotencyStore.BeginResult result =
+                        idempotency.begin(SCOPE, RESOURCE, ACTOR, REQUEST, HASH);
                 if (result instanceof RequestIdempotencyStore.BeginResult.Started) {
-                    idempotency.recordResponse(SCOPE, RESOURCE, REQUEST, 200, "{}");
+                    idempotency.recordResponse(SCOPE, RESOURCE, ACTOR, REQUEST, 200, "{}");
                 }
                 return result;
             }));
@@ -106,7 +109,7 @@ class RequestIdempotencyIntegrationTest extends AbstractPostgresIntegrationTest 
 
             assertThat(loser.get(10, TimeUnit.SECONDS))
                     .isInstanceOf(RequestIdempotencyStore.BeginResult.Started.class);
-            assertThat(idempotency.find(SCOPE, RESOURCE, REQUEST)).isPresent();
+            assertThat(idempotency.find(SCOPE, RESOURCE, ACTOR, REQUEST)).isPresent();
         } finally {
             pool.shutdownNow();
         }

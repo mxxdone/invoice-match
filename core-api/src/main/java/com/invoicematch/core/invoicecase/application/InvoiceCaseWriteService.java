@@ -25,6 +25,7 @@ import com.invoicematch.core.purchasingreference.application.PurchasingReference
 import com.invoicematch.core.purchasingreference.domain.PurchaseOrderAggregate;
 import com.invoicematch.core.security.Actor;
 import com.invoicematch.core.security.AuthorizationService;
+import com.invoicematch.core.security.Role;
 import com.invoicematch.core.shared.domain.DomainValidationException;
 import com.invoicematch.core.shared.domain.Money;
 import com.invoicematch.core.shared.domain.PurchaseOrderId;
@@ -64,6 +65,15 @@ public class InvoiceCaseWriteService {
     public static final String SCOPE_SUBMIT = "invoice-case:submit";
     public static final String SCOPE_OPEN_REVISION = "invoice-case:revision:open";
     public static final String CREATE_RESOURCE_KEY = "NEW";
+
+    /**
+     * V1 physical bound on a draft: the Swiss-style manual invoice case is a
+     * small document, and bounding the line set keeps the request body, the
+     * frozen payload and the audit diff bounded. The API DTO enforces the same
+     * limit before the request enters a transaction; this check covers direct
+     * service calls.
+     */
+    public static final int MAX_DRAFT_LINES = 100;
 
     private final InvoiceCaseRepository invoiceCases;
     private final DraftRevisionRepository draftRevisions;
@@ -112,8 +122,10 @@ public class InvoiceCaseWriteService {
     @Transactional
     public CommandResult<InvoiceCaseDetail> create(
             CreateInvoiceCaseCommand command, String requestHash, PreparedPurchaseOrderSnapshot preparedSnapshot) {
-        RequestIdempotencyStore.BeginResult begin =
-                idempotency.begin(SCOPE_CREATE, CREATE_RESOURCE_KEY, command.requestId(), requestHash);
+        authorization.requireRole(Role.SUBMITTER);
+        Actor actor = authorization.actor();
+        RequestIdempotencyStore.BeginResult begin = idempotency.begin(
+                SCOPE_CREATE, CREATE_RESOURCE_KEY, actor.username(), command.requestId(), requestHash);
         if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
             return replay(replay.response(), InvoiceCaseDetail.class);
         }
@@ -124,7 +136,6 @@ public class InvoiceCaseWriteService {
         purchasingReferenceService.applyPrepared(preparedSnapshot);
 
         Instant now = clock.instant();
-        Actor actor = authorization.actor();
         InvoiceCase invoiceCase = invoiceCases.saveAndFlush(InvoiceCase.create(
                 InvoiceCaseId.newId(),
                 SupplierId.of(command.supplierId()),
@@ -158,21 +169,26 @@ public class InvoiceCaseWriteService {
                         "status", invoiceCase.status().name()),
                 command.requestId(),
                 now));
-        idempotency.recordResponse(SCOPE_CREATE, CREATE_RESOURCE_KEY, command.requestId(), 201, detail);
+        idempotency.recordResponse(SCOPE_CREATE, CREATE_RESOURCE_KEY, actor.username(), command.requestId(), 201, detail);
         return CommandResult.created(detail);
     }
 
     @Transactional
     public CommandResult<InvoiceCaseDetail> replaceDraft(ReplaceDraftLinesCommand command) {
+        // Authoritative ownership check after the case row lock: the submitter
+        // is read from the committed row, never from request input.
+        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
+        authorization.requireSubmitterOwner(invoiceCase);
+        Actor actor = authorization.actor();
+
         String resourceKey = command.caseId().toString();
         String requestHash = fingerprint.replaceDraft(command);
-        RequestIdempotencyStore.BeginResult begin =
-                idempotency.begin(SCOPE_REPLACE_DRAFT, resourceKey, command.requestId(), requestHash);
+        RequestIdempotencyStore.BeginResult begin = idempotency.begin(
+                SCOPE_REPLACE_DRAFT, resourceKey, actor.username(), command.requestId(), requestHash);
         if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
             return replay(replay.response(), InvoiceCaseDetail.class);
         }
 
-        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         checkExpectedVersion(invoiceCase, command.expectedCaseVersion());
         DraftRevision draft = currentDraft(invoiceCase);
         validateLines(command.lines(), invoiceCase.purchaseOrder().value());
@@ -192,7 +208,7 @@ public class InvoiceCaseWriteService {
         InvoiceCaseDetail detail = InvoiceCaseDetail.from(invoiceCase, draft, replacement);
         audit.record(new AuditEvent(
                 command.caseId(),
-                authorization.actor(),
+                actor,
                 AuditAction.DRAFT_LINES_REPLACED,
                 AuditTargetType.DRAFT_REVISION,
                 draft.id().toString(),
@@ -201,21 +217,24 @@ public class InvoiceCaseWriteService {
                 Map.of("lines", replacement.stream().map(this::lineSummary).toList()),
                 command.requestId(),
                 now));
-        idempotency.recordResponse(SCOPE_REPLACE_DRAFT, resourceKey, command.requestId(), 200, detail);
+        idempotency.recordResponse(SCOPE_REPLACE_DRAFT, resourceKey, actor.username(), command.requestId(), 200, detail);
         return CommandResult.ok(detail);
     }
 
     @Transactional
     public CommandResult<SubmissionResult> submit(SubmitInvoiceCaseCommand command) {
+        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
+        authorization.requireSubmitterOwner(invoiceCase);
+        Actor actor = authorization.actor();
+
         String resourceKey = command.caseId().toString();
         String requestHash = fingerprint.submit(command);
-        RequestIdempotencyStore.BeginResult begin =
-                idempotency.begin(SCOPE_SUBMIT, resourceKey, command.requestId(), requestHash);
+        RequestIdempotencyStore.BeginResult begin = idempotency.begin(
+                SCOPE_SUBMIT, resourceKey, actor.username(), command.requestId(), requestHash);
         if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
             return replay(replay.response(), SubmissionResult.class);
         }
 
-        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         checkExpectedVersion(invoiceCase, command.expectedCaseVersion());
         String statusBefore = invoiceCase.status().name();
         // The revision row lock is taken before any line is read or hashed, so a
@@ -251,7 +270,7 @@ public class InvoiceCaseWriteService {
                 command.caseId(), invoiceCase.status(), invoiceCase.version(), EvidenceBundleSummary.from(bundle));
         audit.record(new AuditEvent(
                 command.caseId(),
-                authorization.actor(),
+                actor,
                 AuditAction.CASE_SUBMITTED,
                 AuditTargetType.CASE,
                 command.caseId().toString(),
@@ -263,21 +282,24 @@ public class InvoiceCaseWriteService {
                         "evidencePayloadHash", bundle.payloadHash()),
                 command.requestId(),
                 now));
-        idempotency.recordResponse(SCOPE_SUBMIT, resourceKey, command.requestId(), 200, result);
+        idempotency.recordResponse(SCOPE_SUBMIT, resourceKey, actor.username(), command.requestId(), 200, result);
         return CommandResult.ok(result);
     }
 
     @Transactional
     public CommandResult<InvoiceCaseDetail> openSupplementRevision(OpenSupplementRevisionCommand command) {
+        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
+        authorization.requireSubmitterOwner(invoiceCase);
+        Actor actor = authorization.actor();
+
         String resourceKey = command.caseId().toString();
         String requestHash = fingerprint.openRevision(command);
-        RequestIdempotencyStore.BeginResult begin =
-                idempotency.begin(SCOPE_OPEN_REVISION, resourceKey, command.requestId(), requestHash);
+        RequestIdempotencyStore.BeginResult begin = idempotency.begin(
+                SCOPE_OPEN_REVISION, resourceKey, actor.username(), command.requestId(), requestHash);
         if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
             return replay(replay.response(), InvoiceCaseDetail.class);
         }
 
-        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         checkExpectedVersion(invoiceCase, command.expectedCaseVersion());
         if (invoiceCase.status() != InvoiceCaseStatus.SUPPLEMENT_REQUIRED) {
             throw new CaseStateConflictException(
@@ -326,7 +348,7 @@ public class InvoiceCaseWriteService {
         InvoiceCaseDetail detail = InvoiceCaseDetail.from(invoiceCase, draft, copies);
         audit.record(new AuditEvent(
                 command.caseId(),
-                authorization.actor(),
+                actor,
                 AuditAction.SUPPLEMENT_REVISION_OPENED,
                 AuditTargetType.DRAFT_REVISION,
                 draft.id().toString(),
@@ -340,7 +362,8 @@ public class InvoiceCaseWriteService {
                         "copiedLineCount", copies.size()),
                 command.requestId(),
                 now));
-        idempotency.recordResponse(SCOPE_OPEN_REVISION, resourceKey, command.requestId(), 201, detail);
+        idempotency.recordResponse(
+                SCOPE_OPEN_REVISION, resourceKey, actor.username(), command.requestId(), 201, detail);
         return CommandResult.created(detail);
     }
 
@@ -394,6 +417,10 @@ public class InvoiceCaseWriteService {
     private void validateLines(List<InvoiceLineInput> lines, String purchaseOrderId) {
         if (lines == null) {
             throw new DomainValidationException("lines must not be null");
+        }
+        if (lines.size() > MAX_DRAFT_LINES) {
+            throw new DomainValidationException(
+                    "lines must not contain more than " + MAX_DRAFT_LINES + " entries");
         }
         Set<Integer> numbers = new TreeSet<>();
         for (InvoiceLineInput line : lines) {

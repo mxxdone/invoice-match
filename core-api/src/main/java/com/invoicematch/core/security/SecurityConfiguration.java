@@ -78,12 +78,44 @@ public class SecurityConfiguration {
     @Bean
     UserDetailsService demoUserDetailsService(DemoSecurityProperties properties) {
         List<UserDetails> users = properties.getUsers().stream()
-                .map(demo -> User.withUsername(demo.getUsername())
-                        .password(demo.getPassword())
-                        .roles(demo.getRoles().toArray(String[]::new))
-                        .build())
+                .map(SecurityConfiguration::toUserDetails)
                 .toList();
+        if (users.isEmpty()) {
+            // Fail closed: with no configured identities every /api/** request is
+            // 401. Demo identities live only in the local/demo or test profile.
+            org.slf4j.LoggerFactory.getLogger(SecurityConfiguration.class)
+                    .warn("No demo identities are configured; protected API access is denied."
+                            + " Activate the 'local' profile for local development.");
+        }
         return new InMemoryUserDetailsManager(users);
+    }
+
+    private static UserDetails toUserDetails(DemoSecurityProperties.DemoUser demo) {
+        String username = demo.getUsername();
+        if (username == null || username.isBlank()) {
+            throw new IllegalStateException("A demo user must have a username");
+        }
+        if (SecurityPrincipals.RESERVED.equals(username)) {
+            throw new IllegalStateException(
+                    "The reserved identity '" + SecurityPrincipals.RESERVED + "' cannot be a configured login");
+        }
+        if (demo.getRoles() == null || demo.getRoles().isEmpty()) {
+            throw new IllegalStateException("Demo user " + username + " must have at least one role");
+        }
+        String[] roles = demo.getRoles().stream()
+                .peek(role -> {
+                    if (Role.fromAuthority(role.startsWith("ROLE_") ? role : "ROLE_" + role).isEmpty()) {
+                        throw new IllegalStateException(
+                                "Demo user " + username + " has an unknown role: " + role);
+                    }
+                })
+                .map(role -> role.startsWith("ROLE_") ? role.substring("ROLE_".length()) : role)
+                .distinct()
+                .toArray(String[]::new);
+        return User.withUsername(username)
+                .password(demo.getPassword())
+                .roles(roles)
+                .build();
     }
 
     @Bean

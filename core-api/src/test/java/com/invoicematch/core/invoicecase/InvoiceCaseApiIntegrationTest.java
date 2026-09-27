@@ -16,6 +16,7 @@ import com.invoicematch.core.support.StubPurchasingServer;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterAll;
@@ -417,6 +418,29 @@ class InvoiceCaseApiIntegrationTest extends AbstractPostgresIntegrationTest {
         mockMvc.perform(get("/api/invoice-cases/{id}", unknown)).andExpect(status().isNotFound());
         mockMvc.perform(get("/api/invoice-cases/{id}/evidence-bundles/{version}", unknown, 1))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void draftLineCountIsBoundedAtOneHundred() throws Exception {
+        JsonNode created = createCase("req-lines");
+        String caseId = created.get("id").asText();
+        long version = created.get("version").asLong();
+
+        List<ObjectNode> tooMany = new ArrayList<>();
+        for (int i = 1; i <= 101; i++) {
+            tooMany.add(line(i, "Item", 1, 100, null));
+        }
+        MvcResult oversize =
+                performReplaceDraft(caseId, replaceBody("req-101", version, tooMany));
+        assertThat(oversize.getResponse().getStatus()).isEqualTo(400);
+        assertThat(count("invoice_line")).isZero();
+
+        List<ObjectNode> atLimit = new ArrayList<>();
+        for (int i = 1; i <= 100; i++) {
+            atLimit.add(line(i, "Item", 1, 100, null));
+        }
+        JsonNode accepted = replaceDraft(caseId, "req-100", version, atLimit);
+        assertThat(accepted.get("lines")).hasSize(100);
     }
 
     private String prepareDraftWithLines(String createRequestId, List<ObjectNode> lines) throws Exception {

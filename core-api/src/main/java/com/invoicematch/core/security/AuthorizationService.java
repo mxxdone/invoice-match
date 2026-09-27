@@ -39,6 +39,16 @@ public class AuthorizationService {
         AuthorizationPolicy.requireSubmitterOwner(actor(), caseId, invoiceCase.submittedBy());
     }
 
+    /**
+     * Transaction-bound ownership check. The caller has already loaded the
+     * authoritative (locked) case, so the {@code submittedBy} it authorizes
+     * against is the committed row, not a caller-supplied string.
+     */
+    public void requireSubmitterOwner(InvoiceCase lockedCase) {
+        AuthorizationPolicy.requireSubmitterOwner(
+                actor(), lockedCase.id().value(), lockedCase.submittedBy());
+    }
+
     public void requireCaseRead(UUID caseId) {
         InvoiceCase invoiceCase = load(caseId);
         AuthorizationPolicy.requireCaseRead(actor(), caseId, invoiceCase.submittedBy());
@@ -51,10 +61,12 @@ public class AuthorizationService {
 
     /**
      * P1-07 seam: requires the current actor to be an APPROVER and not the case
-     * submitter. P1-06 does not expose an approval endpoint.
+     * submitter. It takes the authoritative case (typically the row locked by the
+     * approval transaction) so ownership can never come from request input.
+     * P1-06 does not expose an approval endpoint.
      */
-    public void requireApproverNotSubmitter(String submittedBy) {
-        AuthorizationPolicy.requireApproverNotSubmitter(actor(), submittedBy);
+    public void requireApproverNotSubmitter(InvoiceCase lockedCase) {
+        AuthorizationPolicy.requireApproverNotSubmitter(actor(), lockedCase.submittedBy());
     }
 
     private InvoiceCase load(UUID caseId) {

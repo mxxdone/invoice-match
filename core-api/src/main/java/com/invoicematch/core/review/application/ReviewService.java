@@ -37,6 +37,7 @@ import com.invoicematch.core.review.persistence.ReviewDecisionRepository;
 import com.invoicematch.core.review.persistence.ReviewSnapshotRepository;
 import com.invoicematch.core.security.Actor;
 import com.invoicematch.core.security.AuthorizationService;
+import com.invoicematch.core.security.Role;
 import com.invoicematch.core.shared.domain.DomainValidationException;
 import com.invoicematch.core.shared.domain.PurchaseOrderId;
 import java.time.Clock;
@@ -133,15 +134,18 @@ public class ReviewService {
 
     @Transactional
     public CommandResult<ReviewSnapshotView> freezeSnapshot(FreezeReviewSnapshotCommand command) {
+        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
+        authorization.requireRole(Role.APPROVER);
+        Actor actor = authorization.actor();
+
         String resourceKey = command.caseId().toString();
         String requestHash = fingerprint.freezeSnapshot(command);
-        RequestIdempotencyStore.BeginResult begin =
-                idempotency.begin(SCOPE_SNAPSHOT, resourceKey, command.requestId(), requestHash);
+        RequestIdempotencyStore.BeginResult begin = idempotency.begin(
+                SCOPE_SNAPSHOT, resourceKey, actor.username(), command.requestId(), requestHash);
         if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
             return replay(replay.response(), ReviewSnapshotView.class);
         }
 
-        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         requireReviewPending(invoiceCase);
         beginWrite(invoiceCase, command.expectedCaseVersion());
 
@@ -164,7 +168,7 @@ public class ReviewService {
         ReviewSnapshotView view = ReviewSnapshotView.from(snapshot);
         audit.record(new AuditEvent(
                 command.caseId(),
-                authorization.actor(),
+                actor,
                 AuditAction.REVIEW_SNAPSHOT_FROZEN,
                 AuditTargetType.REVIEW_SNAPSHOT,
                 snapshot.id().toString(),
@@ -177,21 +181,25 @@ public class ReviewService {
                         "evidenceBundleVersion", bundle.versionNumber()),
                 command.requestId(),
                 snapshot.createdAt()));
-        idempotency.recordResponse(SCOPE_SNAPSHOT, resourceKey, command.requestId(), 201, view);
+        idempotency.recordResponse(
+                SCOPE_SNAPSHOT, resourceKey, actor.username(), command.requestId(), 201, view);
         return CommandResult.created(view);
     }
 
     @Transactional
     public CommandResult<MappingDecisionResult> recordMapping(RecordMappingDecisionCommand command) {
+        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
+        authorization.requireRole(Role.APPROVER);
+        Actor actor = authorization.actor();
+
         String resourceKey = command.caseId().toString();
         String requestHash = fingerprint.recordMapping(command);
-        RequestIdempotencyStore.BeginResult begin =
-                idempotency.begin(SCOPE_MAPPING, resourceKey, command.requestId(), requestHash);
+        RequestIdempotencyStore.BeginResult begin = idempotency.begin(
+                SCOPE_MAPPING, resourceKey, actor.username(), command.requestId(), requestHash);
         if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
             return replay(replay.response(), MappingDecisionResult.class);
         }
 
-        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         requireReviewPending(invoiceCase);
         beginWrite(invoiceCase, command.expectedCaseVersion());
 
@@ -207,8 +215,11 @@ public class ReviewService {
         String purchaseOrderLineId =
                 resolveUniquePurchaseOrderLine(command.caseId(), purchasing, command.itemId());
 
+        // Capture the effective mapping for this line before the new decision, so
+        // the audit diff shows the exact replacement.
+        Object previousMapping = previousMappingForLine(command.caseId(), bundle.id(), command.lineNumber());
+
         Instant now = clock.instant();
-        Actor actor = authorization.actor();
         int decisionNumber = decisions.maxDecisionNumber(command.caseId()) + 1;
         ReviewDecision decision = ReviewDecision.recordMapping(
                 UUID.randomUUID(),
@@ -256,7 +267,7 @@ public class ReviewService {
                 AuditTargetType.REVIEW_DECISION,
                 decision.id().toString(),
                 invoiceCase.version(),
-                null,
+                previousMapping,
                 java.util.Map.of(
                         "lineNumber", command.lineNumber(),
                         "itemId", command.itemId(),
@@ -266,21 +277,24 @@ public class ReviewService {
                         "successorMatchResultNumber", successorResult.resultNumber()),
                 command.requestId(),
                 now));
-        idempotency.recordResponse(SCOPE_MAPPING, resourceKey, command.requestId(), 200, response);
+        idempotency.recordResponse(SCOPE_MAPPING, resourceKey, actor.username(), command.requestId(), 200, response);
         return CommandResult.ok(response);
     }
 
     @Transactional
     public CommandResult<ReviewDecisionView> requestSupplement(RequestSupplementCommand command) {
+        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
+        authorization.requireRole(Role.APPROVER);
+        Actor actor = authorization.actor();
+
         String resourceKey = command.caseId().toString();
         String requestHash = fingerprint.requestSupplement(command);
-        RequestIdempotencyStore.BeginResult begin =
-                idempotency.begin(SCOPE_SUPPLEMENT, resourceKey, command.requestId(), requestHash);
+        RequestIdempotencyStore.BeginResult begin = idempotency.begin(
+                SCOPE_SUPPLEMENT, resourceKey, actor.username(), command.requestId(), requestHash);
         if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
             return replay(replay.response(), ReviewDecisionView.class);
         }
 
-        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         requireReviewPending(invoiceCase);
         beginWrite(invoiceCase, command.expectedCaseVersion());
 
@@ -289,7 +303,6 @@ public class ReviewService {
         String reason = requireReason(command.reason());
 
         Instant now = clock.instant();
-        Actor actor = authorization.actor();
         ReviewDecision decision = recordSimpleDecision(
                 command.caseId(), target, ReviewDecisionType.SUPPLEMENT_REQUESTED, actor.username(), reason, now);
         decisions.saveAndFlush(decision);
@@ -313,21 +326,24 @@ public class ReviewService {
                         "reviewSnapshotId", target.id().toString()),
                 command.requestId(),
                 now));
-        idempotency.recordResponse(SCOPE_SUPPLEMENT, resourceKey, command.requestId(), 200, view);
+        idempotency.recordResponse(SCOPE_SUPPLEMENT, resourceKey, actor.username(), command.requestId(), 200, view);
         return CommandResult.ok(view);
     }
 
     @Transactional
     public CommandResult<ReviewDecisionView> reject(RejectReviewCommand command) {
+        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
+        authorization.requireRole(Role.APPROVER);
+        Actor actor = authorization.actor();
+
         String resourceKey = command.caseId().toString();
         String requestHash = fingerprint.reject(command);
-        RequestIdempotencyStore.BeginResult begin =
-                idempotency.begin(SCOPE_REJECT, resourceKey, command.requestId(), requestHash);
+        RequestIdempotencyStore.BeginResult begin = idempotency.begin(
+                SCOPE_REJECT, resourceKey, actor.username(), command.requestId(), requestHash);
         if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
             return replay(replay.response(), ReviewDecisionView.class);
         }
 
-        InvoiceCase invoiceCase = loadForUpdate(command.caseId());
         requireReviewPending(invoiceCase);
         beginWrite(invoiceCase, command.expectedCaseVersion());
 
@@ -336,7 +352,6 @@ public class ReviewService {
         String reason = requireReason(command.reason());
 
         Instant now = clock.instant();
-        Actor actor = authorization.actor();
         ReviewDecision decision = recordSimpleDecision(
                 command.caseId(), target, ReviewDecisionType.REJECTED, actor.username(), reason, now);
         decisions.saveAndFlush(decision);
@@ -360,8 +375,22 @@ public class ReviewService {
                         "reviewSnapshotId", target.id().toString()),
                 command.requestId(),
                 now));
-        idempotency.recordResponse(SCOPE_REJECT, resourceKey, command.requestId(), 200, view);
+        idempotency.recordResponse(SCOPE_REJECT, resourceKey, actor.username(), command.requestId(), 200, view);
         return CommandResult.ok(view);
+    }
+
+    private Object previousMappingForLine(UUID caseId, UUID evidenceBundleId, int lineNumber) {
+        return mappingResolver.resolve(caseId, evidenceBundleId).mappings().stream()
+                .filter(mapping -> mapping.lineNumber() == lineNumber)
+                .findFirst()
+                .<Object>map(mapping -> {
+                    java.util.Map<String, Object> node = new java.util.LinkedHashMap<>();
+                    node.put("lineNumber", mapping.lineNumber());
+                    node.put("itemId", mapping.itemId());
+                    node.put("purchaseOrderLineId", mapping.purchaseOrderLineId());
+                    return node;
+                })
+                .orElse(null);
     }
 
     private ReviewDecision recordSimpleDecision(
