@@ -40,6 +40,8 @@ import com.invoicematch.core.review.domain.ReviewStateConflictException;
 import com.invoicematch.core.review.persistence.ReviewDecisionRepository;
 import com.invoicematch.core.security.Actor;
 import com.invoicematch.core.security.AuthorizationService;
+import com.invoicematch.core.trace.TraceContext;
+import com.invoicematch.core.trace.TraceId;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -208,6 +210,12 @@ public class ApprovalService {
         long plannedQuantityTotal = sumPlannedQuantity(command.caseId(), snapshot.id(), plan);
         long caseVersionBefore = invoiceCase.version();
 
+        // Server-derived audit context, persisted on the immutable decision and
+        // reused for the audit row so both can be checked for exact equality.
+        String approvalActorRoles = actor.rolesCsv();
+        String approvalRequestId = command.requestId();
+        String approvalTraceId = resolveTraceId();
+
         int decisionNumber = decisions.maxDecisionNumber(command.caseId()) + 1;
         ReviewDecision decision = ReviewDecision.recordApproval(
                 UUID.randomUUID(),
@@ -222,7 +230,10 @@ public class ApprovalService {
                 plan.totalAmount(),
                 CURRENCY,
                 caseVersionBefore,
-                caseVersionBefore + 1);
+                caseVersionBefore + 1,
+                approvalActorRoles,
+                approvalRequestId,
+                approvalTraceId);
         decisions.saveAndFlush(decision);
         interceptor.afterDecisionWritten(command.caseId());
 
@@ -330,8 +341,9 @@ public class ApprovalService {
                 invoiceCase.version(),
                 before,
                 after,
-                command.requestId(),
-                now));
+                approvalRequestId,
+                now,
+                approvalTraceId));
         interceptor.afterAuditRecorded(command.caseId());
 
         idempotency.recordResponse(
@@ -513,6 +525,11 @@ public class ApprovalService {
 
     private InvoiceCase loadForUpdate(UUID caseId) {
         return invoiceCases.findByIdForUpdate(caseId).orElseThrow(() -> new InvoiceCaseNotFoundException(caseId));
+    }
+
+    private static String resolveTraceId() {
+        String current = TraceContext.current();
+        return current != null ? current : TraceId.generate();
     }
 
     private static void checkExpectedVersion(InvoiceCase invoiceCase, long expectedVersion) {

@@ -359,13 +359,14 @@ reflection 기반 경계 테스트와 직접 service 호출 테스트로 공개 
 - 배분 계획과 금액은 재계산된 typed match 결과에서만 유도하고, JSON `asInt/asLong` 강제 파싱을 제거했다(checked `Money`/`Quantity`).
 - `receipt_allocation`에 승인 결정 종류·동결 draft 라인·external receipt id/version/active를 단일 BEFORE INSERT 트리거로 강제하되, 잠금을 케이스 `FOR UPDATE` → PO advisory → 검수 라인 `FOR UPDATE` → 검증/잔량 순서로만 잡아 application/raw SQL이 같은 순서를 따르게 했다. `(decision, invoice line, receipt line)` 유일성과 검수 라인 UPDATE 가드(할당 합 이하로 confirmed 감소·할당 있는 라인 비활성 금지, 증가/버전 진화 허용), 승인 시점 confirmed quantity 저장(`confirmed_quantity_at_approval`)을 추가했다.
 - `payment_request`는 승인 결정의 `(case, snapshot, hash, approved amount/currency)` 복합 FK로 금액·주체를 고정하고, 결정적 외부 key CHECK + UPDATE/DELETE 보호 트리거를 추가했다.
-- V6 감사 검증 함수를 V7에서 교체(V6 파일 불변)해 APPROVE가 실제 APPROVED 결정·actor·역할·request/trace id·before/after 상태와 case version·before/after snapshot id/hash·decision id/number·payment id/key/amount/currency·approved 결정 금액·allocation 개수/합계와 결정적으로 정렬된 개별 allocation 배열까지 관계형 행과 일치하도록 검증한다.
+- APPROVED `review_decision`에 서버가 도출한 canonical actor roles, actor-scoped request id, trace id를 immutable 컬럼(`approval_actor_roles`/`approval_request_id`/`approval_trace_id`)으로 저장하고, `ApprovalService`가 인증 `Actor`·command `requestId`·`TraceContext`에서 같은 트랜잭션으로 채운다(클라이언트는 지정할 수 없음). `ck_review_decision_approval_metadata`는 APPROVED의 nonblank canonical metadata를 강제하되 NOT VALID로 legacy V6 APPROVED 행을 보존한다.
+- V6 감사 검증 함수를 V7에서 교체(V6 파일 불변)해 APPROVE가 저장된 approval actor roles/request id/trace id와 audit `actor_roles`/`request_id`/`trace_id`, 그리고 `actor == decided_by`가 정확히 일치할 것을 요구한다. 이어 before_state/after_state를 권위 있는 결정·payment_request·allocation 행에서 재구성한 정확한 JSONB 객체와 whole-object로 비교해 모든 값과 JSON 타입, 정확한 field set(위조 extra·누락 금지), 결정적으로 정렬된 allocation 배열까지 강제하고 object key 순서만 무시한다.
 - 승인 집계는 int 합/축소 대신 checked `long`(`Math.addExact`)으로 계산하고 overflow를 안정된 409/도메인 오류로 변환하며, shortfall의 confirmed/allocated/remaining/requested도 `long`으로 보고한다.
 - `ApprovalApplicationService`는 `Propagation.NEVER`로 활성 호출자 트랜잭션이 있으면 메서드 본문 전에 즉시 거부한다(중단 후 계속하지 않음). 외부 조회는 트랜잭션 없는 호출에서만 실행된다.
 
 ### 검증과 교훈
 
-위조 evidence/match/snapshot payload·hash, 임의 receipt date/ID, 잘못된 타입, overflow, REJECTED 결정, 교차 사건, 중복 배분, 비활성 검수, 임의 지급 금액/key, 보호 필드 UPDATE/DELETE를 raw SQL로 재현해 모두 side effect 없이 실패함을 확인했다. APPROVE 감사는 before snapshot id/hash, 결정 금액, 개별 allocation, actor/request까지 각각 위조해 거부됨을 확인했다. 다른 계층이 소유한 직렬화 경계(jsonb key 재정렬)를 넘겨 값을 재사용하면 해시 재현성이 깨질 수 있으므로, 승인 같은 고위험 판단은 저장 JSON이 아니라 권위 있는 관계형 사실에서 다시 계산하고 DB 제약으로 관계를 봉인해야 한다.
+위조 evidence/match/snapshot payload·hash, 임의 receipt date/ID, 잘못된 타입, overflow, REJECTED 결정, 교차 사건, 중복 배분, 비활성 검수, 임의 지급 금액/key, 보호 필드 UPDATE/DELETE를 raw SQL로 재현해 모두 side effect 없이 실패함을 확인했다. APPROVE 감사는 저장 metadata와 어긋나는 actor roles(부풀린/비정규 순서/미지원 역할/빈 값), 임의의 nonblank request id, 임의 trace id, 누락된 request/trace, actor 불일치, 각 숫자 필드의 문자열·boolean·null 치환, extra/missing field를 모두 거부하고, 권위 있는 행과 저장 metadata로 재구성한 audit만 수락함을 확인했다. 다른 계층이 소유한 직렬화 경계(jsonb key 재정렬)를 넘겨 값을 재사용하면 해시 재현성이 깨질 수 있으므로, 승인 같은 고위험 판단은 저장 JSON이 아니라 권위 있는 관계형 사실에서 다시 계산하고 DB 제약으로 관계를 봉인해야 한다.
 
 관련 커밋: `69dde46`, `6077d3d`, `5bdb6e0`, `89214db`, `d4fec02`
 

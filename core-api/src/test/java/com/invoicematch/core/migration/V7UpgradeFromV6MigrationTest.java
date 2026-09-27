@@ -131,6 +131,15 @@ class V7UpgradeFromV6MigrationTest extends AbstractPostgresIntegrationTest {
                     Integer.class,
                     caseId);
             assertThat(legacyRejected).isEqualTo(1);
+            // Legacy APPROVED/REJECTED rows carry no approval metadata and survive
+            // the NOT VALID metadata constraint additions.
+            Integer legacyMetadataMissing = upgradeJdbc.queryForObject(
+                    "select count(*) from review_decision where invoice_case_id = ?"
+                            + " and approval_actor_roles is null and approval_request_id is null"
+                            + " and approval_trace_id is null",
+                    Integer.class,
+                    caseId);
+            assertThat(legacyMetadataMissing).isEqualTo(2);
 
             // New rows are still enforced: an APPROVED without approved money and
             // before/after versions is rejected, a non-APPROVED decision is allowed.
@@ -149,6 +158,46 @@ class V7UpgradeFromV6MigrationTest extends AbstractPostgresIntegrationTest {
                     UUID.randomUUID(),
                     caseId,
                     snapshotId);
+
+            // A new APPROVED row with approved money but no canonical metadata is
+            // rejected; non-canonical roles are rejected; valid metadata is accepted.
+            assertThatThrownBy(() -> upgradeJdbc.update(
+                            "insert into review_decision (id, invoice_case_id, review_snapshot_id, decision_number,"
+                                    + " decision, decided_by, payload_hash, decided_at, approved_amount,"
+                                    + " approved_currency, approved_case_version_before, approved_case_version_after)"
+                                    + " values (?, ?, ?, 4, 'APPROVED', 'reviewer', 'snap-hash', now(), 1000,"
+                                    + " 'KRW', 0, 1)",
+                            UUID.randomUUID(),
+                            caseId,
+                            snapshotId))
+                    .isInstanceOf(DataIntegrityViolationException.class);
+            assertThatThrownBy(() -> upgradeJdbc.update(
+                            "insert into review_decision (id, invoice_case_id, review_snapshot_id, decision_number,"
+                                    + " decision, decided_by, payload_hash, decided_at, approved_amount,"
+                                    + " approved_currency, approved_case_version_before, approved_case_version_after,"
+                                    + " approval_actor_roles, approval_request_id, approval_trace_id)"
+                                    + " values (?, ?, ?, 4, 'APPROVED', 'reviewer', 'snap-hash', now(), 1000,"
+                                    + " 'KRW', 0, 1, 'OPERATOR,APPROVER', 'req-1', 'trc-1')",
+                            UUID.randomUUID(),
+                            caseId,
+                            snapshotId))
+                    .isInstanceOf(DataIntegrityViolationException.class);
+            upgradeJdbc.update(
+                    "insert into review_decision (id, invoice_case_id, review_snapshot_id, decision_number,"
+                            + " decision, decided_by, payload_hash, decided_at, approved_amount,"
+                            + " approved_currency, approved_case_version_before, approved_case_version_after,"
+                            + " approval_actor_roles, approval_request_id, approval_trace_id)"
+                            + " values (?, ?, ?, 4, 'APPROVED', 'reviewer', 'snap-hash', now(), 1000,"
+                            + " 'KRW', 0, 1, 'APPROVER', 'req-1', 'trc-1')",
+                    UUID.randomUUID(),
+                    caseId,
+                    snapshotId);
+            Integer newApprovedMetadata = upgradeJdbc.queryForObject(
+                    "select count(*) from review_decision where invoice_case_id = ? and decision_number = 4"
+                            + " and approval_actor_roles = 'APPROVER'",
+                    Integer.class,
+                    caseId);
+            assertThat(newApprovedMetadata).isEqualTo(1);
 
             // APPROVE became a legal audit action and the V7 trigger replaced the
             // V6 validation without touching V6.

@@ -89,6 +89,15 @@ public class ReviewDecision {
     @Column(name = "approved_case_version_after", updatable = false)
     private Long approvedCaseVersionAfter;
 
+    @Column(name = "approval_actor_roles", updatable = false, length = 255)
+    private String approvalActorRoles;
+
+    @Column(name = "approval_request_id", updatable = false, length = 128)
+    private String approvalRequestId;
+
+    @Column(name = "approval_trace_id", updatable = false, length = 64)
+    private String approvalTraceId;
+
     protected ReviewDecision() {
     }
 
@@ -110,7 +119,10 @@ public class ReviewDecision {
             Money approvedAmount,
             String approvedCurrency,
             Long approvedCaseVersionBefore,
-            Long approvedCaseVersionAfter) {
+            Long approvedCaseVersionAfter,
+            String approvalActorRoles,
+            String approvalRequestId,
+            String approvalTraceId) {
         if (decisionNumber <= 0) {
             throw new DomainValidationException("decisionNumber must be positive: " + decisionNumber);
         }
@@ -160,16 +172,26 @@ public class ReviewDecision {
                 throw new DomainValidationException(
                         "An APPROVED decision after case version must be the before version plus one");
             }
+            if (approvalActorRoles == null || approvalActorRoles.isBlank()
+                    || approvalRequestId == null || approvalRequestId.isBlank()
+                    || approvalTraceId == null || approvalTraceId.isBlank()) {
+                throw new DomainValidationException(
+                        "An APPROVED decision requires server-derived actor roles, request id and trace id");
+            }
         } else if (approvedAmount != null || approvedCurrency != null
-                || approvedCaseVersionBefore != null || approvedCaseVersionAfter != null) {
+                || approvedCaseVersionBefore != null || approvedCaseVersionAfter != null
+                || approvalActorRoles != null || approvalRequestId != null || approvalTraceId != null) {
             throw new DomainValidationException(
-                    "Only an APPROVED decision may carry an approved amount/currency/versions, but decision was "
-                            + decision);
+                    "Only an APPROVED decision may carry an approved amount/currency/versions or approval metadata,"
+                            + " but decision was " + decision);
         }
         this.approvedAmount = approvedAmount;
         this.approvedCurrency = approvedCurrency;
         this.approvedCaseVersionBefore = approvedCaseVersionBefore;
         this.approvedCaseVersionAfter = approvedCaseVersionAfter;
+        this.approvalActorRoles = approvalActorRoles;
+        this.approvalRequestId = approvalRequestId;
+        this.approvalTraceId = approvalTraceId;
     }
 
     public static ReviewDecision record(
@@ -194,6 +216,9 @@ public class ReviewDecision {
                 decisionPayload,
                 payloadHash,
                 decidedAt,
+                null,
+                null,
+                null,
                 null,
                 null,
                 null,
@@ -236,14 +261,18 @@ public class ReviewDecision {
                 null,
                 null,
                 null,
+                null,
+                null,
+                null,
                 null);
     }
 
     /**
      * Records an APPROVED decision that binds the exact approved amount,
-     * currency and before/after case versions, so a payment request and the
-     * APPROVE audit can be checked against persisted authoritative metadata
-     * instead of the stated summary alone.
+     * currency, before/after case versions and the server-derived audit context
+     * (canonical actor roles, actor-scoped request id and trace id), so a payment
+     * request and the APPROVE audit can be checked against persisted
+     * authoritative metadata instead of the stated summary alone.
      */
     public static ReviewDecision recordApproval(
             UUID id,
@@ -258,7 +287,10 @@ public class ReviewDecision {
             Money approvedAmount,
             String approvedCurrency,
             long approvedCaseVersionBefore,
-            long approvedCaseVersionAfter) {
+            long approvedCaseVersionAfter,
+            String approvalActorRoles,
+            String approvalRequestId,
+            String approvalTraceId) {
         return new ReviewDecision(
                 id,
                 invoiceCaseId,
@@ -277,7 +309,10 @@ public class ReviewDecision {
                 approvedAmount,
                 approvedCurrency,
                 approvedCaseVersionBefore,
-                approvedCaseVersionAfter);
+                approvedCaseVersionAfter,
+                approvalActorRoles,
+                approvalRequestId,
+                approvalTraceId);
     }
 
     public UUID id() {
@@ -350,6 +385,18 @@ public class ReviewDecision {
 
     public Long approvedCaseVersionAfter() {
         return approvedCaseVersionAfter;
+    }
+
+    public String approvalActorRoles() {
+        return approvalActorRoles;
+    }
+
+    public String approvalRequestId() {
+        return approvalRequestId;
+    }
+
+    public String approvalTraceId() {
+        return approvalTraceId;
     }
 
     @Override

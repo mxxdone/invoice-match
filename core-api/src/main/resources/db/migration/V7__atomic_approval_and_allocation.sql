@@ -8,9 +8,11 @@
 -- and the declarative/trigger guards that make every approval relationship
 -- unforgeable even under raw SQL:
 --
--- 1. review_decision gains the approved amount/currency for APPROVED decisions
---    plus composite candidate keys so receipt_allocation and payment_request can
---    bind the exact decision subject (case + snapshot + payload hash) and money.
+-- 1. review_decision gains the approved amount/currency and the server-derived
+--    approval audit context (canonical actor roles, actor-scoped request id and
+--    trace id) for APPROVED decisions, plus composite candidate keys so
+--    receipt_allocation and payment_request can bind the exact decision subject
+--    (case + snapshot + payload hash) and money.
 -- 2. receipt_allocation is append-only and, at INSERT, a trigger proves the
 --    decision is APPROVED and belongs to the exact case/snapshot/hash, the
 --    evidence bundle belongs to the case, the invoice line really belongs to the
@@ -24,9 +26,13 @@
 --    positive amount, and protects subject/money/key from UPDATE and DELETE so
 --    P1-08 can only advance the delivery status.
 -- 5. The V6 audit validation is replaced (V6 is untouched) so APPROVE must
---    target the exact APPROVED decision of the case by its own actor, name the
---    exact snapshot/hash and payment request, and carry matching allocation
---    totals and REVIEW_PENDING -> EXPORT_PENDING states.
+--    target the exact APPROVED decision of the case by its own actor, match the
+--    persisted approval actor roles / request id / trace id, and carry a
+--    before_state and after_state that equal, as whole JSONB objects, the exact
+--    state reconstructed from the authoritative decision, payment request and
+--    allocation rows. Whole-object equality enforces every value and its JSON
+--    type, the exact field set (no forged extras or missing fields) and the
+--    deterministically ordered allocation array, while ignoring object key order.
 --
 -- Outbox, ERP delivery and status transitions are P1-08 and are deliberately
 -- absent here.
@@ -49,7 +55,29 @@ ALTER TABLE review_decision
     ADD COLUMN approved_amount bigint,
     ADD COLUMN approved_currency varchar(3),
     ADD COLUMN approved_case_version_before bigint,
-    ADD COLUMN approved_case_version_after bigint;
+    ADD COLUMN approved_case_version_after bigint,
+    -- Server-derived approval audit context, persisted on the immutable decision
+    -- so the APPROVE audit can be bound to authoritative metadata rather than to
+    -- whatever the audit row claims.
+    ADD COLUMN approval_actor_roles varchar(255),
+    ADD COLUMN approval_request_id varchar(128),
+    ADD COLUMN approval_trace_id varchar(64);
+
+-- An APPROVED decision must carry nonblank, canonical approval metadata; every
+-- other decision type must leave it null. NOT VALID preserves legacy V6 APPROVED
+-- rows that predate the columns, while still enforcing the rule on new rows (a
+-- NOT VALID check constraint is skipped only for pre-existing rows).
+ALTER TABLE review_decision
+    ADD CONSTRAINT ck_review_decision_approval_metadata CHECK (
+        (decision = 'APPROVED'
+            AND approval_actor_roles IS NOT NULL
+            AND approval_actor_roles ~ '^(SUBMITTER(,APPROVER(,OPERATOR)?|,OPERATOR)?|APPROVER(,OPERATOR)?|OPERATOR)$'
+            AND approval_request_id IS NOT NULL AND btrim(approval_request_id) <> ''
+            AND approval_trace_id IS NOT NULL AND btrim(approval_trace_id) <> '')
+        OR (decision <> 'APPROVED'
+            AND approval_actor_roles IS NULL
+            AND approval_request_id IS NULL
+            AND approval_trace_id IS NULL)) NOT VALID;
 
 ALTER TABLE review_decision
     ADD CONSTRAINT ck_review_decision_approved_money CHECK (
@@ -385,6 +413,8 @@ DECLARE
     allocation_count bigint;
     allocation_total bigint;
     allocations_expected jsonb;
+    expected_before jsonb;
+    expected_after jsonb;
 BEGIN
     -- Actor roles must be a non-empty, duplicate-free, canonical subset.
     parts := string_to_array(NEW.actor_roles, ',');
@@ -478,7 +508,8 @@ BEGIN
         END IF;
         SELECT id, decision, decision_number, invoice_case_id, review_snapshot_id, payload_hash,
                decided_by, approved_amount, approved_currency,
-               approved_case_version_before, approved_case_version_after
+               approved_case_version_before, approved_case_version_after,
+               approval_actor_roles, approval_request_id, approval_trace_id
           INTO decision_row
           FROM review_decision
          WHERE id = NEW.target_id::uuid;
@@ -486,7 +517,7 @@ BEGIN
             RAISE EXCEPTION 'APPROVE audit target % is not an APPROVED decision', NEW.target_id
                 USING ERRCODE = '23514';
         END IF;
-        IF decision_row.decided_by <> NEW.actor THEN
+        IF decision_row.decided_by IS DISTINCT FROM NEW.actor THEN
             RAISE EXCEPTION 'APPROVE audit actor % is not the decision approver %',
                 NEW.actor, decision_row.decided_by USING ERRCODE = '23514';
         END IF;
@@ -494,43 +525,31 @@ BEGIN
             RAISE EXCEPTION 'APPROVE audit actor % does not hold APPROVER', NEW.actor
                 USING ERRCODE = '23514';
         END IF;
-        IF NEW.request_id IS NULL OR btrim(NEW.request_id) = '' THEN
-            RAISE EXCEPTION 'APPROVE audit requires a request id' USING ERRCODE = '23514';
+
+        -- Bind the audit context to the server-derived metadata persisted on the
+        -- immutable APPROVED decision. A raw audit can never invent its own
+        -- roles, request id or trace id, and a legacy APPROVED row without
+        -- metadata can never be matched by a fabricated audit.
+        IF decision_row.approval_actor_roles IS NULL
+            OR NEW.actor_roles IS DISTINCT FROM decision_row.approval_actor_roles THEN
+            RAISE EXCEPTION 'APPROVE audit actor_roles do not match the persisted approval actor roles'
+                USING ERRCODE = '23514';
         END IF;
-        IF NEW.trace_id IS NULL OR btrim(NEW.trace_id) = '' THEN
-            RAISE EXCEPTION 'APPROVE audit requires a trace id' USING ERRCODE = '23514';
+        IF decision_row.approval_request_id IS NULL
+            OR NEW.request_id IS DISTINCT FROM decision_row.approval_request_id THEN
+            RAISE EXCEPTION 'APPROVE audit request id does not match the persisted approval request id'
+                USING ERRCODE = '23514';
+        END IF;
+        IF decision_row.approval_trace_id IS NULL
+            OR NEW.trace_id IS DISTINCT FROM decision_row.approval_trace_id THEN
+            RAISE EXCEPTION 'APPROVE audit trace id does not match the persisted approval trace id'
+                USING ERRCODE = '23514';
         END IF;
         IF NEW.before_state IS NULL OR NEW.after_state IS NULL THEN
             RAISE EXCEPTION 'APPROVE audit requires before and after state' USING ERRCODE = '23514';
         END IF;
 
-        -- States and before/after case versions must match the persisted
-        -- authoritative approval metadata on the decision.
-        IF NEW.before_state->>'status' IS DISTINCT FROM 'REVIEW_PENDING'
-            OR NEW.after_state->>'status' IS DISTINCT FROM 'EXPORT_PENDING' THEN
-            RAISE EXCEPTION 'APPROVE audit must record REVIEW_PENDING -> EXPORT_PENDING'
-                USING ERRCODE = '23514';
-        END IF;
-        IF NEW.before_state->>'caseVersion' IS DISTINCT FROM decision_row.approved_case_version_before::text
-            OR NEW.after_state->>'caseVersion' IS DISTINCT FROM decision_row.approved_case_version_after::text THEN
-            RAISE EXCEPTION 'APPROVE audit case versions do not match the approved decision'
-                USING ERRCODE = '23514';
-        END IF;
-        -- The before-state must also name the exact snapshot/hash the decision
-        -- approved, so a forged before-snapshot cannot slip through.
-        IF NEW.before_state->>'reviewSnapshotId' IS DISTINCT FROM decision_row.review_snapshot_id::text
-            OR NEW.before_state->>'reviewPayloadHash' IS DISTINCT FROM decision_row.payload_hash THEN
-            RAISE EXCEPTION 'APPROVE audit before-snapshot facts do not match the approved decision'
-                USING ERRCODE = '23514';
-        END IF;
-        IF NEW.after_state->>'decisionId' IS DISTINCT FROM decision_row.id::text
-            OR NEW.after_state->>'decisionNumber' IS DISTINCT FROM decision_row.decision_number::text
-            OR NEW.after_state->>'reviewSnapshotId' IS DISTINCT FROM decision_row.review_snapshot_id::text
-            OR NEW.after_state->>'reviewPayloadHash' IS DISTINCT FROM decision_row.payload_hash THEN
-            RAISE EXCEPTION 'APPROVE audit decision/snapshot facts do not match the approved decision'
-                USING ERRCODE = '23514';
-        END IF;
-
+        -- Resolve the exact authoritative payment request of the decision.
         SELECT id, amount, currency, external_request_key
           INTO payment_row
           FROM payment_request
@@ -543,41 +562,53 @@ BEGIN
             RAISE EXCEPTION 'APPROVE audit payment request does not match the approved decision'
                 USING ERRCODE = '23514';
         END IF;
-        IF NEW.after_state->>'externalRequestKey' IS DISTINCT FROM payment_row.external_request_key
-            OR NEW.after_state->>'amount' IS DISTINCT FROM payment_row.amount::text
-            OR NEW.after_state->>'currency' IS DISTINCT FROM payment_row.currency THEN
-            RAISE EXCEPTION 'APPROVE audit money/key fact does not match the payment request'
-                USING ERRCODE = '23514';
-        END IF;
-        -- The emitted money must also equal the decision's persisted approved
-        -- money, so the audit can never disagree with the authoritative decision.
-        IF NEW.after_state->>'amount' IS DISTINCT FROM decision_row.approved_amount::text
-            OR NEW.after_state->>'currency' IS DISTINCT FROM decision_row.approved_currency THEN
-            RAISE EXCEPTION 'APPROVE audit amount does not match the approved decision'
-                USING ERRCODE = '23514';
-        END IF;
 
-        SELECT count(*), COALESCE(SUM(allocated_quantity), 0)
-          INTO allocation_count, allocation_total
-          FROM receipt_allocation
-         WHERE review_decision_id = NEW.target_id::uuid
-           AND invoice_case_id = NEW.invoice_case_id;
-
+        -- The complete canonical allocation array, deterministically ordered.
         SELECT COALESCE(jsonb_agg(jsonb_build_object(
                    'invoiceLineNumber', a.invoice_line_number,
                    'receiptId', a.receipt_id,
                    'receiptLineId', a.receipt_line_id,
                    'quantity', a.allocated_quantity)
-                   ORDER BY a.invoice_line_number, a.receipt_line_id, a.receipt_id), '[]'::jsonb)
-          INTO allocations_expected
+                   ORDER BY a.invoice_line_number, a.receipt_line_id, a.receipt_id), '[]'::jsonb),
+               count(*),
+               COALESCE(SUM(a.allocated_quantity), 0)
+          INTO allocations_expected, allocation_count, allocation_total
           FROM receipt_allocation a
          WHERE a.review_decision_id = NEW.target_id::uuid
            AND a.invoice_case_id = NEW.invoice_case_id;
 
-        IF NEW.after_state->>'allocationCount' IS DISTINCT FROM allocation_count::text
-            OR NEW.after_state->>'allocatedQuantity' IS DISTINCT FROM allocation_total::text
-            OR NEW.after_state->'allocations' IS DISTINCT FROM allocations_expected THEN
-            RAISE EXCEPTION 'APPROVE audit allocation facts do not match the committed allocations'
+        -- Reconstruct the exact expected states from authoritative rows. Whole
+        -- JSONB object equality enforces every value and its JSON type, the exact
+        -- field set (no forged extras, no missing fields) and the ordered
+        -- allocation array; object key order is irrelevant. A numeric field
+        -- forged as a JSON string (or boolean/null) is a different jsonb value.
+        expected_before := jsonb_build_object(
+            'status', 'REVIEW_PENDING',
+            'caseVersion', decision_row.approved_case_version_before,
+            'reviewSnapshotId', decision_row.review_snapshot_id,
+            'reviewPayloadHash', decision_row.payload_hash);
+
+        expected_after := jsonb_build_object(
+            'status', 'EXPORT_PENDING',
+            'caseVersion', decision_row.approved_case_version_after,
+            'decisionId', decision_row.id,
+            'decisionNumber', decision_row.decision_number,
+            'reviewSnapshotId', decision_row.review_snapshot_id,
+            'reviewPayloadHash', decision_row.payload_hash,
+            'paymentRequestId', payment_row.id,
+            'externalRequestKey', payment_row.external_request_key,
+            'amount', payment_row.amount,
+            'currency', payment_row.currency,
+            'allocationCount', allocation_count,
+            'allocatedQuantity', allocation_total,
+            'allocations', allocations_expected);
+
+        IF NEW.before_state IS DISTINCT FROM expected_before THEN
+            RAISE EXCEPTION 'APPROVE audit before_state does not match the authoritative approval state'
+                USING ERRCODE = '23514';
+        END IF;
+        IF NEW.after_state IS DISTINCT FROM expected_after THEN
+            RAISE EXCEPTION 'APPROVE audit after_state does not match the authoritative approval state'
                 USING ERRCODE = '23514';
         END IF;
     END IF;
