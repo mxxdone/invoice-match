@@ -389,7 +389,7 @@ class ApprovalWorkflowIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     @Test
-    void rawSqlNegativesProtectCrossCaseDuplicateAndOverAllocation() throws Exception {
+    void rawSqlNegativesProtectApprovalRelationships() throws Exception {
         String caseId = submittedCase(1, "A4 Paper", 60, 2500, ITEM_A);
         runMatch(caseId, "match-1");
         JsonNode snapshot = freeze(caseId, "snap-1");
@@ -405,45 +405,132 @@ class ApprovalWorkflowIntegrationTest extends AbstractPostgresIntegrationTest {
                 "select review_snapshot_id from payment_request where invoice_case_id = ?", UUID.class, caseUuid);
         UUID bundleId = jdbc.queryForObject(
                 "select evidence_bundle_id from payment_request where invoice_case_id = ?", UUID.class, caseUuid);
-        UUID receiptLineSnapshotId = jdbc.queryForObject(
-                "select id from receipt_line_snapshot where receipt_line_id = 'RCL-1001-1-1'", UUID.class);
-        UUID unallocatedReceiptLineSnapshotId = jdbc.queryForObject(
-                "select id from receipt_line_snapshot where receipt_line_id = 'RCL-1001-1-2'", UUID.class);
+        String payloadHash = jdbc.queryForObject(
+                "select review_payload_hash from payment_request where invoice_case_id = ?", String.class, caseUuid);
+        ReceiptFact first = receiptFact("RCL-1001-1-1");
+        ReceiptFact second = receiptFact("RCL-1001-1-2");
 
-        // Cross-case: another case cannot reference this case's decision/snapshot.
-        // The target receipt line is unallocated, so the guard passes and the
-        // same-case decision/snapshot foreign key is what rejects the insert.
+        // A rejected decision cannot be allocated.
+        String rejectedCaseId = submittedCase("INV-REJ", List.of(line(1, "A4 Paper", 5, 2500, ITEM_A)));
+        UUID rejectedCaseUuid = UUID.fromString(rejectedCaseId);
+        runMatch(rejectedCaseId, "match-rej");
+        JsonNode rejectedSnapshot = freeze(rejectedCaseId, "snap-rej");
+        reject(rejectedCaseId, rejectedSnapshot.get("id").asText(), rejectedSnapshot.get("payloadHash").asText());
+        UUID rejectedDecisionId = jdbc.queryForObject(
+                "select id from review_decision where invoice_case_id = ? and decision = 'REJECTED'",
+                UUID.class,
+                rejectedCaseUuid);
+        UUID rejectedBundleId = jdbc.queryForObject(
+                "select evidence_bundle_id from review_snapshot where id = ?",
+                UUID.class,
+                UUID.fromString(rejectedSnapshot.get("id").asText()));
+        assertThatThrownBy(() -> insertAllocation(
+                        rejectedCaseUuid, "PO-1001", rejectedDecisionId,
+                        UUID.fromString(rejectedSnapshot.get("id").asText()),
+                        rejectedSnapshot.get("payloadHash").asText(), rejectedBundleId, 1,
+                        second.id(), second.receiptId(), second.receiptLineId(), second.purchaseOrderLineId(),
+                        second.receiptLineVersion(), 1))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("not APPROVED");
+
+        // Cross-case: another case cannot combine its own case with this decision.
         String otherCaseId = submittedCase("INV-OTHER", List.of(line(1, "A4 Paper", 5, 2500, ITEM_A)));
         UUID otherCaseUuid = UUID.fromString(otherCaseId);
         assertThatThrownBy(() -> insertAllocation(
-                        otherCaseUuid,
-                        decisionId,
-                        snapshotId,
-                        bundleId,
-                        unallocatedReceiptLineSnapshotId,
-                        "RCV-1001-1",
-                        "RCL-1001-1-2",
-                        1))
+                        otherCaseUuid, "PO-1001", decisionId, snapshotId, payloadHash, bundleId, 1,
+                        second.id(), second.receiptId(), second.receiptLineId(), second.purchaseOrderLineId(),
+                        second.receiptLineVersion(), 1))
                 .isInstanceOf(DataIntegrityViolationException.class);
+        assertThat(currentStatus(otherCaseId)).isEqualTo("REVIEW_PENDING");
 
-        // Duplicate external payment key / same (case, snapshot).
-        assertThatThrownBy(() -> jdbc.update(
-                        "insert into payment_request (id, invoice_case_id, purchase_order_id, review_decision_id,"
-                                + " review_snapshot_id, evidence_bundle_id, external_request_key, amount, currency,"
-                                + " status, created_at) values (?, ?, 'PO-1001', ?, ?, ?, ?, 1, 'KRW', 'PENDING', now())",
-                        UUID.randomUUID(),
-                        caseUuid,
-                        decisionId,
-                        snapshotId,
-                        bundleId,
-                        "PAYMENT:" + caseId + ":" + snapshotId))
-                .isInstanceOf(DataIntegrityViolationException.class);
-
-        // Over-allocation guard: the line is already fully allocated.
+        // Wrong snapshot hash.
         assertThatThrownBy(() -> insertAllocation(
-                        caseUuid, decisionId, snapshotId, bundleId, receiptLineSnapshotId, "RCV-1001-1", "RCL-1001-1-1", 1))
+                        caseUuid, "PO-1001", decisionId, snapshotId, "wrong-hash", bundleId, 1,
+                        second.id(), second.receiptId(), second.receiptLineId(), second.purchaseOrderLineId(),
+                        second.receiptLineVersion(), 1))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        // Invoice line is not part of the frozen bundle.
+        assertThatThrownBy(() -> insertAllocation(
+                        caseUuid, "PO-1001", decisionId, snapshotId, payloadHash, bundleId, 99,
+                        second.id(), second.receiptId(), second.receiptLineId(), second.purchaseOrderLineId(),
+                        second.receiptLineVersion(), 1))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("not part of the evidence bundle");
+
+        // Nonexistent receipt line.
+        assertThatThrownBy(() -> insertAllocation(
+                        caseUuid, "PO-1001", decisionId, snapshotId, payloadHash, bundleId, 1,
+                        UUID.randomUUID(), second.receiptId(), second.receiptLineId(),
+                        second.purchaseOrderLineId(), second.receiptLineVersion(), 1))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        // Fake external receipt ids.
+        assertThatThrownBy(() -> insertAllocation(
+                        caseUuid, "PO-1001", decisionId, snapshotId, payloadHash, bundleId, 1,
+                        second.id(), "FAKE-RCV", "FAKE-RCL", second.purchaseOrderLineId(),
+                        second.receiptLineVersion(), 1))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("receipt facts do not match");
+
+        // Over-allocation guard on a fully allocated line.
+        assertThatThrownBy(() -> insertAllocation(
+                        caseUuid, "PO-1001", decisionId, snapshotId, payloadHash, bundleId, 1,
+                        first.id(), first.receiptId(), first.receiptLineId(), first.purchaseOrderLineId(),
+                        first.receiptLineVersion(), 1))
                 .isInstanceOf(DataAccessException.class)
                 .hasMessageContaining("exceeds confirmed quantity");
+
+        // Duplicate allocation of the same decision/line/receipt.
+        insertAllocation(caseUuid, "PO-1001", decisionId, snapshotId, payloadHash, bundleId, 1,
+                second.id(), second.receiptId(), second.receiptLineId(), second.purchaseOrderLineId(),
+                second.receiptLineVersion(), 1);
+        assertThatThrownBy(() -> insertAllocation(
+                        caseUuid, "PO-1001", decisionId, snapshotId, payloadHash, bundleId, 1,
+                        second.id(), second.receiptId(), second.receiptLineId(), second.purchaseOrderLineId(),
+                        second.receiptLineVersion(), 1))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        // Inactive receipt line cannot be consumed.
+        jdbc.update("update receipt_line_snapshot set active = false where id = ?", second.id());
+        assertThatThrownBy(() -> insertAllocation(
+                        caseUuid, "PO-1001", decisionId, snapshotId, payloadHash, bundleId, 1,
+                        second.id(), second.receiptId(), second.receiptLineId(), second.purchaseOrderLineId(),
+                        second.receiptLineVersion(), 1))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("inactive");
+
+        // Payment: arbitrary amount or key is rejected before the unique key.
+        assertThatThrownBy(() -> jdbc.update(
+                        "insert into payment_request (id, invoice_case_id, purchase_order_id, review_decision_id,"
+                                + " review_snapshot_id, review_payload_hash, evidence_bundle_id, external_request_key,"
+                                + " amount, currency, status, created_at)"
+                                + " values (?, ?, 'PO-1001', ?, ?, ?, ?, ?, 1, 'KRW', 'PENDING', now())",
+                        UUID.randomUUID(), caseUuid, decisionId, snapshotId, payloadHash, bundleId,
+                        "PAYMENT:" + caseId + ":" + snapshotId))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update(
+                        "insert into payment_request (id, invoice_case_id, purchase_order_id, review_decision_id,"
+                                + " review_snapshot_id, review_payload_hash, evidence_bundle_id, external_request_key,"
+                                + " amount, currency, status, created_at)"
+                                + " values (?, ?, 'PO-1001', ?, ?, ?, ?, 'ARBITRARY', 150000, 'KRW',"
+                                + " 'PENDING', now())",
+                        UUID.randomUUID(), caseUuid, decisionId, snapshotId, payloadHash, bundleId))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        // Payment subject/money/key are immutable and the row is not deletable.
+        UUID paymentId = jdbc.queryForObject(
+                "select id from payment_request where invoice_case_id = ?", UUID.class, caseUuid);
+        assertThatThrownBy(() -> jdbc.update("update payment_request set amount = 1 where id = ?", paymentId))
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("immutable");
+        assertThatThrownBy(() -> jdbc.update(
+                        "update payment_request set external_request_key = 'x' where id = ?", paymentId))
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("immutable");
+        assertThatThrownBy(() -> jdbc.update("delete from payment_request where id = ?", paymentId))
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("not deletable");
 
         // Allocations are append-only.
         UUID allocationId = jdbc.queryForObject(
@@ -459,27 +546,55 @@ class ApprovalWorkflowIntegrationTest extends AbstractPostgresIntegrationTest {
 
     private int insertAllocation(
             UUID caseId,
+            String purchaseOrderId,
             UUID decisionId,
             UUID snapshotId,
+            String reviewPayloadHash,
             UUID bundleId,
+            int invoiceLineNumber,
             UUID receiptLineSnapshotId,
             String receiptId,
             String receiptLineId,
+            String purchaseOrderLineId,
+            long receiptLineVersion,
             int quantity) {
         return jdbc.update(
                 "insert into receipt_allocation (id, invoice_case_id, purchase_order_id, review_decision_id,"
-                        + " review_snapshot_id, evidence_bundle_id, invoice_line_number, receipt_line_snapshot_id,"
-                        + " receipt_id, receipt_line_id, allocated_quantity, created_at)"
-                        + " values (?, ?, 'PO-1001', ?, ?, ?, 1, ?, ?, ?, ?, now())",
+                        + " review_snapshot_id, review_payload_hash, evidence_bundle_id, invoice_line_number,"
+                        + " receipt_line_snapshot_id, receipt_id, receipt_line_id, purchase_order_line_id,"
+                        + " receipt_line_version, allocated_quantity, created_at)"
+                        + " values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())",
                 UUID.randomUUID(),
                 caseId,
+                purchaseOrderId,
                 decisionId,
                 snapshotId,
+                reviewPayloadHash,
                 bundleId,
+                invoiceLineNumber,
                 receiptLineSnapshotId,
                 receiptId,
                 receiptLineId,
+                purchaseOrderLineId,
+                receiptLineVersion,
                 quantity);
+    }
+
+    private ReceiptFact receiptFact(String receiptLineId) {
+        return jdbc.queryForObject(
+                "select id, receipt_id, receipt_line_id, purchase_order_line_id, receipt_line_version"
+                        + " from receipt_line_snapshot where receipt_line_id = ?",
+                (rs, rowNum) -> new ReceiptFact(
+                        rs.getObject("id", UUID.class),
+                        rs.getString("receipt_id"),
+                        rs.getString("receipt_line_id"),
+                        rs.getString("purchase_order_line_id"),
+                        rs.getLong("receipt_line_version")),
+                receiptLineId);
+    }
+
+    private record ReceiptFact(
+            UUID id, String receiptId, String receiptLineId, String purchaseOrderLineId, long receiptLineVersion) {
     }
 
     private String submittedCase(int lineNumber, String itemName, int quantity, long unitPrice, String confirmedItemId)
@@ -578,12 +693,28 @@ class ApprovalWorkflowIntegrationTest extends AbstractPostgresIntegrationTest {
         return read(result);
     }
 
+    private void reject(String caseId, String snapshotId, String hash) throws Exception {
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("requestId", "reject-1");
+        body.put("expectedCaseVersion", currentCaseVersion(caseId));
+        body.put("reviewSnapshotId", snapshotId);
+        body.put("reviewPayloadHash", hash);
+        body.put("reason", "rejected for test");
+        MvcResult result = mockMvc.perform(post("/api/invoice-cases/{id}/reject", caseId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(body)))
+                .andReturn();
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+    }
+
     private JsonNode approve(
             String caseId, String requestId, long expectedVersion, String snapshotId, String hash, int expectedStatus)
             throws Exception {
         MvcResult result = mockMvc.perform(approveRaw(caseId, requestId, expectedVersion, snapshotId, hash))
                 .andReturn();
-        assertThat(result.getResponse().getStatus()).isEqualTo(expectedStatus);
+        assertThat(result.getResponse().getStatus())
+                .as(result.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                .isEqualTo(expectedStatus);
         return read(result);
     }
 

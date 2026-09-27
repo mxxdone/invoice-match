@@ -164,14 +164,17 @@ class AuditMigrationTest extends AbstractPostgresIntegrationTest {
     }
 
     @Test
-    void auditEntryRejectsUnknownActionAndAllowsApprove() {
+    void auditEntryRejectsUnknownActionAndMisdirectedApprove() {
         UUID caseId = seedCase("DRAFT", 1);
 
         assertThatThrownBy(() -> insertAudit(
                         caseId, "submitter", "SUBMITTER", "CASE", caseId.toString(), 1, "NOT_AN_ACTION"))
                 .isInstanceOf(DataIntegrityViolationException.class);
-        // P1-07 V7 extends the audit action vocabulary with APPROVE.
-        insertAudit(caseId, "approver", "APPROVER", "CASE", caseId.toString(), 1, "APPROVE");
+        // P1-07 V7 allows APPROVE but requires it to target the exact APPROVED
+        // decision; a CASE-targeted APPROVE is rejected by the extended trigger.
+        assertThatThrownBy(() -> insertAudit(
+                        caseId, "approver", "APPROVER", "CASE", caseId.toString(), 1, "APPROVE"))
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test

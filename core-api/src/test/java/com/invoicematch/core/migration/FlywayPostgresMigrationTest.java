@@ -375,7 +375,7 @@ class FlywayPostgresMigrationTest extends AbstractPostgresIntegrationTest {
         jdbc.update(
                 "insert into review_decision (id, invoice_case_id, review_snapshot_id, decision_number, decision,"
                         + " decided_by, payload_hash, decided_at) "
-                        + "values (?, ?, ?, 1, 'APPROVED', 'approver-1', ?, now())",
+                        + "values (?, ?, ?, 1, 'SUPPLEMENT_REQUESTED', 'approver-1', ?, now())",
                 decisionId,
                 caseId,
                 snapshotId,

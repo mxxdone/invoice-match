@@ -108,7 +108,7 @@ public class MatchEngine {
 
         ObjectNode payload = buildPayload(input, invoiceLines, mappingsByLine, outcomes, orderedExceptions, normal);
         String json = write(payload);
-        return new MatchComputation(json, sha256Hex(json));
+        return new MatchComputation(json, sha256Hex(json), normal, List.copyOf(outcomes));
     }
 
     /**

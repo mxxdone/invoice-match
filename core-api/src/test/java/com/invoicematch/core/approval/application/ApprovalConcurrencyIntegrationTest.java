@@ -43,6 +43,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Real PostgreSQL concurrency and rollback tests for P1-07 approval.
@@ -112,6 +115,9 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
 
     @Autowired
     private JdbcTemplate jdbc;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @BeforeEach
     void setUp() {
@@ -296,6 +302,67 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
         assertThat(count("payment_request")).isZero();
     }
 
+    @Test
+    void approvalSuspendsTheCallerTransactionBeforeTheExternalFetch() {
+        UUID caseId = frozenCase("INV-1", 40);
+        ApprovalTarget target = target(caseId);
+        UUID blocker = frozenCase("INV-BLOCK", 1);
+
+        TransactionTemplate callerTransaction = new TransactionTemplate(transactionManager);
+        AtomicReference<Object> result = new AtomicReference<>();
+        callerTransaction.executeWithoutResult(status -> {
+            // Hold a row lock in the caller transaction. If approval did not
+            // suspend it, the external fetch would run with this transaction and
+            // lock still active.
+            jdbc.queryForList("select id from invoice_case where id = ? for update", blocker);
+            result.set(attempt(target));
+        });
+
+        assertThat(INTERCEPTOR.externalFetchSawActiveTransaction()).isFalse();
+        assertThat(result.get()).isInstanceOf(ApprovalResult.class);
+        assertThat(count("payment_request")).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentApprovalsSharingTwoReceiptLinesAreAllOrNothing() throws Exception {
+        STUB.respond(200, sharedTwoLinePayload().toJson());
+        UUID first = frozenCase("INV-1", 40);
+        UUID second = frozenCase("INV-2", 40);
+        ApprovalTarget firstTarget = target(first);
+        ApprovalTarget secondTarget = target(second);
+
+        INTERCEPTOR.armExternalFetchBarrier(2);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<Object> a = pool.submit(() -> attempt(firstTarget));
+            Future<Object> b = pool.submit(() -> attempt(secondTarget));
+
+            Object resultA = a.get(30, TimeUnit.SECONDS);
+            Object resultB = b.get(30, TimeUnit.SECONDS);
+            long successes = List.of(resultA, resultB).stream()
+                    .filter(r -> r instanceof ApprovalResult)
+                    .count();
+            assertThat(successes).isEqualTo(1);
+            assertThat(List.of(resultA, resultB)).anyMatch(r -> r instanceof InsufficientReceiptBalanceException);
+
+            // The winner wrote its whole plan (both receipt lines) or nothing.
+            assertThat(count("receipt_allocation")).isEqualTo(2);
+            assertThat(count("payment_request")).isEqualTo(1);
+            assertThat(jdbc.queryForObject(
+                            "select coalesce(sum(allocated_quantity), 0) from receipt_allocation", Long.class))
+                    .isEqualTo(40L);
+            assertThat(jdbc.queryForObject(
+                            "select count(*) from invoice_case where status = 'EXPORT_PENDING'", Integer.class))
+                    .isEqualTo(1);
+            assertThat(jdbc.queryForObject(
+                            "select count(*) from invoice_case where status = 'REVIEW_PENDING'", Integer.class))
+                    .isEqualTo(1);
+        } finally {
+            pool.shutdownNow();
+            INTERCEPTOR.reset();
+        }
+    }
+
     private Object attempt(ApprovalTarget target) {
         try {
             return TestActors.call("approver", "APPROVER", () -> approvals
@@ -372,6 +439,16 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
                         PurchasingPayloads.receiptLine("RCL-1001-1-1", 2, "POL-1001-1", 60));
     }
 
+    private PurchasingPayloads sharedTwoLinePayload() {
+        return new PurchasingPayloads()
+                .snapshotVersion(5)
+                .addLine("POL-1001-1", ITEM_A, "Premium Copy Paper A4 80g", 100, 2500)
+                .addReceipt("RCV-A-1001", "CONFIRMED", "2026-01-05", 2,
+                        PurchasingPayloads.receiptLine("RCL-A-1001", 2, "POL-1001-1", 30))
+                .addReceipt("RCV-B-1001", "CONFIRMED", "2026-01-06", 2,
+                        PurchasingPayloads.receiptLine("RCL-B-1001", 2, "POL-1001-1", 30));
+    }
+
     private PurchasingPayloads multiLinePayload(String purchaseOrderId) {
         String lineId = "POL-" + purchaseOrderId + "-1";
         return new PurchasingPayloads()
@@ -412,7 +489,10 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
     enum ApprovalInterceptorStage {
         DECISION,
         ALLOCATION,
-        PAYMENT
+        PAYMENT,
+        CASE_TRANSITION,
+        AUDIT,
+        IDEMPOTENCY
     }
 
     /**
@@ -426,6 +506,7 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
         private volatile CountDownLatch purchaseOrderLockedReached;
         private volatile CountDownLatch purchaseOrderLockResume;
         private final AtomicReference<ApprovalInterceptorStage> failAt = new AtomicReference<>();
+        private volatile Boolean externalFetchTransactionActive;
 
         void reset() {
             externalFetchReached = null;
@@ -433,6 +514,11 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
             purchaseOrderLockedReached = null;
             purchaseOrderLockResume = null;
             failAt.set(null);
+            externalFetchTransactionActive = null;
+        }
+
+        Boolean externalFetchSawActiveTransaction() {
+            return externalFetchTransactionActive;
         }
 
         void armExternalFetchBarrier(int parties) {
@@ -470,6 +556,7 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
 
         @Override
         public void afterExternalFetch(UUID caseId) {
+            externalFetchTransactionActive = TransactionSynchronizationManager.isActualTransactionActive();
             CountDownLatch reached = externalFetchReached;
             CountDownLatch resume = externalFetchResume;
             if (reached == null) {
@@ -510,6 +597,21 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
         @Override
         public void afterPaymentRequestWritten(UUID caseId) {
             failIfStage(ApprovalInterceptorStage.PAYMENT);
+        }
+
+        @Override
+        public void afterCaseTransitioned(UUID caseId) {
+            failIfStage(ApprovalInterceptorStage.CASE_TRANSITION);
+        }
+
+        @Override
+        public void afterAuditRecorded(UUID caseId) {
+            failIfStage(ApprovalInterceptorStage.AUDIT);
+        }
+
+        @Override
+        public void afterIdempotencyRecorded(UUID caseId) {
+            failIfStage(ApprovalInterceptorStage.IDEMPOTENCY);
         }
     }
 }

@@ -325,11 +325,23 @@ decision, the payment request and the audit, then move to `EXPORT_PENDING`.
 `ReceiptAllocation` is append-only (`UPDATE`/`DELETE` rejected), references the
 exact case, approved decision, snapshot/evidence bundle and receipt line with
 same-case composite foreign keys, and a database trigger locks the receipt line
-and rejects any insert that would exceed the externally confirmed quantity.
-`PaymentRequest` is created exactly once per approval with the deterministic
-global key `PAYMENT:{caseId}:{snapshotId}`, the frozen KRW amount, and a DB
-unique on `(case, snapshot)`. P1-08 adds the Outbox and ERP relay; this ticket
-creates only the internal `PENDING` record.
+and rejects any insert that would exceed the externally confirmed quantity. The
+stored snapshot/match/bundle JSON is never trusted: the approval transaction
+independently rebuilds the canonical evidence payload from the authoritative
+sealed draft lines, reruns the deterministic match over the current purchasing
+facts and effective mappings, and rebuilds the canonical review snapshot with
+the existing payload builder, comparing hash and canonical payload before
+deriving the typed allocation plan and amount (checked arithmetic). A receipt
+allocation INSERT is additionally guarded by a trigger proving the decision is
+APPROVED and belongs to the exact case/snapshot/hash, the invoice line belongs
+to the bundle's sealed draft, and the receipt line matches the same purchase
+order, stored external ids, version and active state, with a unique key per
+decision/line/receipt. `PaymentRequest` is created exactly once per approval with
+the deterministic global key `PAYMENT:{caseId}:{snapshotId}`, the frozen KRW
+amount (positive), and a DB check, a composite FK binding the exact APPROVED
+decision subject and approved amount/currency, and an immutability trigger that
+allows only delivery-status changes (P1-08) and rejects DELETE. P1-08 adds the
+Outbox and ERP relay; this ticket creates only the internal `PENDING` record.
 
 A shared receipt line is the concurrency boundary: with remaining 60 and two
 concurrent approvals of 40 each, exactly one succeeds and the loser gets `409`

@@ -347,6 +347,27 @@ reflection 기반 경계 테스트와 직접 service 호출 테스트로 공개 
 
 관련 커밋: `69dde46`
 
+## P1-07 — 저장 JSON을 신뢰하지 않는 승인 대상 독립 재구성과 관계 봉인
+
+### 문제
+
+초기 P1-07 구현은 승인 트랜잭션에서 저장된 `review_snapshot`/`match_result`/`evidence_bundle`의 payload JSON을 파싱해 배분 계획과 금액을 읽었다. payload가 append-only라도 raw SQL로 다른 해시를 가진 행을 넣거나(jsonb는 key 순서를 보존하지 않아 재현성도 약함) FK가 표현하지 못하는 관계(승인 결정 종류, 동결 draft 라인, external receipt id/version, active 여부)는 위조될 수 있었다. 또한 직접 서비스 호출이 기존 트랜잭션 안에서 이뤄지면 외부 HTTP가 호출자 잠금을 쥔 채 실행될 수 있었다.
+
+### 해결
+
+- 승인 트랜잭션 안에서 권위 있는 관계형 사실(케이스 헤더 + 봉인된 draft 라인)로 evidence canonical payload/hash를 다시 만들고, 현재 구매 사실과 유효 매핑으로 `MatchEngine`을 재실행해 match payload/hash와 source 컬럼을, 다시 `ReviewSnapshotPayloadBuilder`로 snapshot payload/hash를 재구성해 저장값과 비교한다.
+- 배분 계획과 금액은 재계산된 typed match 결과에서만 유도하고, JSON `asInt/asLong` 강제 파싱을 제거했다(checked `Money`/`Quantity`).
+- `receipt_allocation`에 승인 결정 종류·동결 draft 라인·external receipt id/version·active를 INSERT 트리거로 강제하고, `(decision, invoice line, receipt line)` 유일성을 걸었다.
+- `payment_request`는 승인 결정의 `(case, snapshot, hash, approved amount/currency)` 복합 FK로 금액·주체를 고정하고, 결정적 외부 key CHECK + UPDATE/DELETE 보호 트리거를 추가했다.
+- V6 감사 검증 함수를 V7에서 교체(V6 파일 불변)해 APPROVE가 실제 APPROVED 결정·actor·payment·allocation 합계·상태 전이를 증명하도록 했다.
+- `ApprovalApplicationService`는 `NOT_SUPPORTED`로 호출자 트랜잭션을 중단해 외부 조회가 트랜잭션/잠금 없이 실행되게 했다.
+
+### 검증과 교훈
+
+위조 evidence/match/snapshot payload·hash, 임의 receipt date/ID, 잘못된 타입, overflow, REJECTED 결정, 교차 사건, 중복 배분, 비활성 검수, 임의 지급 금액/key, 보호 필드 UPDATE/DELETE를 raw SQL로 재현해 모두 side effect 없이 실패함을 확인했다. 다른 계층이 소유한 직렬화 경계(jsonb key 재정렬)를 넘겨 값을 재사용하면 해시 재현성이 깨질 수 있으므로, 승인 같은 고위험 판단은 저장 JSON이 아니라 권위 있는 관계형 사실에서 다시 계산하고 DB 제약으로 관계를 봉인해야 한다.
+
+관련 커밋: `69dde46`, `6077d3d` 이후 P1-07 보강 커밋
+
 ## 앞으로 추가할 때의 형식
 
 새 사례는 아래 항목을 중심으로 짧게 추가한다.

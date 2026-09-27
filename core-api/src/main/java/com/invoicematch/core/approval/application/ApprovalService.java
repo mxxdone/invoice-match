@@ -31,15 +31,15 @@ import com.invoicematch.core.purchasingreference.persistence.PurchaseOrderSnapsh
 import com.invoicematch.core.purchasingreference.persistence.PurchaseOrderSnapshotRepository;
 import com.invoicematch.core.purchasingreference.persistence.ReceiptLineSnapshot;
 import com.invoicematch.core.purchasingreference.persistence.ReceiptLineSnapshotRepository;
+import com.invoicematch.core.purchasingreference.persistence.ReceiptSnapshot;
+import com.invoicematch.core.purchasingreference.persistence.ReceiptSnapshotRepository;
 import com.invoicematch.core.review.application.ReviewCurrentnessService;
 import com.invoicematch.core.review.domain.ReviewDecision;
-import com.invoicematch.core.review.domain.ReviewDecisionType;
 import com.invoicematch.core.review.domain.ReviewSnapshot;
 import com.invoicematch.core.review.domain.ReviewStateConflictException;
 import com.invoicematch.core.review.persistence.ReviewDecisionRepository;
 import com.invoicematch.core.security.Actor;
 import com.invoicematch.core.security.AuthorizationService;
-import com.invoicematch.core.security.Role;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -64,10 +64,13 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li>acquire the shared purchasing advisory lock;</li>
  *   <li>atomically apply the externally prepared purchasing snapshot (the
  *       external HTTP call already happened before this transaction);</li>
- *   <li>revalidate case state/version, exact snapshot id/hash, evidence bundle,
- *       match result, mapping watermark and purchasing currentness;</li>
- *   <li>derive the allocation intent from the frozen snapshot only;</li>
- *   <li>lock every referenced active receipt line in deterministic order;</li>
+ *   <li>revalidate case state/version, exact snapshot id/hash and purchasing
+ *       currentness;</li>
+ *   <li>independently reconstruct the evidence bundle, match result and review
+ *       snapshot from authoritative relational sources and derive a typed
+ *       allocation plan and amount ({@link ApprovalSubjectVerifier});</li>
+ *   <li>lock every referenced active receipt line in deterministic order after
+ *       validating the frozen receipt facts;</li>
  *   <li>recompute remaining = confirmed - committed allocations;</li>
  *   <li>write all allocations, the APPROVED decision, one PaymentRequest, the
  *       APPROVE audit and transition the case to EXPORT_PENDING — all or
@@ -87,11 +90,12 @@ public class ApprovalService {
     private final ReviewDecisionRepository decisions;
     private final MatchResultRepository matchResults;
     private final ReviewCurrentnessService currentness;
-    private final ApprovedAllocationPlanParser planParser;
+    private final ApprovalSubjectVerifier subjectVerifier;
     private final PurchaseOrderSnapshotRepository purchaseOrderSnapshots;
     private final PurchaseOrderSnapshotLock purchaseOrderLock;
     private final PurchasingReferenceService purchasingReferenceService;
     private final ReceiptLineSnapshotRepository receiptLines;
+    private final ReceiptSnapshotRepository receiptSnapshots;
     private final ReceiptAllocationRepository receiptAllocations;
     private final PaymentRequestRepository paymentRequests;
     private final RequestIdempotencyStore idempotency;
@@ -106,11 +110,12 @@ public class ApprovalService {
             ReviewDecisionRepository decisions,
             MatchResultRepository matchResults,
             ReviewCurrentnessService currentness,
-            ApprovedAllocationPlanParser planParser,
+            ApprovalSubjectVerifier subjectVerifier,
             PurchaseOrderSnapshotRepository purchaseOrderSnapshots,
             PurchaseOrderSnapshotLock purchaseOrderLock,
             PurchasingReferenceService purchasingReferenceService,
             ReceiptLineSnapshotRepository receiptLines,
+            ReceiptSnapshotRepository receiptSnapshots,
             ReceiptAllocationRepository receiptAllocations,
             PaymentRequestRepository paymentRequests,
             RequestIdempotencyStore idempotency,
@@ -122,11 +127,12 @@ public class ApprovalService {
         this.decisions = decisions;
         this.matchResults = matchResults;
         this.currentness = currentness;
-        this.planParser = planParser;
+        this.subjectVerifier = subjectVerifier;
         this.purchaseOrderSnapshots = purchaseOrderSnapshots;
         this.purchaseOrderLock = purchaseOrderLock;
         this.purchasingReferenceService = purchasingReferenceService;
         this.receiptLines = receiptLines;
+        this.receiptSnapshots = receiptSnapshots;
         this.receiptAllocations = receiptAllocations;
         this.paymentRequests = paymentRequests;
         this.idempotency = idempotency;
@@ -161,13 +167,19 @@ public class ApprovalService {
         // happened before this transaction and no lock was held during it.
         purchasingReferenceService.applyPrepared(preparedSnapshot);
 
-        // The authoritative current purchasing version/hash is exactly what this
+        // The authoritative current purchasing facts are exactly what this
         // transaction just applied. A REQUIRES_NEW read would not see the
         // uncommitted apply and could wrongly pass.
         PurchaseOrderSnapshot stored = purchaseOrderSnapshots
                 .findById(purchaseOrderId)
                 .orElseThrow(() -> new ReviewStateConflictException(
                         command.caseId(), "no current purchasing snapshot exists after refresh"));
+        if (stored.snapshotVersion() != preparedSnapshot.aggregate().snapshotVersion()
+                || !stored.payloadHash().equals(preparedSnapshot.canonicalHash())) {
+            throw new ReviewStateConflictException(
+                    command.caseId(),
+                    "the current purchasing snapshot changed concurrently and was not applied by this approval");
+        }
         long currentPurchasingVersion = stored.snapshotVersion();
         String currentPurchasingHash = stored.payloadHash();
 
@@ -177,30 +189,36 @@ public class ApprovalService {
                     command.caseId(),
                     "review payload hash does not match the target snapshot " + command.reviewSnapshotId());
         }
-        currentness.requireCurrent(
-                invoiceCase, snapshot, currentPurchasingVersion, currentPurchasingHash);
+        currentness.requireCurrent(invoiceCase, snapshot, currentPurchasingVersion, currentPurchasingHash);
 
         MatchResult matchResult = loadMatchResult(command.caseId(), snapshot);
-        ApprovedAllocationPlan plan =
-                planParser.parse(command.caseId(), snapshot.id(), snapshot.payload());
-        requireSameCaseMatchResult(command.caseId(), matchResult);
+        VerifiedApprovalSubject verified = subjectVerifier.verify(
+                invoiceCase,
+                snapshot,
+                matchResult,
+                preparedSnapshot.aggregate(),
+                currentPurchasingVersion,
+                currentPurchasingHash);
+        ApprovedAllocationPlan plan = verified.plan();
 
-        List<ResolvedAllocation> resolved = resolveAndLockReceiptLines(command.caseId(), snapshot, invoiceCase, plan);
+        List<ResolvedAllocation> resolved = resolveAndLockReceiptLines(
+                command.caseId(), snapshot, purchaseOrderId, plan);
 
         Instant now = clock.instant();
 
         int decisionNumber = decisions.maxDecisionNumber(command.caseId()) + 1;
-        ReviewDecision decision = ReviewDecision.record(
+        ReviewDecision decision = ReviewDecision.recordApproval(
                 UUID.randomUUID(),
                 command.caseId(),
                 snapshot.id(),
                 decisionNumber,
-                ReviewDecisionType.APPROVED,
                 actor.username(),
                 null,
                 decisionPayload(plan),
                 snapshot.payloadHash(),
-                now);
+                now,
+                plan.totalAmount(),
+                CURRENCY);
         decisions.saveAndFlush(decision);
         interceptor.afterDecisionWritten(command.caseId());
 
@@ -212,10 +230,13 @@ public class ApprovalService {
                         decision.id(),
                         snapshot.id(),
                         snapshot.evidenceBundleId(),
+                        snapshot.payloadHash(),
                         allocation.invoiceLineNumber(),
                         allocation.row().id(),
                         allocation.row().receiptId(),
                         allocation.row().receiptLineId(),
+                        allocation.row().purchaseOrderLineId(),
+                        allocation.row().receiptLineVersion(),
                         allocation.plannedQuantity(),
                         now))
                 .toList();
@@ -231,6 +252,7 @@ public class ApprovalService {
                 decision.id(),
                 snapshot.id(),
                 snapshot.evidenceBundleId(),
+                snapshot.payloadHash(),
                 externalRequestKey,
                 plan.totalAmount(),
                 CURRENCY,
@@ -240,6 +262,7 @@ public class ApprovalService {
 
         invoiceCase.transitionTo(InvoiceCaseStatus.EXPORT_PENDING, now);
         invoiceCase = invoiceCases.saveAndFlush(invoiceCase);
+        interceptor.afterCaseTransitioned(command.caseId());
 
         ApprovalResult result = new ApprovalResult(
                 command.caseId(),
@@ -263,6 +286,7 @@ public class ApprovalService {
         before.put("status", InvoiceCaseStatus.REVIEW_PENDING.name());
         before.put("caseVersion", command.expectedCaseVersion());
         before.put("reviewSnapshotId", snapshot.id().toString());
+        before.put("reviewPayloadHash", snapshot.payloadHash());
         Map<String, Object> after = new LinkedHashMap<>();
         after.put("status", invoiceCase.status().name());
         after.put("caseVersion", invoiceCase.version());
@@ -288,9 +312,11 @@ public class ApprovalService {
                 after,
                 command.requestId(),
                 now));
+        interceptor.afterAuditRecorded(command.caseId());
 
         idempotency.recordResponse(
                 SCOPE_APPROVE, resourceKey, actor.username(), command.requestId(), 200, result);
+        interceptor.afterIdempotencyRecorded(command.caseId());
         return CommandResult.ok(result);
     }
 
@@ -299,49 +325,59 @@ public class ApprovalService {
             throw new ReviewStateConflictException(
                     caseId, "the review snapshot has no source match result and cannot be approved");
         }
-        return matchResults
+        MatchResult matchResult = matchResults
                 .findById(snapshot.matchResultId())
                 .orElseThrow(() -> new ReviewStateConflictException(
                         caseId, "the source match result of the review snapshot no longer exists"));
-    }
-
-    private void requireSameCaseMatchResult(UUID caseId, MatchResult matchResult) {
         if (!matchResult.invoiceCaseId().equals(caseId)) {
             throw new ReviewStateConflictException(caseId, "the source match result belongs to another case");
         }
+        return matchResult;
     }
 
     /**
-     * Resolves the frozen plan to active receipt lines, locks them in the
-     * deterministic order (receipt date, external receipt line id, receipt id,
-     * stable UUID), recomputes {@code remaining = confirmed - committed}, and
-     * fails the whole approval if any line is missing or short. No allocation is
-     * written here.
+     * Validates the frozen plan against the current receipt facts, locks every
+     * referenced active receipt line in the deterministic order (receipt date,
+     * external receipt line id, receipt id, stable UUID), recomputes
+     * {@code remaining = confirmed - committed}, and fails the whole approval if
+     * any line is missing, mismatched or short. No allocation is written here.
      */
     private List<ResolvedAllocation> resolveAndLockReceiptLines(
-            UUID caseId, ReviewSnapshot snapshot, InvoiceCase invoiceCase, ApprovedAllocationPlan plan) {
+            UUID caseId, ReviewSnapshot snapshot, String purchaseOrderId, ApprovedAllocationPlan plan) {
         Map<ReceiptKey, ReceiptLineSnapshot> active = new LinkedHashMap<>();
-        for (ReceiptLineSnapshot row :
-                receiptLines.findByPurchaseOrderIdAndActiveTrue(invoiceCase.purchaseOrder().value())) {
+        for (ReceiptLineSnapshot row : receiptLines.findByPurchaseOrderIdAndActiveTrue(purchaseOrderId)) {
             active.put(new ReceiptKey(row.receiptId(), row.receiptLineId()), row);
+        }
+        Map<String, LocalDate> receiptDateByReceipt = new LinkedHashMap<>();
+        for (ReceiptSnapshot receipt : receiptSnapshots.findByPurchaseOrderIdAndActiveTrue(purchaseOrderId)) {
+            receiptDateByReceipt.put(receipt.receiptId(), receipt.receiptDate());
         }
 
         List<ResolvedAllocation> resolved = new ArrayList<>();
-        List<String> missing = new ArrayList<>();
+        List<String> mismatches = new ArrayList<>();
         for (PlannedReceiptAllocation planned : plan.allocations()) {
             ReceiptLineSnapshot row = active.get(new ReceiptKey(planned.receiptId(), planned.receiptLineId()));
             if (row == null) {
-                missing.add(planned.receiptId() + "/" + planned.receiptLineId());
+                mismatches.add("receipt line is not active: " + planned.receiptId() + "/" + planned.receiptLineId());
+                continue;
+            }
+            LocalDate currentDate = receiptDateByReceipt.get(row.receiptId());
+            if (!row.purchaseOrderId().equals(purchaseOrderId)
+                    || !row.purchaseOrderLineId().equals(planned.purchaseOrderLineId())
+                    || row.receiptLineVersion() != planned.receiptLineVersion()
+                    || row.confirmedQuantity().value() != planned.confirmedQuantity()
+                    || currentDate == null
+                    || !currentDate.equals(planned.receiptDate())) {
+                mismatches.add("frozen receipt fact does not match current purchasing facts: "
+                        + planned.receiptId() + "/" + planned.receiptLineId());
                 continue;
             }
             resolved.add(new ResolvedAllocation(
                     planned.invoiceLineNumber(), row, planned.receiptDate(), planned.plannedQuantity()));
         }
-        if (!missing.isEmpty()) {
+        if (!mismatches.isEmpty()) {
             throw new ApprovalNotPermittedException(
-                    caseId,
-                    snapshot.id(),
-                    List.of("referenced receipt lines are not active in the current purchasing snapshot: " + missing));
+                    caseId, snapshot.id(), mismatches.stream().distinct().toList());
         }
 
         Map<UUID, LocalDate> receiptDateByRow = new LinkedHashMap<>();

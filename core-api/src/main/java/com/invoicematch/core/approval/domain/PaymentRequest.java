@@ -46,6 +46,9 @@ public class PaymentRequest {
     @Column(name = "evidence_bundle_id", nullable = false, updatable = false)
     private UUID evidenceBundleId;
 
+    @Column(name = "review_payload_hash", nullable = false, updatable = false, length = 128)
+    private String reviewPayloadHash;
+
     @Column(name = "external_request_key", nullable = false, updatable = false, length = 200)
     private String externalRequestKey;
 
@@ -72,6 +75,7 @@ public class PaymentRequest {
             UUID reviewDecisionId,
             UUID reviewSnapshotId,
             UUID evidenceBundleId,
+            String reviewPayloadHash,
             String externalRequestKey,
             Money amount,
             String currency,
@@ -83,11 +87,19 @@ public class PaymentRequest {
         this.reviewDecisionId = Objects.requireNonNull(reviewDecisionId, "reviewDecisionId");
         this.reviewSnapshotId = Objects.requireNonNull(reviewSnapshotId, "reviewSnapshotId");
         this.evidenceBundleId = Objects.requireNonNull(evidenceBundleId, "evidenceBundleId");
+        this.reviewPayloadHash = requireText(reviewPayloadHash, "reviewPayloadHash");
         this.externalRequestKey = requireText(externalRequestKey, "externalRequestKey");
         this.amount = Objects.requireNonNull(amount, "amount");
+        if (amount.isZero()) {
+            throw new DomainValidationException("PaymentRequest amount must be positive");
+        }
         this.currency = requireText(currency, "currency");
         this.status = Objects.requireNonNull(status, "status");
         this.createdAt = Objects.requireNonNull(createdAt, "createdAt");
+        if (!this.externalRequestKey.equals(externalRequestKey(invoiceCaseId, reviewSnapshotId))) {
+            throw new DomainValidationException(
+                    "PaymentRequest externalRequestKey must be the deterministic case/snapshot key");
+        }
     }
 
     public static PaymentRequest pending(
@@ -97,6 +109,7 @@ public class PaymentRequest {
             UUID reviewDecisionId,
             UUID reviewSnapshotId,
             UUID evidenceBundleId,
+            String reviewPayloadHash,
             String externalRequestKey,
             Money amount,
             String currency,
@@ -108,6 +121,7 @@ public class PaymentRequest {
                 reviewDecisionId,
                 reviewSnapshotId,
                 evidenceBundleId,
+                reviewPayloadHash,
                 externalRequestKey,
                 amount,
                 currency,
@@ -152,6 +166,10 @@ public class PaymentRequest {
 
     public UUID evidenceBundleId() {
         return evidenceBundleId;
+    }
+
+    public String reviewPayloadHash() {
+        return reviewPayloadHash;
     }
 
     public String externalRequestKey() {

@@ -46,6 +46,9 @@ public class ReceiptAllocation {
     @Column(name = "evidence_bundle_id", nullable = false, updatable = false)
     private UUID evidenceBundleId;
 
+    @Column(name = "review_payload_hash", nullable = false, updatable = false, length = 128)
+    private String reviewPayloadHash;
+
     @Column(name = "invoice_line_number", nullable = false, updatable = false)
     private int invoiceLineNumber;
 
@@ -57,6 +60,12 @@ public class ReceiptAllocation {
 
     @Column(name = "receipt_line_id", nullable = false, updatable = false, length = 64)
     private String receiptLineId;
+
+    @Column(name = "purchase_order_line_id", nullable = false, updatable = false, length = 64)
+    private String purchaseOrderLineId;
+
+    @Column(name = "receipt_line_version", nullable = false, updatable = false)
+    private long receiptLineVersion;
 
     @Column(name = "allocated_quantity", nullable = false, updatable = false)
     private int allocatedQuantity;
@@ -74,14 +83,20 @@ public class ReceiptAllocation {
             UUID reviewDecisionId,
             UUID reviewSnapshotId,
             UUID evidenceBundleId,
+            String reviewPayloadHash,
             int invoiceLineNumber,
             UUID receiptLineSnapshotId,
             String receiptId,
             String receiptLineId,
+            String purchaseOrderLineId,
+            long receiptLineVersion,
             int allocatedQuantity,
             Instant createdAt) {
         if (invoiceLineNumber <= 0) {
             throw new DomainValidationException("invoiceLineNumber must be positive: " + invoiceLineNumber);
+        }
+        if (receiptLineVersion < 0) {
+            throw new DomainValidationException("receiptLineVersion must not be negative: " + receiptLineVersion);
         }
         if (allocatedQuantity <= 0) {
             throw new DomainValidationException("allocatedQuantity must be positive: " + allocatedQuantity);
@@ -92,10 +107,13 @@ public class ReceiptAllocation {
         this.reviewDecisionId = Objects.requireNonNull(reviewDecisionId, "reviewDecisionId");
         this.reviewSnapshotId = Objects.requireNonNull(reviewSnapshotId, "reviewSnapshotId");
         this.evidenceBundleId = Objects.requireNonNull(evidenceBundleId, "evidenceBundleId");
+        this.reviewPayloadHash = requireText(reviewPayloadHash, "reviewPayloadHash");
         this.invoiceLineNumber = invoiceLineNumber;
         this.receiptLineSnapshotId = Objects.requireNonNull(receiptLineSnapshotId, "receiptLineSnapshotId");
         this.receiptId = requireText(receiptId, "receiptId");
         this.receiptLineId = requireText(receiptLineId, "receiptLineId");
+        this.purchaseOrderLineId = requireText(purchaseOrderLineId, "purchaseOrderLineId");
+        this.receiptLineVersion = receiptLineVersion;
         this.allocatedQuantity = allocatedQuantity;
         this.createdAt = Objects.requireNonNull(createdAt, "createdAt");
     }
@@ -107,10 +125,13 @@ public class ReceiptAllocation {
             UUID reviewDecisionId,
             UUID reviewSnapshotId,
             UUID evidenceBundleId,
+            String reviewPayloadHash,
             int invoiceLineNumber,
             UUID receiptLineSnapshotId,
             String receiptId,
             String receiptLineId,
+            String purchaseOrderLineId,
+            long receiptLineVersion,
             int allocatedQuantity,
             Instant createdAt) {
         return new ReceiptAllocation(
@@ -120,10 +141,13 @@ public class ReceiptAllocation {
                 reviewDecisionId,
                 reviewSnapshotId,
                 evidenceBundleId,
+                reviewPayloadHash,
                 invoiceLineNumber,
                 receiptLineSnapshotId,
                 receiptId,
                 receiptLineId,
+                purchaseOrderLineId,
+                receiptLineVersion,
                 allocatedQuantity,
                 createdAt);
     }
@@ -159,6 +183,10 @@ public class ReceiptAllocation {
         return evidenceBundleId;
     }
 
+    public String reviewPayloadHash() {
+        return reviewPayloadHash;
+    }
+
     public int invoiceLineNumber() {
         return invoiceLineNumber;
     }
@@ -173,6 +201,14 @@ public class ReceiptAllocation {
 
     public String receiptLineId() {
         return receiptLineId;
+    }
+
+    public String purchaseOrderLineId() {
+        return purchaseOrderLineId;
+    }
+
+    public long receiptLineVersion() {
+        return receiptLineVersion;
     }
 
     public int allocatedQuantity() {

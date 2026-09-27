@@ -17,6 +17,8 @@ import com.invoicematch.core.shared.domain.SupplierId;
 import java.util.Optional;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Orchestrates the approval write. The external purchasing fetch and validation
@@ -56,6 +58,13 @@ public class ApprovalApplicationService {
         this.interceptor = approvalInterceptors.getIfAvailable(() -> ApprovalInterceptor.NONE);
     }
 
+    /**
+     * Runs with {@link Propagation#NOT_SUPPORTED} so a direct call from an
+     * existing transaction suspends it: the external purchasing fetch below can
+     * never run while the caller's transaction or row locks are active. The
+     * write transaction is started afterwards by {@link ApprovalService}.
+     */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public CommandResult<ApprovalResult> approve(ApproveInvoiceCaseCommand command) {
         // Approval is an APPROVER action, enforced before any external call.
         authorization.requireRole(Role.APPROVER);

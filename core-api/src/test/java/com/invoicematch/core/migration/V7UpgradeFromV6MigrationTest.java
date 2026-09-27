@@ -67,15 +67,12 @@ class V7UpgradeFromV6MigrationTest extends AbstractPostgresIntegrationTest {
                     caseId);
             assertThat(preserved).isEqualTo(1);
 
-            // APPROVE is now a legal audit action.
-            upgradeJdbc.update(
-                    "insert into audit_entry (id, invoice_case_id, occurred_at, actor, actor_roles, action,"
-                            + " target_type, target_id, business_version, request_id, trace_id)"
-                            + " values (?, ?, now(), 'approver', 'APPROVER', 'APPROVE', 'CASE', ?, 0,"
-                            + " 'approve-req', 'trc-approve')",
-                    UUID.randomUUID(),
-                    caseId,
-                    caseId.toString());
+            // APPROVE became a legal audit action and the V7 trigger replaced the
+            // V6 validation without touching V6.
+            String actionCheck = upgradeJdbc.queryForObject(
+                    "select pg_get_constraintdef(oid) from pg_constraint where conname = 'ck_audit_entry_action'",
+                    String.class);
+            assertThat(actionCheck).contains("APPROVE");
 
             for (String table : new String[] {"receipt_allocation", "payment_request"}) {
                 Integer tables = upgradeJdbc.queryForObject(
@@ -95,6 +92,16 @@ class V7UpgradeFromV6MigrationTest extends AbstractPostgresIntegrationTest {
                             + " and tgenabled <> 'D'",
                     Integer.class);
             assertThat(allocationGuard).isEqualTo(1);
+            Integer allocationValidate = upgradeJdbc.queryForObject(
+                    "select count(*) from pg_trigger where tgname = 'trg_receipt_allocation_validate'"
+                            + " and tgenabled <> 'D'",
+                    Integer.class);
+            assertThat(allocationValidate).isEqualTo(1);
+            Integer paymentProtect = upgradeJdbc.queryForObject(
+                    "select count(*) from pg_trigger where tgname = 'trg_payment_request_protect'"
+                            + " and tgenabled <> 'D'",
+                    Integer.class);
+            assertThat(paymentProtect).isEqualTo(1);
 
             Integer applied = upgradeJdbc.queryForObject(
                     "select count(*) from flyway_schema_history where version = '7' and success",

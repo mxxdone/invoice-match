@@ -1,6 +1,7 @@
 package com.invoicematch.core.review.domain;
 
 import com.invoicematch.core.shared.domain.DomainValidationException;
+import com.invoicematch.core.shared.domain.Money;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -76,6 +77,12 @@ public class ReviewDecision {
     @Column(name = "mapping_po_line_id", updatable = false, length = 64)
     private String mappingPoLineId;
 
+    @Column(name = "approved_amount", updatable = false)
+    private Money approvedAmount;
+
+    @Column(name = "approved_currency", updatable = false, length = 3)
+    private String approvedCurrency;
+
     protected ReviewDecision() {
     }
 
@@ -93,7 +100,9 @@ public class ReviewDecision {
             UUID mappingBundleId,
             Integer mappingLineNumber,
             String mappingItemId,
-            String mappingPoLineId) {
+            String mappingPoLineId,
+            Money approvedAmount,
+            String approvedCurrency) {
         if (decisionNumber <= 0) {
             throw new DomainValidationException("decisionNumber must be positive: " + decisionNumber);
         }
@@ -132,6 +141,18 @@ public class ReviewDecision {
         this.mappingLineNumber = mappingLineNumber;
         this.mappingItemId = mappingItemId;
         this.mappingPoLineId = mappingPoLineId;
+
+        if (decision == ReviewDecisionType.APPROVED) {
+            if (approvedAmount == null || approvedCurrency == null || approvedCurrency.isBlank()) {
+                throw new DomainValidationException(
+                        "An APPROVED decision requires an approved amount and currency");
+            }
+        } else if (approvedAmount != null || approvedCurrency != null) {
+            throw new DomainValidationException(
+                    "Only an APPROVED decision may carry an approved amount/currency, but decision was " + decision);
+        }
+        this.approvedAmount = approvedAmount;
+        this.approvedCurrency = approvedCurrency;
     }
 
     public static ReviewDecision record(
@@ -156,6 +177,8 @@ public class ReviewDecision {
                 decisionPayload,
                 payloadHash,
                 decidedAt,
+                null,
+                null,
                 null,
                 null,
                 null,
@@ -190,7 +213,45 @@ public class ReviewDecision {
                 mappingBundleId,
                 mappingLineNumber,
                 mappingItemId,
-                mappingPoLineId);
+                mappingPoLineId,
+                null,
+                null);
+    }
+
+    /**
+     * Records an APPROVED decision that binds the exact approved amount and
+     * currency, so a payment request can reference them with a composite foreign
+     * key instead of asserting them independently.
+     */
+    public static ReviewDecision recordApproval(
+            UUID id,
+            UUID invoiceCaseId,
+            UUID reviewSnapshotId,
+            int decisionNumber,
+            String decidedBy,
+            String reason,
+            String decisionPayload,
+            String payloadHash,
+            Instant decidedAt,
+            Money approvedAmount,
+            String approvedCurrency) {
+        return new ReviewDecision(
+                id,
+                invoiceCaseId,
+                reviewSnapshotId,
+                decisionNumber,
+                ReviewDecisionType.APPROVED,
+                decidedBy,
+                reason,
+                decisionPayload,
+                payloadHash,
+                decidedAt,
+                null,
+                null,
+                null,
+                null,
+                approvedAmount,
+                approvedCurrency);
     }
 
     public UUID id() {
@@ -247,6 +308,14 @@ public class ReviewDecision {
 
     public String mappingPoLineId() {
         return mappingPoLineId;
+    }
+
+    public Money approvedAmount() {
+        return approvedAmount;
+    }
+
+    public String approvedCurrency() {
+        return approvedCurrency;
     }
 
     @Override
