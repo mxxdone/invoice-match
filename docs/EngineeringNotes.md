@@ -327,6 +327,8 @@ reflection 기반 경계 테스트와 직접 service 호출 테스트로 공개 
 
 외부 version이 승인 전에 바뀌면 `STALE_REVIEW_TARGET(PURCHASING_SNAPSHOT)`로 side effect 없이 실패하고, 동시 refresh는 승인 advisory lock 뒤에서 직렬화되어 version이 섞이지 않음을 실제 PostgreSQL 테스트로 확인했다. 다른 트랜잭션 경계의 read를 재사용할 때는 isolation/propagation이 그 트랜잭션의 미확정 쓰기를 볼 수 있는지 먼저 확인해야 한다.
 
+관련 커밋: `69dde46`
+
 ## P1-07 — 검수 잔량 경합과 결정적 잠금 순서
 
 ### 문제
@@ -342,6 +344,8 @@ reflection 기반 경계 테스트와 직접 service 호출 테스트로 공개 
 ### 검증과 교훈
 
 실제 PostgreSQL에서 40+40 경합(한 건 성공, 패자는 현재 confirmed/allocated/remaining 409), 같은 requestId 병렬 승인(효과 1세트 + replay), 다른 PO 다중 라인 동시 승인(deadlock 없음), decision/allocation/payment 단계별 실패 주입(전량 rollback)을 반복 검증했다. 공유 자원 경합은 JVM 락이 아니라 DB 행 잠금과 제약으로 닫아야 한다.
+
+관련 커밋: `69dde46`
 
 ## 앞으로 추가할 때의 형식
 
