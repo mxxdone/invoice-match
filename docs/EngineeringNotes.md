@@ -232,6 +232,86 @@ V5가 기존 `MatchResult`, `ReviewSnapshot`, `ReviewDecision`에 새 source 필
 
 관련 커밋: `1d06710`, `8490b8c`
 
+## P1-06 — 인증 주체까지 포함해야 하는 멱등성 경계
+
+### 문제
+
+사건 생성의 멱등 key가 `NEW + requestId`만 사용하면, 서로 다른 제출자가 같은 request ID와 payload를 보냈을 때 두 번째 사용자가 첫 번째 사용자의 전체 생성 응답을 재생받을 수 있었다. 이후 사건 조회 권한은 차단되더라도 응답 단계에서 사건 ID와 청구 정보가 이미 노출된다.
+
+### 해결
+
+- 모든 멱등 레코드에 서버가 인증한 actor를 포함하고 `(scope, resource, actor, requestId)`를 고유 경계로 삼았다.
+- client가 보내는 `decidedBy`는 무시하고 인증 principal만 결정자와 감사 actor로 사용했다.
+- 기존 레코드는 로그인할 수 없는 예약 identity로 backfill했다.
+- 권한과 소유권을 controller뿐 아니라 사건 행을 잠근 write transaction 내부에서 다시 검사했다.
+- `submitted_by`는 DB trigger로 변경 불가능하게 만들고, 자기 승인 정책은 잠긴 authoritative `InvoiceCase`를 입력으로 받게 했다.
+
+### 검증과 교훈
+
+두 제출자·두 승인자·두 운영자가 같은 request ID를 사용하는 경우, 직접 application service를 호출하는 경우, dual-role 사용자의 자기 승인, 소유자 변경 SQL을 검증했다. 멱등성은 요청 모양만의 속성이 아니라 인증 주체와 권한 영역까지 포함한 보안 경계이며, controller 검사는 트랜잭션 내부의 authoritative authorization을 대체할 수 없다.
+
+관련 커밋: `fc8e22a`
+
+## P1-06 — append-only만으로 감사이력의 신뢰성이 생기지 않음
+
+### 문제
+
+감사 행의 UPDATE와 DELETE를 막아도 최초 INSERT 시 다른 사건의 대상을 넣거나 존재하지 않는 target, 임의 역할, 잘못된 업무 version을 기록할 수 있으면 위조된 이력이 영구 보존된다. 재매핑 이력에 이전 매핑이 없으면 무엇이 바뀌었는지도 복원할 수 없다.
+
+### 해결
+
+- target type별로 실제 대상 존재 여부와 동일 사건 소속을 DB trigger에서 검증했다.
+- actor role은 정규화된 허용 역할의 중복 없는 집합으로 제한했다.
+- 감사 INSERT 시 사건 version을 검증하고 사건 행에 공유 잠금을 획득했다.
+- 업무 변경과 감사 INSERT를 같은 transaction에 두어 감사 실패 시 업무 변경도 rollback되게 했다.
+- 재매핑에는 이전 매핑과 이후 매핑을 모두 기록하고, 아직 구현하지 않은 `APPROVE` action은 허용 목록에서 제외했다.
+
+### 검증과 교훈
+
+가짜·교차 사건 target, 잘못된 역할/version/action을 raw SQL로 삽입하는 시도와 감사 저장 실패를 주입한 transaction을 검사했다. 두 connection으로 감사 version 검증과 사건 변경 경합도 재현했다. 감사이력은 삭제 불가능성뿐 아니라 생성 시점의 참조 정합성, 원자성, 의미 있는 before/after가 함께 있어야 신뢰할 수 있다.
+
+관련 커밋: `fc8e22a`, `cbff43a`
+
+## P1-06 — 내부용 공개 메서드도 하나의 보안 API임
+
+### 문제
+
+HTTP endpoint는 권한·멱등성·감사를 적용했지만, 매핑 후 재대사를 위해 공개된 application service 메서드는 Spring 내부 호출만으로 대사 결과를 추가할 수 있었다. 승인자 context에서 이를 반복 호출하면 실제 매핑 결정 없이 결과를 쌓고 최신 검토 snapshot을 stale하게 만들 수 있었다.
+
+### 해결
+
+- 원시 대사 결과 저장 메서드를 private으로 닫았다.
+- 외부에서 호출 가능한 대사 쓰기는 OPERATOR 전용 멱등 실행만 남겼다.
+- 매핑 내부 재대사는 `review.application`의 package-private 협력자로 옮겨 전체 `recordMapping` transaction에서만 접근되게 했다.
+- 내부 재대사 결과는 별도 운영 재처리처럼 기록하지 않고 `ITEM_MAPPED` 감사에 후속 결과·snapshot identity를 포함했다.
+- 순수 계산기인 `MatchResultPlanner`는 repository를 갖지 않게 분리했다.
+
+### 검증과 교훈
+
+reflection 기반 경계 테스트와 직접 service 호출 테스트로 공개 저장 경로를 열거했다. 매핑 성공은 결과·snapshot·감사를 함께 만들고, replay나 stale 실패는 아무것도 추가하지 않음을 검증했다. 네트워크에 노출되지 않은 public 메서드도 다른 component와 향후 코드가 호출할 수 있는 보안 API이므로, 호출 관례보다 언어 수준의 접근 제한과 완전한 orchestration 경계가 안전하다.
+
+관련 커밋: `cbff43a`, `7eb675d`
+
+## P1-06 — 감사 payload의 크기와 canonical hash
+
+### 문제
+
+감사 JSON의 64 KiB 제한을 Java 문자 수로 계산하면 한글처럼 UTF-8에서 여러 byte를 쓰는 입력이 제한을 우회한다. 따옴표가 많은 문자열은 JSON escaping 후 크기가 커져 DTO상 유효한 요청이 감사 직렬화 단계에서 500을 만들었다. 또한 Map만 정렬하면 Jackson `ObjectNode`의 삽입 순서에 따라 의미가 같은 payload의 hash가 달라졌다.
+
+### 해결
+
+- 요청 body는 Content-Length와 무관하게 실제 stream을 제한하고 draft 라인 수에도 상한을 뒀다.
+- 큰 라인 값은 preview, 원문 길이와 SHA-256으로 요약해 의미 있는 before/after를 제한 안에 유지했다.
+- JSON을 새 tree로 복사한 뒤 모든 object key를 재귀 정렬하고 array 순서는 보존했다.
+- 동일한 canonical UTF-8 byte를 저장값, 크기 측정, `originalBytes`와 SHA-256 입력에 공통 사용했다.
+- 상한을 넘는 요약은 원문 대신 크기와 hash만 가진 결정적 envelope로 저장했다.
+
+### 검증과 교훈
+
+한글, escape 증폭, 정확한 byte 경계, chunked 요청, 100/101 라인, 반대 삽입 순서의 중첩 `ObjectNode`를 테스트했다. caller의 JSON은 변경되지 않고 배열 순서 차이는 유지되는 것도 확인했다. 자원 제한은 논리 문자 수가 아니라 실제 저장·전송 byte를 기준으로 해야 하며, hash 계약은 사용하는 모든 JSON 표현을 canonicalize해야 한다.
+
+관련 커밋: `cbff43a`, `7eb675d`, `488f36d`
+
 ## 앞으로 추가할 때의 형식
 
 새 사례는 아래 항목을 중심으로 짧게 추가한다.
