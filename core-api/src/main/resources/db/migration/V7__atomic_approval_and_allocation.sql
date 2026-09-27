@@ -47,12 +47,22 @@ ALTER TABLE receipt_line_snapshot
 
 ALTER TABLE review_decision
     ADD COLUMN approved_amount bigint,
-    ADD COLUMN approved_currency varchar(3);
+    ADD COLUMN approved_currency varchar(3),
+    ADD COLUMN approved_case_version_before bigint,
+    ADD COLUMN approved_case_version_after bigint;
 
 ALTER TABLE review_decision
     ADD CONSTRAINT ck_review_decision_approved_money CHECK (
-        (decision = 'APPROVED' AND approved_amount IS NOT NULL AND approved_currency = 'KRW')
-        OR (decision <> 'APPROVED' AND approved_amount IS NULL AND approved_currency IS NULL)) NOT VALID,
+        (decision = 'APPROVED'
+            AND approved_amount IS NOT NULL
+            AND approved_currency = 'KRW'
+            AND approved_case_version_before IS NOT NULL
+            AND approved_case_version_after = approved_case_version_before + 1)
+        OR (decision <> 'APPROVED'
+            AND approved_amount IS NULL
+            AND approved_currency IS NULL
+            AND approved_case_version_before IS NULL
+            AND approved_case_version_after IS NULL)) NOT VALID,
     ADD CONSTRAINT ck_review_decision_approved_amount CHECK (approved_amount IS NULL OR approved_amount > 0)
         NOT VALID,
     -- Exact decision subject: id + case + snapshot + payload hash. Referenced by
@@ -83,11 +93,13 @@ CREATE TABLE receipt_allocation (
     receipt_line_id varchar(64) NOT NULL,
     purchase_order_line_id varchar(64) NOT NULL,
     receipt_line_version bigint NOT NULL,
+    confirmed_quantity_at_approval integer NOT NULL,
     allocated_quantity integer NOT NULL,
     created_at timestamptz NOT NULL,
     CONSTRAINT ck_receipt_allocation_quantity CHECK (allocated_quantity > 0),
     CONSTRAINT ck_receipt_allocation_line_number CHECK (invoice_line_number > 0),
     CONSTRAINT ck_receipt_allocation_line_version CHECK (receipt_line_version >= 0),
+    CONSTRAINT ck_receipt_allocation_confirmed_quantity CHECK (confirmed_quantity_at_approval >= 0),
     CONSTRAINT fk_receipt_allocation_case_purchase_order
         FOREIGN KEY (invoice_case_id, purchase_order_id)
         REFERENCES invoice_case (id, purchase_order_id),
@@ -116,20 +128,32 @@ CREATE TRIGGER trg_receipt_allocation_immutable
     BEFORE UPDATE OR DELETE ON receipt_allocation
     FOR EACH ROW EXECUTE FUNCTION reject_immutable_change();
 
--- The allocation must reference an APPROVED decision of the exact case/snapshot/
--- hash, an evidence bundle of the case whose sealed draft actually holds the
--- invoice line, and a receipt line of the same purchase order with the stored
--- external ids, version and active state. Composite FKs already prove most of
--- this; this trigger adds the decision type and the draft-line/active/version
--- facts a static FK cannot express without breaking deactivation history.
-CREATE OR REPLACE FUNCTION validate_receipt_allocation() RETURNS trigger AS $$
+-- Single BEFORE INSERT guard. It acquires locks in the SAME canonical order the
+-- application uses (invoice case -> purchase order advisory -> receipt line),
+-- then validates the exact decision/snapshot/bundle/draft-line/receipt facts and
+-- finally the checked balance. One ordered trigger replaces separate
+-- alphabetically-ordered validate/balance triggers so a raw INSERT can never
+-- acquire receipt locks in a reverse order relative to an approval.
+CREATE OR REPLACE FUNCTION guard_receipt_allocation_insert() RETURNS trigger AS $$
 DECLARE
     decision_row record;
     snapshot_row record;
     invoice_line_found integer;
     receipt_row record;
+    allocated bigint;
 BEGIN
-    SELECT id, decision, invoice_case_id, review_snapshot_id, payload_hash
+    -- 1. authoritative case first.
+    PERFORM 1 FROM invoice_case WHERE id = NEW.invoice_case_id FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'receipt allocation references a missing case %', NEW.invoice_case_id
+            USING ERRCODE = '23514';
+    END IF;
+
+    -- 2. the same purchase order advisory lock the refresh/approval protocol uses.
+    PERFORM pg_advisory_xact_lock(1, hashtext(NEW.purchase_order_id));
+
+    -- 3. validate the exact decision subject.
+    SELECT id, decision, decision_number, invoice_case_id, review_snapshot_id, payload_hash
       INTO decision_row
       FROM review_decision
      WHERE id = NEW.review_decision_id;
@@ -176,8 +200,9 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
+    -- 4. lock the exact receipt line.
     SELECT purchase_order_id, receipt_id, receipt_line_id, purchase_order_line_id,
-           receipt_line_version, active
+           receipt_line_version, confirmed_quantity, active
       INTO receipt_row
       FROM receipt_line_snapshot
      WHERE id = NEW.receipt_line_snapshot_id
@@ -194,52 +219,60 @@ BEGIN
         OR receipt_row.receipt_id <> NEW.receipt_id
         OR receipt_row.receipt_line_id <> NEW.receipt_line_id
         OR receipt_row.purchase_order_line_id <> NEW.purchase_order_line_id
-        OR receipt_row.receipt_line_version <> NEW.receipt_line_version THEN
+        OR receipt_row.receipt_line_version <> NEW.receipt_line_version
+        OR receipt_row.confirmed_quantity <> NEW.confirmed_quantity_at_approval THEN
         RAISE EXCEPTION 'receipt allocation receipt facts do not match the stored receipt line %',
             NEW.receipt_line_snapshot_id
             USING ERRCODE = '23514';
     END IF;
 
+    -- 5. checked balance (the row lock is already held).
+    SELECT COALESCE(SUM(allocated_quantity), 0) INTO allocated
+      FROM receipt_allocation
+     WHERE receipt_line_snapshot_id = NEW.receipt_line_snapshot_id;
+    IF allocated + NEW.allocated_quantity > receipt_row.confirmed_quantity THEN
+        RAISE EXCEPTION 'receipt allocation % for line % exceeds confirmed quantity % (% already allocated)',
+            NEW.allocated_quantity, NEW.receipt_line_snapshot_id, receipt_row.confirmed_quantity, allocated
+            USING ERRCODE = '23514';
+    END IF;
+
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_receipt_allocation_validate
+CREATE TRIGGER trg_receipt_allocation_insert
     BEFORE INSERT ON receipt_allocation
-    FOR EACH ROW EXECUTE FUNCTION validate_receipt_allocation();
+    FOR EACH ROW EXECUTE FUNCTION guard_receipt_allocation_insert();
 
--- Over-allocation guard. It locks the exact receipt line row before reading the
--- committed allocation sum, so two concurrent inserts for the same line
--- serialize: the loser observes the winner's committed allocation and is
--- rejected. This holds for raw SQL too, so application and database agree.
-CREATE OR REPLACE FUNCTION guard_receipt_allocation_balance() RETURNS trigger AS $$
+-- A later purchasing refresh may increase a confirmed quantity or evolve a
+-- receipt line, but must never invalidate an already committed allocation: the
+-- confirmed quantity cannot drop below the committed allocation sum, and an
+-- active line with allocations cannot be deactivated. Increases, version
+-- evolution and reactivation stay allowed, and history (the allocation rows and
+-- their confirmed_quantity_at_approval) remains intact.
+CREATE OR REPLACE FUNCTION guard_receipt_line_allocation_on_update() RETURNS trigger AS $$
 DECLARE
-    confirmed integer;
     allocated bigint;
 BEGIN
-    SELECT confirmed_quantity INTO confirmed
-      FROM receipt_line_snapshot
-     WHERE id = NEW.receipt_line_snapshot_id
-       FOR UPDATE;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'receipt line % does not exist', NEW.receipt_line_snapshot_id
-            USING ERRCODE = '23503';
-    END IF;
     SELECT COALESCE(SUM(allocated_quantity), 0) INTO allocated
       FROM receipt_allocation
-     WHERE receipt_line_snapshot_id = NEW.receipt_line_snapshot_id;
-    IF allocated + NEW.allocated_quantity > confirmed THEN
-        RAISE EXCEPTION 'receipt allocation % for line % exceeds confirmed quantity % (% already allocated)',
-            NEW.allocated_quantity, NEW.receipt_line_snapshot_id, confirmed, allocated
+     WHERE receipt_line_snapshot_id = NEW.id;
+    IF NEW.confirmed_quantity < allocated THEN
+        RAISE EXCEPTION 'confirmed quantity % for receipt line % is below committed allocation %',
+            NEW.confirmed_quantity, NEW.id, allocated
+            USING ERRCODE = '23514';
+    END IF;
+    IF OLD.active AND NOT NEW.active AND allocated > 0 THEN
+        RAISE EXCEPTION 'receipt line % with committed allocations cannot be deactivated', NEW.id
             USING ERRCODE = '23514';
     END IF;
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_receipt_allocation_balance
-    BEFORE INSERT ON receipt_allocation
-    FOR EACH ROW EXECUTE FUNCTION guard_receipt_allocation_balance();
+CREATE TRIGGER trg_receipt_line_allocation_guard
+    BEFORE UPDATE ON receipt_line_snapshot
+    FOR EACH ROW EXECUTE FUNCTION guard_receipt_line_allocation_on_update();
 
 -- ---------------------------------------------------------------------------
 -- 3. PaymentRequest: exactly one protected internal record per approved snapshot
@@ -344,11 +377,10 @@ DECLARE
     current_version bigint;
     target_found integer;
     decision_row record;
-    payment_found integer;
-    allocation_count integer;
+    payment_row record;
+    allocation_count bigint;
     allocation_total bigint;
-    payment_amount bigint;
-    payment_currency text;
+    allocations_expected jsonb;
 BEGIN
     -- Actor roles must be a non-empty, duplicate-free, canonical subset.
     parts := string_to_array(NEW.actor_roles, ',');
@@ -433,13 +465,15 @@ BEGIN
     END IF;
 
     -- APPROVE must prove the approval from relational records, not from the
-    -- stated summary alone.
+    -- stated summary alone. Every field the application emits is verified, so a
+    -- forged numeric/string/allocation field is rejected even when totals match.
     IF NEW.action = 'APPROVE' THEN
         IF NEW.target_type <> 'REVIEW_DECISION' THEN
             RAISE EXCEPTION 'APPROVE audit target must be a REVIEW_DECISION'
                 USING ERRCODE = '23514';
         END IF;
-        SELECT id, decision, invoice_case_id, review_snapshot_id, payload_hash, decided_by
+        SELECT id, decision, decision_number, invoice_case_id, review_snapshot_id, payload_hash,
+               decided_by, approved_case_version_before, approved_case_version_after
           INTO decision_row
           FROM review_decision
          WHERE id = NEW.target_id::uuid;
@@ -461,48 +495,66 @@ BEGIN
         IF NEW.before_state IS NULL OR NEW.after_state IS NULL THEN
             RAISE EXCEPTION 'APPROVE audit requires before and after state' USING ERRCODE = '23514';
         END IF;
-        IF NEW.before_state->>'status' <> 'REVIEW_PENDING'
-            OR NEW.after_state->>'status' <> 'EXPORT_PENDING' THEN
+
+        -- States and before/after case versions must match the persisted
+        -- authoritative approval metadata on the decision.
+        IF NEW.before_state->>'status' IS DISTINCT FROM 'REVIEW_PENDING'
+            OR NEW.after_state->>'status' IS DISTINCT FROM 'EXPORT_PENDING' THEN
             RAISE EXCEPTION 'APPROVE audit must record REVIEW_PENDING -> EXPORT_PENDING'
                 USING ERRCODE = '23514';
         END IF;
-        IF NEW.after_state->>'reviewSnapshotId' IS NULL
-            OR NEW.after_state->>'reviewSnapshotId' <> decision_row.review_snapshot_id::text
-            OR NEW.after_state->>'reviewPayloadHash' IS NULL
-            OR NEW.after_state->>'reviewPayloadHash' <> decision_row.payload_hash THEN
-            RAISE EXCEPTION 'APPROVE audit snapshot fact does not match the approved decision'
+        IF NEW.before_state->>'caseVersion' IS DISTINCT FROM decision_row.approved_case_version_before::text
+            OR NEW.after_state->>'caseVersion' IS DISTINCT FROM decision_row.approved_case_version_after::text THEN
+            RAISE EXCEPTION 'APPROVE audit case versions do not match the approved decision'
+                USING ERRCODE = '23514';
+        END IF;
+        IF NEW.after_state->>'decisionId' IS DISTINCT FROM decision_row.id::text
+            OR NEW.after_state->>'decisionNumber' IS DISTINCT FROM decision_row.decision_number::text
+            OR NEW.after_state->>'reviewSnapshotId' IS DISTINCT FROM decision_row.review_snapshot_id::text
+            OR NEW.after_state->>'reviewPayloadHash' IS DISTINCT FROM decision_row.payload_hash THEN
+            RAISE EXCEPTION 'APPROVE audit decision/snapshot facts do not match the approved decision'
                 USING ERRCODE = '23514';
         END IF;
 
-        SELECT count(*) INTO payment_found
+        SELECT id, amount, currency, external_request_key
+          INTO payment_row
           FROM payment_request
          WHERE id = (NEW.after_state->>'paymentRequestId')::uuid
            AND review_decision_id = decision_row.id
            AND invoice_case_id = NEW.invoice_case_id
            AND review_snapshot_id = decision_row.review_snapshot_id
            AND review_payload_hash = decision_row.payload_hash;
-        IF payment_found <> 1 THEN
+        IF NOT FOUND THEN
             RAISE EXCEPTION 'APPROVE audit payment request does not match the approved decision'
                 USING ERRCODE = '23514';
         END IF;
-        SELECT amount, currency INTO payment_amount, payment_currency
-          FROM payment_request WHERE id = (NEW.after_state->>'paymentRequestId')::uuid;
-        IF NEW.after_state->>'amount' IS NULL
-            OR (NEW.after_state->>'amount')::bigint <> payment_amount
-            OR NEW.after_state->>'currency' <> payment_currency THEN
-            RAISE EXCEPTION 'APPROVE audit money fact does not match the payment request'
+        IF NEW.after_state->>'externalRequestKey' IS DISTINCT FROM payment_row.external_request_key
+            OR NEW.after_state->>'amount' IS DISTINCT FROM payment_row.amount::text
+            OR NEW.after_state->>'currency' IS DISTINCT FROM payment_row.currency THEN
+            RAISE EXCEPTION 'APPROVE audit money/key fact does not match the payment request'
                 USING ERRCODE = '23514';
         END IF;
 
         SELECT count(*), COALESCE(SUM(allocated_quantity), 0)
           INTO allocation_count, allocation_total
           FROM receipt_allocation
-         WHERE review_decision_id = decision_row.id
+         WHERE review_decision_id = NEW.target_id::uuid
            AND invoice_case_id = NEW.invoice_case_id;
-        IF NEW.after_state->>'allocationCount' IS NULL
-            OR (NEW.after_state->>'allocationCount')::bigint <> allocation_count
-            OR NEW.after_state->>'allocatedQuantity' IS NULL
-            OR (NEW.after_state->>'allocatedQuantity')::bigint <> allocation_total THEN
+
+        SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                   'invoiceLineNumber', a.invoice_line_number,
+                   'receiptId', a.receipt_id,
+                   'receiptLineId', a.receipt_line_id,
+                   'quantity', a.allocated_quantity)
+                   ORDER BY a.invoice_line_number, a.receipt_line_id, a.receipt_id), '[]'::jsonb)
+          INTO allocations_expected
+          FROM receipt_allocation a
+         WHERE a.review_decision_id = NEW.target_id::uuid
+           AND a.invoice_case_id = NEW.invoice_case_id;
+
+        IF NEW.after_state->>'allocationCount' IS DISTINCT FROM allocation_count::text
+            OR NEW.after_state->>'allocatedQuantity' IS DISTINCT FROM allocation_total::text
+            OR NEW.after_state->'allocations' IS DISTINCT FROM allocations_expected THEN
             RAISE EXCEPTION 'APPROVE audit allocation facts do not match the committed allocations'
                 USING ERRCODE = '23514';
         END IF;

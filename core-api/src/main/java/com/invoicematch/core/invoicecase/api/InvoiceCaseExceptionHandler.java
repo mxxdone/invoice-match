@@ -12,6 +12,7 @@ import com.invoicematch.core.purchasingreference.domain.ExternalReferenceMismatc
 import com.invoicematch.core.purchasingreference.domain.PurchaseOrderNotFoundException;
 import com.invoicematch.core.purchasingreference.domain.PurchasingReferenceException;
 import com.invoicematch.core.purchasingreference.domain.PurchasingSystemUnavailableException;
+import com.invoicematch.core.purchasingreference.domain.ReceiptAllocationProtectedException;
 import com.invoicematch.core.shared.domain.DomainValidationException;
 import com.invoicematch.core.shared.domain.NumericOverflowException;
 import java.util.stream.Collectors;
@@ -112,6 +113,11 @@ public class InvoiceCaseExceptionHandler {
     @ExceptionHandler(PurchasingSystemUnavailableException.class)
     public ResponseEntity<ApiError> handlePurchasingUnavailable(PurchasingSystemUnavailableException e) {
         return error(HttpStatus.SERVICE_UNAVAILABLE, "PURCHASING_SYSTEM_UNAVAILABLE", e.getMessage());
+    }
+
+    @ExceptionHandler(ReceiptAllocationProtectedException.class)
+    public ResponseEntity<ApiError> handleReceiptAllocationProtected(ReceiptAllocationProtectedException e) {
+        return error(HttpStatus.CONFLICT, "RECEIPT_ALLOCATION_CONFLICT", e.getMessage());
     }
 
     @ExceptionHandler(PurchasingReferenceException.class)

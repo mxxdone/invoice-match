@@ -491,12 +491,18 @@ class ApprovalWorkflowIntegrationTest extends AbstractPostgresIntegrationTest {
                         second.receiptLineVersion(), 1))
                 .isInstanceOf(DataIntegrityViolationException.class);
 
-        // Inactive receipt line cannot be consumed.
-        jdbc.update("update receipt_line_snapshot set active = false where id = ?", second.id());
+        // Inactive receipt line cannot be consumed. A fresh spare line (no
+        // allocations yet) can be deactivated safely, then allocation is rejected.
+        UUID spare = UUID.randomUUID();
+        jdbc.update(
+                "insert into receipt_line_snapshot (id, purchase_order_id, receipt_id, receipt_line_id,"
+                        + " purchase_order_line_id, receipt_line_version, confirmed_quantity, active)"
+                        + " values (?, 'PO-1001', 'RCV-1001-1', 'RCL-1001-1-9', 'POL-1001-1', 2, 5, true)",
+                spare);
+        jdbc.update("update receipt_line_snapshot set active = false where id = ?", spare);
         assertThatThrownBy(() -> insertAllocation(
                         caseUuid, "PO-1001", decisionId, snapshotId, payloadHash, bundleId, 1,
-                        second.id(), second.receiptId(), second.receiptLineId(), second.purchaseOrderLineId(),
-                        second.receiptLineVersion(), 1))
+                        spare, "RCV-1001-1", "RCL-1001-1-9", "POL-1001-1", 2, 1))
                 .isInstanceOf(DataIntegrityViolationException.class)
                 .hasMessageContaining("inactive");
 
@@ -558,12 +564,17 @@ class ApprovalWorkflowIntegrationTest extends AbstractPostgresIntegrationTest {
             String purchaseOrderLineId,
             long receiptLineVersion,
             int quantity) {
+        List<Integer> confirmed = jdbc.queryForList(
+                "select confirmed_quantity from receipt_line_snapshot where id = ?",
+                Integer.class,
+                receiptLineSnapshotId);
+        int confirmedQuantityAtApproval = confirmed.isEmpty() ? 0 : confirmed.get(0);
         return jdbc.update(
                 "insert into receipt_allocation (id, invoice_case_id, purchase_order_id, review_decision_id,"
                         + " review_snapshot_id, review_payload_hash, evidence_bundle_id, invoice_line_number,"
                         + " receipt_line_snapshot_id, receipt_id, receipt_line_id, purchase_order_line_id,"
-                        + " receipt_line_version, allocated_quantity, created_at)"
-                        + " values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())",
+                        + " receipt_line_version, confirmed_quantity_at_approval, allocated_quantity, created_at)"
+                        + " values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())",
                 UUID.randomUUID(),
                 caseId,
                 purchaseOrderId,
@@ -577,6 +588,7 @@ class ApprovalWorkflowIntegrationTest extends AbstractPostgresIntegrationTest {
                 receiptLineId,
                 purchaseOrderLineId,
                 receiptLineVersion,
+                confirmedQuantityAtApproval,
                 quantity);
     }
 
@@ -595,6 +607,168 @@ class ApprovalWorkflowIntegrationTest extends AbstractPostgresIntegrationTest {
 
     private record ReceiptFact(
             UUID id, String receiptId, String receiptLineId, String purchaseOrderLineId, long receiptLineVersion) {
+    }
+
+    @Test
+    void approveAuditProvesEveryEmittedField() throws Exception {
+        String caseId = submittedCase(1, "A4 Paper", 60, 2500, ITEM_A);
+        runMatch(caseId, "match-1");
+        JsonNode snapshot = freeze(caseId, "snap-1");
+        approve(caseId, "approve-1", currentCaseVersion(caseId),
+                snapshot.get("id").asText(), snapshot.get("payloadHash").asText(), 200);
+
+        UUID caseUuid = UUID.fromString(caseId);
+        long caseVersionAfter = jdbc.queryForObject(
+                "select version from invoice_case where id = ?", Long.class, caseUuid);
+        long caseVersionBefore = caseVersionAfter - 1;
+        UUID decisionId = jdbc.queryForObject(
+                "select id from review_decision where invoice_case_id = ? and decision = 'APPROVED'",
+                UUID.class,
+                caseUuid);
+        int decisionNumber = jdbc.queryForObject(
+                "select decision_number from review_decision where id = ?", Integer.class, decisionId);
+        UUID paymentId = jdbc.queryForObject(
+                "select id from payment_request where invoice_case_id = ?", UUID.class, caseUuid);
+        String externalKey = jdbc.queryForObject(
+                "select external_request_key from payment_request where id = ?", String.class, paymentId);
+        long amount = jdbc.queryForObject(
+                "select amount from payment_request where id = ?", Long.class, paymentId);
+        UUID allocationId = jdbc.queryForObject(
+                "select id from receipt_allocation where invoice_case_id = ?", UUID.class, caseUuid);
+        int allocatedQuantity = jdbc.queryForObject(
+                "select allocated_quantity from receipt_allocation where id = ?", Integer.class, allocationId);
+        String receiptId = jdbc.queryForObject(
+                "select receipt_id from receipt_allocation where id = ?", String.class, allocationId);
+        String receiptLineId = jdbc.queryForObject(
+                "select receipt_line_id from receipt_allocation where id = ?", String.class, allocationId);
+        String snapshotId = snapshot.get("id").asText();
+        String payloadHash = snapshot.get("payloadHash").asText();
+
+        // A correct APPROVE audit is accepted.
+        insertApproveAudit(caseId, decisionId, caseVersionAfter,
+                approveBeforeJson(caseVersionBefore, snapshotId, payloadHash),
+                approveAfterJson(caseVersionAfter, decisionId, decisionNumber, snapshotId, payloadHash, paymentId,
+                        externalKey, amount, allocatedQuantity,
+                        List.of(allocationJson(1, receiptId, receiptLineId, allocatedQuantity))));
+
+        // Every emitted field is independently verified: each forgery is rejected
+        // even when the allocation count/total still match.
+        assertThatThrownBy(() -> insertApproveAudit(caseId, decisionId, caseVersionAfter,
+                        approveBeforeJson(caseVersionBefore, snapshotId, payloadHash),
+                        approveAfterJson(caseVersionAfter, decisionId, decisionNumber, snapshotId, payloadHash,
+                                paymentId, externalKey, amount, allocatedQuantity + 1,
+                                List.of(allocationJson(1, receiptId, receiptLineId, allocatedQuantity + 1)))))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> insertApproveAudit(caseId, decisionId, caseVersionAfter,
+                        approveBeforeJson(caseVersionBefore, snapshotId, payloadHash),
+                        approveAfterJson(caseVersionAfter, decisionId, decisionNumber, snapshotId, payloadHash,
+                                paymentId, "WRONG-KEY", amount, allocatedQuantity,
+                                List.of(allocationJson(1, receiptId, receiptLineId, allocatedQuantity)))))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> insertApproveAudit(caseId, decisionId, caseVersionAfter,
+                        approveBeforeJson(caseVersionBefore - 1, snapshotId, payloadHash),
+                        approveAfterJson(caseVersionAfter, decisionId, decisionNumber, snapshotId, payloadHash,
+                                paymentId, externalKey, amount, allocatedQuantity,
+                                List.of(allocationJson(1, receiptId, receiptLineId, allocatedQuantity)))))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> insertApproveAudit(caseId, decisionId, caseVersionAfter,
+                        approveBeforeJson(caseVersionBefore, snapshotId, payloadHash),
+                        approveAfterJson(caseVersionAfter, decisionId, decisionNumber + 1, snapshotId, payloadHash,
+                                paymentId, externalKey, amount, allocatedQuantity,
+                                List.of(allocationJson(1, receiptId, receiptLineId, allocatedQuantity)))))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> insertApproveAudit(caseId, decisionId, caseVersionAfter,
+                        approveBeforeJson(caseVersionBefore, snapshotId, payloadHash),
+                        approveAfterJson(caseVersionAfter, decisionId, decisionNumber, snapshotId, payloadHash,
+                                paymentId, externalKey, amount, allocatedQuantity, List.of())))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> insertApproveAudit(caseId, "someone-else", "APPROVER", decisionId, caseVersionAfter,
+                        approveBeforeJson(caseVersionBefore, snapshotId, payloadHash),
+                        approveAfterJson(caseVersionAfter, decisionId, decisionNumber, snapshotId, payloadHash,
+                                paymentId, externalKey, amount, allocatedQuantity,
+                                List.of(allocationJson(1, receiptId, receiptLineId, allocatedQuantity)))))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        assertThat(jdbc.queryForObject(
+                        "select count(*) from audit_entry where invoice_case_id = ? and action = 'APPROVE'",
+                        Integer.class,
+                        caseUuid))
+                .isEqualTo(2);
+    }
+
+    private void insertApproveAudit(
+            String caseId, UUID decisionId, long businessVersion, String before, String after) {
+        insertApproveAudit(caseId, "approver", "APPROVER", decisionId, businessVersion, before, after);
+    }
+
+    private void insertApproveAudit(
+            String caseId,
+            String actor,
+            String roles,
+            UUID decisionId,
+            long businessVersion,
+            String before,
+            String after) {
+        jdbc.update(
+                "insert into audit_entry (id, invoice_case_id, occurred_at, actor, actor_roles, action,"
+                        + " target_type, target_id, business_version, before_state, after_state, request_id, trace_id)"
+                        + " values (?, ?, now(), ?, ?, 'APPROVE', 'REVIEW_DECISION', ?, ?, cast(? as jsonb),"
+                        + " cast(? as jsonb), 'audit-req', 'trc-audit')",
+                UUID.randomUUID(),
+                UUID.fromString(caseId),
+                actor,
+                roles,
+                decisionId.toString(),
+                businessVersion,
+                before,
+                after);
+    }
+
+    private String approveBeforeJson(long caseVersion, String snapshotId, String payloadHash) throws Exception {
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("status", "REVIEW_PENDING");
+        node.put("caseVersion", caseVersion);
+        node.put("reviewSnapshotId", snapshotId);
+        node.put("reviewPayloadHash", payloadHash);
+        return objectMapper.writeValueAsString(node);
+    }
+
+    private String approveAfterJson(
+            long caseVersion,
+            UUID decisionId,
+            int decisionNumber,
+            String snapshotId,
+            String payloadHash,
+            UUID paymentId,
+            String externalKey,
+            long amount,
+            long allocatedQuantity,
+            List<ObjectNode> allocations) throws Exception {
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("status", "EXPORT_PENDING");
+        node.put("caseVersion", caseVersion);
+        node.put("decisionId", decisionId.toString());
+        node.put("decisionNumber", decisionNumber);
+        node.put("reviewSnapshotId", snapshotId);
+        node.put("reviewPayloadHash", payloadHash);
+        node.put("paymentRequestId", paymentId.toString());
+        node.put("externalRequestKey", externalKey);
+        node.put("amount", amount);
+        node.put("currency", "KRW");
+        node.put("allocationCount", (long) allocations.size());
+        node.put("allocatedQuantity", allocatedQuantity);
+        ArrayNode array = node.putArray("allocations");
+        allocations.forEach(array::add);
+        return objectMapper.writeValueAsString(node);
+    }
+
+    private ObjectNode allocationJson(int invoiceLineNumber, String receiptId, String receiptLineId, int quantity) {
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("invoiceLineNumber", invoiceLineNumber);
+        node.put("receiptId", receiptId);
+        node.put("receiptLineId", receiptLineId);
+        node.put("quantity", quantity);
+        return node;
     }
 
     private String submittedCase(int lineNumber, String itemName, int quantity, long unitPrice, String confirmedItemId)

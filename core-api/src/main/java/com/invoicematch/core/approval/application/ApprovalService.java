@@ -205,6 +205,8 @@ public class ApprovalService {
                 command.caseId(), snapshot, purchaseOrderId, plan);
 
         Instant now = clock.instant();
+        long plannedQuantityTotal = sumPlannedQuantity(command.caseId(), snapshot.id(), plan);
+        long caseVersionBefore = invoiceCase.version();
 
         int decisionNumber = decisions.maxDecisionNumber(command.caseId()) + 1;
         ReviewDecision decision = ReviewDecision.recordApproval(
@@ -214,11 +216,13 @@ public class ApprovalService {
                 decisionNumber,
                 actor.username(),
                 null,
-                decisionPayload(plan),
+                decisionPayload(plan, plannedQuantityTotal),
                 snapshot.payloadHash(),
                 now,
                 plan.totalAmount(),
-                CURRENCY);
+                CURRENCY,
+                caseVersionBefore,
+                caseVersionBefore + 1);
         decisions.saveAndFlush(decision);
         interceptor.afterDecisionWritten(command.caseId());
 
@@ -237,12 +241,25 @@ public class ApprovalService {
                         allocation.row().receiptLineId(),
                         allocation.row().purchaseOrderLineId(),
                         allocation.row().receiptLineVersion(),
+                        allocation.row().confirmedQuantity().value(),
                         allocation.plannedQuantity(),
                         now))
                 .toList();
         receiptAllocations.saveAll(allocations);
         receiptAllocations.flush();
         interceptor.afterAllocationsWritten(command.caseId());
+
+        // Canonical deterministic order for the result and the audited allocation
+        // array: invoice line, then receipt line, then receipt.
+        List<ReceiptAllocation> orderedAllocations = allocations.stream()
+                .sorted(Comparator.comparingInt(ReceiptAllocation::invoiceLineNumber)
+                        .thenComparing(ReceiptAllocation::receiptLineId)
+                        .thenComparing(ReceiptAllocation::receiptId))
+                .toList();
+        long allocatedQuantityTotal = ApprovalAggregates.sumAllocatedQuantity(orderedAllocations);
+        if (allocatedQuantityTotal != plannedQuantityTotal) {
+            throw new IllegalStateException("committed allocation total does not equal the planned total");
+        }
 
         String externalRequestKey = PaymentRequest.externalRequestKey(command.caseId(), snapshot.id());
         PaymentRequest paymentRequest = PaymentRequest.pending(
@@ -262,6 +279,9 @@ public class ApprovalService {
 
         invoiceCase.transitionTo(InvoiceCaseStatus.EXPORT_PENDING, now);
         invoiceCase = invoiceCases.saveAndFlush(invoiceCase);
+        if (invoiceCase.version() != caseVersionBefore + 1) {
+            throw new IllegalStateException("approved case version did not advance by exactly one");
+        }
         interceptor.afterCaseTransitioned(command.caseId());
 
         ApprovalResult result = new ApprovalResult(
@@ -276,7 +296,7 @@ public class ApprovalService {
                 externalRequestKey,
                 plan.totalAmount().amount(),
                 CURRENCY,
-                allocations.stream()
+                orderedAllocations.stream()
                         .map(a -> new ApprovedAllocation(
                                 a.invoiceLineNumber(), a.receiptId(), a.receiptLineId(), a.allocatedQuantity()))
                         .toList(),
@@ -284,7 +304,7 @@ public class ApprovalService {
 
         Map<String, Object> before = new LinkedHashMap<>();
         before.put("status", InvoiceCaseStatus.REVIEW_PENDING.name());
-        before.put("caseVersion", command.expectedCaseVersion());
+        before.put("caseVersion", caseVersionBefore);
         before.put("reviewSnapshotId", snapshot.id().toString());
         before.put("reviewPayloadHash", snapshot.payloadHash());
         Map<String, Object> after = new LinkedHashMap<>();
@@ -298,9 +318,9 @@ public class ApprovalService {
         after.put("externalRequestKey", externalRequestKey);
         after.put("amount", plan.totalAmount().amount());
         after.put("currency", CURRENCY);
-        after.put("allocationCount", allocations.size());
-        after.put("allocatedQuantity", allocations.stream().mapToInt(ReceiptAllocation::allocatedQuantity).sum());
-        after.put("allocations", allocations.stream().map(this::allocationSummary).toList());
+        after.put("allocationCount", (long) orderedAllocations.size());
+        after.put("allocatedQuantity", allocatedQuantityTotal);
+        after.put("allocations", orderedAllocations.stream().map(this::allocationSummary).toList());
         audit.record(new AuditEvent(
                 command.caseId(),
                 actor,
@@ -424,7 +444,7 @@ public class ApprovalService {
                         (int) confirmed,
                         allocated,
                         remaining,
-                        entry.getValue().intValue()));
+                        entry.getValue()));
             }
         }
         if (!shortfalls.isEmpty()) {
@@ -440,14 +460,21 @@ public class ApprovalService {
                 .toList();
     }
 
-    private String decisionPayload(ApprovedAllocationPlan plan) {
+    private long sumPlannedQuantity(UUID caseId, UUID snapshotId, ApprovedAllocationPlan plan) {
+        try {
+            return ApprovalAggregates.sumPlannedQuantity(plan.allocations());
+        } catch (ArithmeticException overflow) {
+            throw new ApprovalNotPermittedException(
+                    caseId, snapshotId, List.of("the approved allocation quantity total overflows"));
+        }
+    }
+
+    private String decisionPayload(ApprovedAllocationPlan plan, long plannedQuantityTotal) {
         ObjectNode node = mapper.createObjectNode();
         node.put("amount", plan.totalAmount().amount());
         node.put("currency", CURRENCY);
-        node.put("allocationCount", plan.allocations().size());
-        node.put(
-                "allocatedQuantity",
-                plan.allocations().stream().mapToInt(PlannedReceiptAllocation::plannedQuantity).sum());
+        node.put("allocationCount", (long) plan.allocations().size());
+        node.put("allocatedQuantity", plannedQuantityTotal);
         ArrayNode allocations = node.putArray("allocations");
         for (PlannedReceiptAllocation allocation : plan.allocations()) {
             ObjectNode item = allocations.addObject();

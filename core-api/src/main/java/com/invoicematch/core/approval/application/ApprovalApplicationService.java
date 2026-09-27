@@ -59,12 +59,15 @@ public class ApprovalApplicationService {
     }
 
     /**
-     * Runs with {@link Propagation#NOT_SUPPORTED} so a direct call from an
-     * existing transaction suspends it: the external purchasing fetch below can
-     * never run while the caller's transaction or row locks are active. The
-     * write transaction is started afterwards by {@link ApprovalService}.
+     * Runs with {@link Propagation#NEVER} so a call from any existing
+     * transaction is rejected immediately, before the method body and therefore
+     * before the external purchasing fetch: the fetch must only ever run with no
+     * caller transaction or locks. It never suspends an outer transaction and
+     * continues (that would retain the caller's locks and could deadlock while
+     * reacquiring the same case). The write transaction is started afterwards by
+     * {@link ApprovalService}.
      */
-    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @Transactional(propagation = Propagation.NEVER)
     public CommandResult<ApprovalResult> approve(ApproveInvoiceCaseCommand command) {
         // Approval is an APPROVER action, enforced before any external call.
         authorization.requireRole(Role.APPROVER);

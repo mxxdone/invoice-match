@@ -14,6 +14,7 @@ import com.invoicematch.core.matching.application.MatchingService;
 import com.invoicematch.core.matching.application.RunMatchCommand;
 import com.invoicematch.core.purchasingreference.application.PurchasingReferenceService;
 import com.invoicematch.core.purchasingreference.application.RefreshPurchaseOrderCommand;
+import com.invoicematch.core.purchasingreference.domain.ReceiptAllocationProtectedException;
 import com.invoicematch.core.review.application.FreezeReviewSnapshotCommand;
 import com.invoicematch.core.review.application.ReviewService;
 import com.invoicematch.core.review.domain.ReviewSnapshot;
@@ -40,9 +41,11 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.IllegalTransactionStateException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -253,6 +256,16 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
             assertThat(count("review_decision")).isZero();
             assertThat(count("receipt_allocation")).isZero();
             assertThat(count("payment_request")).isZero();
+            assertThat(jdbc.queryForObject(
+                            "select count(*) from audit_entry where invoice_case_id = ? and action = 'APPROVE'",
+                            Integer.class,
+                            caseId))
+                    .isZero();
+            assertThat(jdbc.queryForObject(
+                            "select count(*) from idempotency_record where request_id = ?",
+                            Integer.class,
+                            target.requestId()))
+                    .isZero();
             assertThat(currentStatus(caseId)).isEqualTo("REVIEW_PENDING");
             assertThat(remaining("RCL-1001-1-1")).isEqualTo(60);
         }
@@ -303,24 +316,32 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
     }
 
     @Test
-    void approvalSuspendsTheCallerTransactionBeforeTheExternalFetch() {
+    void approvalIsRejectedInsideAnOuterTransactionBeforeTheExternalFetch() {
         UUID caseId = frozenCase("INV-1", 40);
         ApprovalTarget target = target(caseId);
-        UUID blocker = frozenCase("INV-BLOCK", 1);
+        int fetchesBefore = STUB.requestCount();
 
         TransactionTemplate callerTransaction = new TransactionTemplate(transactionManager);
-        AtomicReference<Object> result = new AtomicReference<>();
+        AtomicReference<Object> thrown = new AtomicReference<>();
         callerTransaction.executeWithoutResult(status -> {
-            // Hold a row lock in the caller transaction. If approval did not
-            // suspend it, the external fetch would run with this transaction and
-            // lock still active.
-            jdbc.queryForList("select id from invoice_case where id = ? for update", blocker);
-            result.set(attempt(target));
+            // Hold a row lock on the SAME case the approval targets. With
+            // Propagation.NEVER, approval must fail immediately without running
+            // any body, HTTP call or nested transaction (so it can never deadlock
+            // reacquiring the case).
+            jdbc.queryForList("select id from invoice_case where id = ? for update", caseId);
+            try {
+                thrown.set(attempt(target));
+            } catch (RuntimeException e) {
+                thrown.set(e);
+            }
         });
 
-        assertThat(INTERCEPTOR.externalFetchSawActiveTransaction()).isFalse();
-        assertThat(result.get()).isInstanceOf(ApprovalResult.class);
-        assertThat(count("payment_request")).isEqualTo(1);
+        assertThat(thrown.get()).isInstanceOf(IllegalTransactionStateException.class);
+        assertThat(STUB.requestCount()).isEqualTo(fetchesBefore);
+        assertThat(INTERCEPTOR.externalFetchSawActiveTransaction()).isNull();
+        assertThat(count("receipt_allocation")).isZero();
+        assertThat(count("payment_request")).isZero();
+        assertThat(currentStatus(caseId)).isEqualTo("REVIEW_PENDING");
     }
 
     @Test
@@ -360,6 +381,137 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
         } finally {
             pool.shutdownNow();
             INTERCEPTOR.reset();
+        }
+    }
+
+    @Test
+    void refreshCannotReduceOrDeactivateAnAllocatedReceiptLine() {
+        UUID caseId = frozenCase("INV-1", 40);
+        assertThat(attempt(target(caseId))).isInstanceOf(ApprovalResult.class);
+        UUID receiptLineSnapshotId = jdbc.queryForObject(
+                "select id from receipt_line_snapshot where receipt_line_id = 'RCL-1001-1-1'", UUID.class);
+
+        // Decreasing below the committed allocation is rejected.
+        assertThatThrownBy(() -> jdbc.update(
+                        "update receipt_line_snapshot set confirmed_quantity = 0 where id = ?",
+                        receiptLineSnapshotId))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("below committed allocation");
+
+        // Deactivating a line with allocations is rejected.
+        assertThatThrownBy(() -> jdbc.update(
+                        "update receipt_line_snapshot set active = false where id = ?", receiptLineSnapshotId))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("cannot be deactivated");
+
+        // Increasing the confirmed quantity and evolving the version stays allowed.
+        jdbc.update("update receipt_line_snapshot set confirmed_quantity = 100, receipt_line_version = 3"
+                + " where id = ?", receiptLineSnapshotId);
+        assertThat(jdbc.queryForObject(
+                        "select confirmed_quantity from receipt_line_snapshot where id = ?",
+                        Integer.class,
+                        receiptLineSnapshotId))
+                .isEqualTo(100);
+
+        // History keeps proving the approved basis.
+        assertThat(jdbc.queryForObject(
+                        "select confirmed_quantity_at_approval from receipt_allocation where receipt_line_snapshot_id = ?",
+                        Integer.class,
+                        receiptLineSnapshotId))
+                .isEqualTo(60);
+    }
+
+    @Test
+    void refreshThroughTheStoreRejectsReducingAnAllocatedLineWithStableError() {
+        UUID caseId = frozenCase("INV-1", 40);
+        assertThat(attempt(target(caseId))).isInstanceOf(ApprovalResult.class);
+
+        PurchasingPayloads correction = sharedReceiptPayload()
+                .snapshotVersion(6)
+                .clearReceipts()
+                .addReceipt("RCV-1001-1", "CONFIRMED", "2026-01-05", 2,
+                        PurchasingPayloads.receiptLine("RCL-1001-1-1", 2, "POL-1001-1", 10));
+        STUB.respond(200, correction.toJson());
+
+        assertThatThrownBy(() -> TestActors.run("operator", "OPERATOR", () -> purchasingReferenceService.refresh(
+                        new RefreshPurchaseOrderCommand(PurchaseOrderId.of(PO_ID), SupplierId.of(SUPPLIER)))))
+                .isInstanceOf(ReceiptAllocationProtectedException.class);
+
+        // The refresh rolled back: no mixed snapshot and the allocation intact.
+        assertThat(jdbc.queryForObject(
+                        "select snapshot_version from purchase_order_snapshot where purchase_order_id = 'PO-1001'",
+                        Long.class))
+                .isEqualTo(5L);
+        assertThat(count("receipt_allocation")).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentApprovalCaseLockAndRawAllocationInsertDoNotDeadlock() throws Exception {
+        STUB.respond(200, spareLinePayload().toJson());
+        UUID caseId = frozenCase("INV-1", 40);
+        assertThat(attempt(target(caseId))).isInstanceOf(ApprovalResult.class);
+        UUID decisionId = jdbc.queryForObject(
+                "select id from review_decision where invoice_case_id = ? and decision = 'APPROVED'",
+                UUID.class,
+                caseId);
+        UUID snapshotId = jdbc.queryForObject(
+                "select review_snapshot_id from payment_request where invoice_case_id = ?", UUID.class, caseId);
+        UUID bundleId = jdbc.queryForObject(
+                "select evidence_bundle_id from payment_request where invoice_case_id = ?", UUID.class, caseId);
+        String payloadHash = jdbc.queryForObject(
+                "select review_payload_hash from payment_request where invoice_case_id = ?", String.class, caseId);
+        UUID spareReceiptLineId = jdbc.queryForObject(
+                "select id from receipt_line_snapshot where receipt_line_id = 'RCL-B-1001'", UUID.class);
+        long spareReceiptLineVersion = jdbc.queryForObject(
+                "select receipt_line_version from receipt_line_snapshot where id = ?", Long.class, spareReceiptLineId);
+
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        TransactionTemplate holder = new TransactionTemplate(transactionManager);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> held = pool.submit(() -> holder.executeWithoutResult(status -> {
+                jdbc.queryForList("select id from invoice_case where id = ? for update", caseId);
+                jdbc.queryForList("select pg_advisory_xact_lock(1, hashtext(?))", PO_ID);
+                jdbc.queryForList(
+                        "select id from receipt_line_snapshot where receipt_line_id = 'RCL-A-1001' for update");
+                locked.countDown();
+                try {
+                    release.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }));
+            assertThat(locked.await(10, TimeUnit.SECONDS)).isTrue();
+
+            // Raw insert for the same PO must wait for the holder in the canonical
+            // case -> advisory -> receipt order, not deadlock.
+            Future<Integer> insert = pool.submit(() -> jdbc.update(
+                    "insert into receipt_allocation (id, invoice_case_id, purchase_order_id, review_decision_id,"
+                            + " review_snapshot_id, review_payload_hash, evidence_bundle_id, invoice_line_number,"
+                            + " receipt_line_snapshot_id, receipt_id, receipt_line_id, purchase_order_line_id,"
+                            + " receipt_line_version, confirmed_quantity_at_approval, allocated_quantity, created_at)"
+                            + " values (?, ?, 'PO-1001', ?, ?, ?, ?, 1, ?, 'RCV-B-1001', 'RCL-B-1001',"
+                            + " 'POL-1001-1', ?, 20, 1, now())",
+                    UUID.randomUUID(),
+                    caseId,
+                    decisionId,
+                    snapshotId,
+                    payloadHash,
+                    bundleId,
+                    spareReceiptLineId,
+                    spareReceiptLineVersion));
+
+            Thread.sleep(500);
+            assertThat(insert.isDone()).as("raw insert must block on the canonical locks").isFalse();
+
+            release.countDown();
+            held.get(30, TimeUnit.SECONDS);
+            assertThat(insert.get(30, TimeUnit.SECONDS)).isEqualTo(1);
+            assertThat(count("receipt_allocation")).isEqualTo(2);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
         }
     }
 
@@ -447,6 +599,16 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
                         PurchasingPayloads.receiptLine("RCL-A-1001", 2, "POL-1001-1", 30))
                 .addReceipt("RCV-B-1001", "CONFIRMED", "2026-01-06", 2,
                         PurchasingPayloads.receiptLine("RCL-B-1001", 2, "POL-1001-1", 30));
+    }
+
+    private PurchasingPayloads spareLinePayload() {
+        return new PurchasingPayloads()
+                .snapshotVersion(5)
+                .addLine("POL-1001-1", ITEM_A, "Premium Copy Paper A4 80g", 100, 2500)
+                .addReceipt("RCV-A-1001", "CONFIRMED", "2026-01-05", 2,
+                        PurchasingPayloads.receiptLine("RCL-A-1001", 2, "POL-1001-1", 100))
+                .addReceipt("RCV-B-1001", "CONFIRMED", "2026-01-06", 2,
+                        PurchasingPayloads.receiptLine("RCL-B-1001", 2, "POL-1001-1", 20));
     }
 
     private PurchasingPayloads multiLinePayload(String purchaseOrderId) {

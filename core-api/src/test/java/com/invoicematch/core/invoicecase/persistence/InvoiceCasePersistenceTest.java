@@ -124,7 +124,7 @@ class InvoiceCasePersistenceTest extends AbstractPostgresIntegrationTest {
         ReviewDecision decision = reviewDecisions.save(ReviewDecision.recordApproval(
                 UUID.randomUUID(), caseId, snapshot.id(), 1, "approver-1",
                 "looks correct", null, "snapshot-hash", T0.plusSeconds(3),
-                com.invoicematch.core.shared.domain.Money.of(150_000L), "KRW"));
+                com.invoicematch.core.shared.domain.Money.of(150_000L), "KRW", 0L, 1L));
 
         assertThat(evidenceBundles.findById(bundle.id()))
                 .get()

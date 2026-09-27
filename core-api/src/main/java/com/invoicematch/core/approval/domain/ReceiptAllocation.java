@@ -67,6 +67,9 @@ public class ReceiptAllocation {
     @Column(name = "receipt_line_version", nullable = false, updatable = false)
     private long receiptLineVersion;
 
+    @Column(name = "confirmed_quantity_at_approval", nullable = false, updatable = false)
+    private int confirmedQuantityAtApproval;
+
     @Column(name = "allocated_quantity", nullable = false, updatable = false)
     private int allocatedQuantity;
 
@@ -90,6 +93,7 @@ public class ReceiptAllocation {
             String receiptLineId,
             String purchaseOrderLineId,
             long receiptLineVersion,
+            int confirmedQuantityAtApproval,
             int allocatedQuantity,
             Instant createdAt) {
         if (invoiceLineNumber <= 0) {
@@ -97,6 +101,10 @@ public class ReceiptAllocation {
         }
         if (receiptLineVersion < 0) {
             throw new DomainValidationException("receiptLineVersion must not be negative: " + receiptLineVersion);
+        }
+        if (confirmedQuantityAtApproval < 0) {
+            throw new DomainValidationException(
+                    "confirmedQuantityAtApproval must not be negative: " + confirmedQuantityAtApproval);
         }
         if (allocatedQuantity <= 0) {
             throw new DomainValidationException("allocatedQuantity must be positive: " + allocatedQuantity);
@@ -114,6 +122,7 @@ public class ReceiptAllocation {
         this.receiptLineId = requireText(receiptLineId, "receiptLineId");
         this.purchaseOrderLineId = requireText(purchaseOrderLineId, "purchaseOrderLineId");
         this.receiptLineVersion = receiptLineVersion;
+        this.confirmedQuantityAtApproval = confirmedQuantityAtApproval;
         this.allocatedQuantity = allocatedQuantity;
         this.createdAt = Objects.requireNonNull(createdAt, "createdAt");
     }
@@ -132,6 +141,7 @@ public class ReceiptAllocation {
             String receiptLineId,
             String purchaseOrderLineId,
             long receiptLineVersion,
+            int confirmedQuantityAtApproval,
             int allocatedQuantity,
             Instant createdAt) {
         return new ReceiptAllocation(
@@ -148,6 +158,7 @@ public class ReceiptAllocation {
                 receiptLineId,
                 purchaseOrderLineId,
                 receiptLineVersion,
+                confirmedQuantityAtApproval,
                 allocatedQuantity,
                 createdAt);
     }
@@ -209,6 +220,10 @@ public class ReceiptAllocation {
 
     public long receiptLineVersion() {
         return receiptLineVersion;
+    }
+
+    public int confirmedQuantityAtApproval() {
+        return confirmedQuantityAtApproval;
     }
 
     public int allocatedQuantity() {

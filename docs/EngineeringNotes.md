@@ -357,10 +357,10 @@ reflection 기반 경계 테스트와 직접 service 호출 테스트로 공개 
 
 - 승인 트랜잭션 안에서 권위 있는 관계형 사실(케이스 헤더 + 봉인된 draft 라인)로 evidence canonical payload/hash를 다시 만들고, 현재 구매 사실과 유효 매핑으로 `MatchEngine`을 재실행해 match payload/hash와 source 컬럼을, 다시 `ReviewSnapshotPayloadBuilder`로 snapshot payload/hash를 재구성해 저장값과 비교한다.
 - 배분 계획과 금액은 재계산된 typed match 결과에서만 유도하고, JSON `asInt/asLong` 강제 파싱을 제거했다(checked `Money`/`Quantity`).
-- `receipt_allocation`에 승인 결정 종류·동결 draft 라인·external receipt id/version·active를 INSERT 트리거로 강제하고, `(decision, invoice line, receipt line)` 유일성을 걸었다.
+- `receipt_allocation`에 승인 결정 종류·동결 draft 라인·external receipt id/version/active를 단일 BEFORE INSERT 트리거로 강제하되, 잠금을 케이스 → PO advisory → 검수 라인 순서로 먼저 잡아 application/raw SQL이 같은 순서를 따르게 했다. `(decision, invoice line, receipt line)` 유일성과 검수 라인 UPDATE 가드(할당 합 이하로 confirmed 감소·할당 있는 라인 비활성 금지, 증가/버전 진화 허용)를 추가했다.
 - `payment_request`는 승인 결정의 `(case, snapshot, hash, approved amount/currency)` 복합 FK로 금액·주체를 고정하고, 결정적 외부 key CHECK + UPDATE/DELETE 보호 트리거를 추가했다.
-- V6 감사 검증 함수를 V7에서 교체(V6 파일 불변)해 APPROVE가 실제 APPROVED 결정·actor·payment·allocation 합계·상태 전이를 증명하도록 했다.
-- `ApprovalApplicationService`는 `NOT_SUPPORTED`로 호출자 트랜잭션을 중단해 외부 조회가 트랜잭션/잠금 없이 실행되게 했다.
+- V6 감사 검증 함수를 V7에서 교체(V6 파일 불변)해 APPROVE가 실제 APPROVED 결정·actor·payment·allocation 합계·상태 전이뿐 아니라 개별 allocation 배열까지 관계형 행과 일치하도록 검증한다.
+- `ApprovalApplicationService`는 `Propagation.NEVER`로 활성 호출자 트랜잭션이 있으면 메서드 본문 전에 즉시 거부한다(중단 후 계속하지 않음). 외부 조회는 트랜잭션 없는 호출에서만 실행된다.
 
 ### 검증과 교훈
 

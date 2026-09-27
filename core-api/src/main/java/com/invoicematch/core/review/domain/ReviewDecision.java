@@ -83,6 +83,12 @@ public class ReviewDecision {
     @Column(name = "approved_currency", updatable = false, length = 3)
     private String approvedCurrency;
 
+    @Column(name = "approved_case_version_before", updatable = false)
+    private Long approvedCaseVersionBefore;
+
+    @Column(name = "approved_case_version_after", updatable = false)
+    private Long approvedCaseVersionAfter;
+
     protected ReviewDecision() {
     }
 
@@ -102,7 +108,9 @@ public class ReviewDecision {
             String mappingItemId,
             String mappingPoLineId,
             Money approvedAmount,
-            String approvedCurrency) {
+            String approvedCurrency,
+            Long approvedCaseVersionBefore,
+            Long approvedCaseVersionAfter) {
         if (decisionNumber <= 0) {
             throw new DomainValidationException("decisionNumber must be positive: " + decisionNumber);
         }
@@ -143,16 +151,25 @@ public class ReviewDecision {
         this.mappingPoLineId = mappingPoLineId;
 
         if (decision == ReviewDecisionType.APPROVED) {
-            if (approvedAmount == null || approvedCurrency == null || approvedCurrency.isBlank()) {
+            if (approvedAmount == null || approvedCurrency == null || approvedCurrency.isBlank()
+                    || approvedCaseVersionBefore == null || approvedCaseVersionAfter == null) {
                 throw new DomainValidationException(
-                        "An APPROVED decision requires an approved amount and currency");
+                        "An APPROVED decision requires an approved amount, currency and before/after case versions");
             }
-        } else if (approvedAmount != null || approvedCurrency != null) {
+            if (approvedCaseVersionAfter != approvedCaseVersionBefore + 1) {
+                throw new DomainValidationException(
+                        "An APPROVED decision after case version must be the before version plus one");
+            }
+        } else if (approvedAmount != null || approvedCurrency != null
+                || approvedCaseVersionBefore != null || approvedCaseVersionAfter != null) {
             throw new DomainValidationException(
-                    "Only an APPROVED decision may carry an approved amount/currency, but decision was " + decision);
+                    "Only an APPROVED decision may carry an approved amount/currency/versions, but decision was "
+                            + decision);
         }
         this.approvedAmount = approvedAmount;
         this.approvedCurrency = approvedCurrency;
+        this.approvedCaseVersionBefore = approvedCaseVersionBefore;
+        this.approvedCaseVersionAfter = approvedCaseVersionAfter;
     }
 
     public static ReviewDecision record(
@@ -177,6 +194,8 @@ public class ReviewDecision {
                 decisionPayload,
                 payloadHash,
                 decidedAt,
+                null,
+                null,
                 null,
                 null,
                 null,
@@ -215,13 +234,16 @@ public class ReviewDecision {
                 mappingItemId,
                 mappingPoLineId,
                 null,
+                null,
+                null,
                 null);
     }
 
     /**
-     * Records an APPROVED decision that binds the exact approved amount and
-     * currency, so a payment request can reference them with a composite foreign
-     * key instead of asserting them independently.
+     * Records an APPROVED decision that binds the exact approved amount,
+     * currency and before/after case versions, so a payment request and the
+     * APPROVE audit can be checked against persisted authoritative metadata
+     * instead of the stated summary alone.
      */
     public static ReviewDecision recordApproval(
             UUID id,
@@ -234,7 +256,9 @@ public class ReviewDecision {
             String payloadHash,
             Instant decidedAt,
             Money approvedAmount,
-            String approvedCurrency) {
+            String approvedCurrency,
+            long approvedCaseVersionBefore,
+            long approvedCaseVersionAfter) {
         return new ReviewDecision(
                 id,
                 invoiceCaseId,
@@ -251,7 +275,9 @@ public class ReviewDecision {
                 null,
                 null,
                 approvedAmount,
-                approvedCurrency);
+                approvedCurrency,
+                approvedCaseVersionBefore,
+                approvedCaseVersionAfter);
     }
 
     public UUID id() {
@@ -316,6 +342,14 @@ public class ReviewDecision {
 
     public String approvedCurrency() {
         return approvedCurrency;
+    }
+
+    public Long approvedCaseVersionBefore() {
+        return approvedCaseVersionBefore;
+    }
+
+    public Long approvedCaseVersionAfter() {
+        return approvedCaseVersionAfter;
     }
 
     @Override

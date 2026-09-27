@@ -1,6 +1,7 @@
 package com.invoicematch.core.migration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.invoicematch.core.support.AbstractPostgresIntegrationTest;
 import java.sql.Connection;
@@ -12,6 +13,7 @@ import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
@@ -57,15 +59,96 @@ class V7UpgradeFromV6MigrationTest extends AbstractPostgresIntegrationTest {
                     UUID.randomUUID(),
                     caseId,
                     caseId.toString());
+            UUID draftId = UUID.randomUUID();
+            upgradeJdbc.update(
+                    "insert into draft_revision (id, invoice_case_id, revision_number, status, created_at, sealed_at)"
+                            + " values (?, ?, 1, 'SEALED', now(), now())",
+                    draftId,
+                    caseId);
+            UUID bundleId = UUID.randomUUID();
+            upgradeJdbc.update(
+                    "insert into evidence_bundle (id, invoice_case_id, draft_revision_id, version_number,"
+                            + " payload_hash, payload, submitted_at)"
+                            + " values (?, ?, ?, 1, 'bundle-hash', '{\"lines\":[]}'::jsonb, now())",
+                    bundleId,
+                    caseId,
+                    draftId);
+            UUID matchResultId = UUID.randomUUID();
+            upgradeJdbc.update(
+                    "insert into match_result (id, invoice_case_id, evidence_bundle_id, result_number, result_hash,"
+                            + " purchasing_snapshot_version, purchasing_snapshot_hash, mapping_watermark, payload,"
+                            + " created_at)"
+                            + " values (?, ?, ?, 1, 'result-hash', 0, 'purchasing-hash', 0, '{}'::jsonb, now())",
+                    matchResultId,
+                    caseId,
+                    bundleId);
+            UUID snapshotId = UUID.randomUUID();
+            upgradeJdbc.update(
+                    "insert into review_snapshot (id, invoice_case_id, evidence_bundle_id, match_result_id,"
+                            + " match_result_number, snapshot_number, target_case_version,"
+                            + " target_evidence_bundle_version, purchasing_snapshot_version,"
+                            + " purchasing_snapshot_hash, mapping_watermark, payload_hash, payload, created_at)"
+                            + " values (?, ?, ?, ?, 1, 1, 0, 1, 0, 'purchasing-hash', 0, 'snap-hash',"
+                            + " '{}'::jsonb, now())",
+                    snapshotId,
+                    caseId,
+                    bundleId,
+                    matchResultId);
+            // Legacy APPROVED and REJECTED decisions from a V6 database, before the
+            // approved-money columns existed.
+            upgradeJdbc.update(
+                    "insert into review_decision (id, invoice_case_id, review_snapshot_id, decision_number,"
+                            + " decision, decided_by, payload_hash, decided_at)"
+                            + " values (?, ?, ?, 1, 'APPROVED', 'reviewer', 'snap-hash', now())",
+                    UUID.randomUUID(),
+                    caseId,
+                    snapshotId);
+            upgradeJdbc.update(
+                    "insert into review_decision (id, invoice_case_id, review_snapshot_id, decision_number,"
+                            + " decision, decided_by, payload_hash, decided_at)"
+                            + " values (?, ?, ?, 2, 'REJECTED', 'reviewer', 'snap-hash', now())",
+                    UUID.randomUUID(),
+                    caseId,
+                    snapshotId);
 
             flyway(upgradeDataSource, "7").migrate();
 
-            // Existing audit row and its action survived the constraint change.
+            // Existing audit and legacy decisions survived the NOT VALID constraint
+            // additions; they are preserved even though they carry no approved money.
             Integer preserved = upgradeJdbc.queryForObject(
                     "select count(*) from audit_entry where invoice_case_id = ? and action = 'CASE_CREATED'",
                     Integer.class,
                     caseId);
             assertThat(preserved).isEqualTo(1);
+            Integer legacyApproved = upgradeJdbc.queryForObject(
+                    "select count(*) from review_decision where invoice_case_id = ? and decision = 'APPROVED'"
+                            + " and approved_amount is null",
+                    Integer.class,
+                    caseId);
+            assertThat(legacyApproved).isEqualTo(1);
+            Integer legacyRejected = upgradeJdbc.queryForObject(
+                    "select count(*) from review_decision where invoice_case_id = ? and decision = 'REJECTED'",
+                    Integer.class,
+                    caseId);
+            assertThat(legacyRejected).isEqualTo(1);
+
+            // New rows are still enforced: an APPROVED without approved money and
+            // before/after versions is rejected, a non-APPROVED decision is allowed.
+            assertThatThrownBy(() -> upgradeJdbc.update(
+                            "insert into review_decision (id, invoice_case_id, review_snapshot_id, decision_number,"
+                                    + " decision, decided_by, payload_hash, decided_at)"
+                                    + " values (?, ?, ?, 3, 'APPROVED', 'reviewer', 'snap-hash', now())",
+                            UUID.randomUUID(),
+                            caseId,
+                            snapshotId))
+                    .isInstanceOf(DataIntegrityViolationException.class);
+            upgradeJdbc.update(
+                    "insert into review_decision (id, invoice_case_id, review_snapshot_id, decision_number,"
+                            + " decision, decided_by, payload_hash, decided_at)"
+                            + " values (?, ?, ?, 3, 'SUPPLEMENT_REQUESTED', 'reviewer', 'snap-hash', now())",
+                    UUID.randomUUID(),
+                    caseId,
+                    snapshotId);
 
             // APPROVE became a legal audit action and the V7 trigger replaced the
             // V6 validation without touching V6.
@@ -82,26 +165,17 @@ class V7UpgradeFromV6MigrationTest extends AbstractPostgresIntegrationTest {
                 assertThat(tables).as(table + " exists").isEqualTo(1);
             }
 
-            Integer allocationImmutable = upgradeJdbc.queryForObject(
-                    "select count(*) from pg_trigger where tgname = 'trg_receipt_allocation_immutable'"
-                            + " and tgenabled <> 'D'",
-                    Integer.class);
-            assertThat(allocationImmutable).isEqualTo(1);
-            Integer allocationGuard = upgradeJdbc.queryForObject(
-                    "select count(*) from pg_trigger where tgname = 'trg_receipt_allocation_balance'"
-                            + " and tgenabled <> 'D'",
-                    Integer.class);
-            assertThat(allocationGuard).isEqualTo(1);
-            Integer allocationValidate = upgradeJdbc.queryForObject(
-                    "select count(*) from pg_trigger where tgname = 'trg_receipt_allocation_validate'"
-                            + " and tgenabled <> 'D'",
-                    Integer.class);
-            assertThat(allocationValidate).isEqualTo(1);
-            Integer paymentProtect = upgradeJdbc.queryForObject(
-                    "select count(*) from pg_trigger where tgname = 'trg_payment_request_protect'"
-                            + " and tgenabled <> 'D'",
-                    Integer.class);
-            assertThat(paymentProtect).isEqualTo(1);
+            for (String trigger : new String[] {
+                    "trg_receipt_allocation_immutable",
+                    "trg_receipt_allocation_insert",
+                    "trg_receipt_line_allocation_guard",
+                    "trg_payment_request_protect"}) {
+                Integer found = upgradeJdbc.queryForObject(
+                        "select count(*) from pg_trigger where tgname = ? and tgenabled <> 'D'",
+                        Integer.class,
+                        trigger);
+                assertThat(found).as(trigger + " exists").isEqualTo(1);
+            }
 
             Integer applied = upgradeJdbc.queryForObject(
                     "select count(*) from flyway_schema_history where version = '7' and success",
