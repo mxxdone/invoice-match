@@ -10,8 +10,6 @@ import com.invoicematch.core.audit.domain.AuditTargetType;
 import com.invoicematch.core.invoicecase.application.CommandResult;
 import com.invoicematch.core.invoicecase.application.EvidenceBundlePayload;
 import com.invoicematch.core.invoicecase.application.EvidenceBundlePayloadHasher;
-import com.invoicematch.core.invoicecase.application.InvoiceCaseQueryService;
-import com.invoicematch.core.invoicecase.application.MatchCaseSnapshot;
 import com.invoicematch.core.invoicecase.application.RequestIdempotencyStore;
 import com.invoicematch.core.invoicecase.domain.EvidenceBundle;
 import com.invoicematch.core.invoicecase.domain.InvoiceCase;
@@ -71,7 +69,6 @@ public class ReviewService {
     private static final int MAX_REASON_LENGTH = 1000;
 
     private final InvoiceCaseRepository invoiceCases;
-    private final InvoiceCaseQueryService invoiceCaseQueries;
     private final EvidenceBundleRepository evidenceBundles;
     private final MatchResultRepository matchResults;
     private final ReviewSnapshotRepository snapshots;
@@ -93,7 +90,6 @@ public class ReviewService {
 
     public ReviewService(
             InvoiceCaseRepository invoiceCases,
-            InvoiceCaseQueryService invoiceCaseQueries,
             EvidenceBundleRepository evidenceBundles,
             MatchResultRepository matchResults,
             ReviewSnapshotRepository snapshots,
@@ -112,7 +108,6 @@ public class ReviewService {
             AuditRecorder audit,
             Clock clock) {
         this.invoiceCases = invoiceCases;
-        this.invoiceCaseQueries = invoiceCaseQueries;
         this.evidenceBundles = evidenceBundles;
         this.matchResults = matchResults;
         this.snapshots = snapshots;
@@ -242,8 +237,7 @@ public class ReviewService {
         invoiceCase.markModified(now);
         invoiceCase = invoiceCases.saveAndFlush(invoiceCase);
 
-        MatchCaseSnapshot caseSnapshot = invoiceCaseQueries.loadForMatching(command.caseId());
-        MatchResultView resultView = matching.appendResult(caseSnapshot, purchasing);
+        MatchResultView resultView = matching.rematchForMapping(command.caseId());
         MatchResult successorResult = matchResults
                 .findById(resultView.id())
                 .orElseThrow(() -> new IllegalStateException("Successor match result vanished"));

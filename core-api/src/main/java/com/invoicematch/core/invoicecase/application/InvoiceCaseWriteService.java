@@ -33,7 +33,11 @@ import com.invoicematch.core.shared.domain.Quantity;
 import com.invoicematch.core.shared.domain.SupplierId;
 import java.time.Clock;
 import java.time.Instant;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -485,13 +489,40 @@ public class InvoiceCaseWriteService {
         return value == null || value.isBlank() ? null : value;
     }
 
+    /**
+     * Compact, bounded audit view of one invoice line. The full raw item name can
+     * be up to 500 characters and is retained as a bounded preview plus its
+     * length and SHA-256, so a 100-line replacement stays far below the audit
+     * size limit regardless of multibyte characters or JSON escaping, while the
+     * meaningful values (identity, quantity, price, confirmed item) are exact.
+     */
     private Map<String, Object> lineSummary(InvoiceLine line) {
+        String rawItemName = line.rawItemName();
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("lineNumber", line.lineNumber());
-        summary.put("rawItemName", line.rawItemName());
         summary.put("quantity", line.quantity().value());
         summary.put("unitPrice", line.unitPrice().amount());
         summary.put("confirmedItemId", line.confirmedItemId());
+        summary.put("rawItemNamePreview", preview(rawItemName));
+        summary.put("rawItemNameLength", rawItemName.length());
+        summary.put("rawItemNameSha256", sha256Hex(rawItemName));
         return summary;
+    }
+
+    private static String preview(String value) {
+        int previewChars = 64;
+        if (value.codePointCount(0, value.length()) <= previewChars) {
+            return value;
+        }
+        return value.substring(0, value.offsetByCodePoints(0, previewChars));
+    }
+
+    private static String sha256Hex(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is unavailable", e);
+        }
     }
 }

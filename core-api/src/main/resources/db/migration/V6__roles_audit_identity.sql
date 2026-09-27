@@ -150,10 +150,13 @@ BEGIN
             USING ERRCODE = '23514';
     END IF;
 
-    -- Business version must match the case version at insertion. Historical
-    -- rows are untouched by later version changes because this runs only on
-    -- INSERT.
-    SELECT version INTO current_version FROM invoice_case WHERE id = NEW.invoice_case_id;
+    -- Business version must match the case version at insertion, and the case
+    -- row is read FOR SHARE so a concurrent privileged raw-SQL UPDATE cannot
+    -- change the version between this validation and the audit commit. The
+    -- application lock order is always invoice case first, and a transaction that
+    -- already updated the case in this same transaction sees its own version, so
+    -- this share lock never introduces an opposite lock order.
+    SELECT version INTO current_version FROM invoice_case WHERE id = NEW.invoice_case_id FOR SHARE;
     IF current_version IS NULL THEN
         RAISE EXCEPTION 'audit entry references a missing case %', NEW.invoice_case_id
             USING ERRCODE = '23503';

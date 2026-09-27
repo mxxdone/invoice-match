@@ -12,6 +12,7 @@ import com.invoicematch.core.invoicecase.application.SubmitInvoiceCaseCommand;
 import com.invoicematch.core.invoicecase.persistence.InvoiceCaseRepository;
 import com.invoicematch.core.matching.application.MatchingService;
 import com.invoicematch.core.matching.application.RunMatchCommand;
+import com.invoicematch.core.matching.domain.MatchStateConflictException;
 import com.invoicematch.core.review.application.FreezeReviewSnapshotCommand;
 import com.invoicematch.core.review.application.ReviewService;
 import com.invoicematch.core.support.AbstractPostgresIntegrationTest;
@@ -162,6 +163,60 @@ class WriteServiceAuthorizationIntegrationTest extends AbstractPostgresIntegrati
                 .isInstanceOf(ForbiddenActionException.class);
 
         assertThat(count("review_snapshot")).isEqualTo(snapshotsBefore);
+    }
+
+    @Test
+    void internalRematchRequiresApproverAndLeavesNoSideEffectWhenDenied() {
+        UUID caseId = submittedCase();
+        int matchesBefore = count("match_result");
+        int auditsBefore = count("audit_entry");
+
+        // No SecurityContext at all: the raw (non-HTTP) call must be forbidden.
+        TestActors.clear();
+        assertThatThrownBy(() -> matching.rematchForMapping(caseId))
+                .isInstanceOf(ForbiddenActionException.class);
+
+        TestActors.as("operator", "OPERATOR");
+        assertThatThrownBy(() -> matching.rematchForMapping(caseId))
+                .isInstanceOf(ForbiddenActionException.class);
+
+        assertThat(count("match_result")).isEqualTo(matchesBefore);
+        assertThat(count("audit_entry")).isEqualTo(auditsBefore);
+    }
+
+    @Test
+    void internalRematchOnAStaleCaseIsRejectedWithoutEffects() {
+        UUID caseId = submittedCase();
+        jdbc.update(
+                "update invoice_case set status = 'SUPPLEMENT_REQUIRED', version = version + 1,"
+                        + " updated_at = updated_at + interval '1 second' where id = ?",
+                caseId);
+        int matchesBefore = count("match_result");
+        int auditsBefore = count("audit_entry");
+
+        TestActors.as("approver", "APPROVER");
+        assertThatThrownBy(() -> matching.rematchForMapping(caseId))
+                .isInstanceOf(MatchStateConflictException.class);
+
+        assertThat(count("match_result")).isEqualTo(matchesBefore);
+        assertThat(count("audit_entry")).isEqualTo(auditsBefore);
+    }
+
+    @Test
+    void internalRematchAsApproverAppendsAnAuditedResult() {
+        UUID caseId = submittedCase();
+        int matchesBefore = count("match_result");
+        int auditsBefore = count("audit_entry");
+
+        TestActors.as("approver", "APPROVER");
+        matching.rematchForMapping(caseId);
+
+        assertThat(count("match_result")).isEqualTo(matchesBefore + 1);
+        assertThat(count("audit_entry")).isEqualTo(auditsBefore + 1);
+        assertThat(jdbc.queryForObject(
+                        "select count(*) from audit_entry where action = 'MATCH_RUN' and request_id is null",
+                        Integer.class))
+                .isEqualTo(1);
     }
 
     private UUID draftCase() {

@@ -250,7 +250,24 @@ case/target, case business version, structured before/after change, `requestId`
 and `traceId`. Credentials, `Authorization` headers and raw documents are never
 stored, and an idempotent replay records no second entry. A mapping replacement
 records the exact previous mapping in `before` and the new mapping in `after`.
-`audit_entry` rejects `UPDATE` and `DELETE`.
+A mapping also performs an internal deterministic re-match; that re-match is a
+separate, independently authorized and audited `MATCH_RUN` (targeting its
+`match_result`, with a null `requestId` since it is not a client request), so a
+mapping produces both an `ITEM_MAPPED` and a `MATCH_RUN` audit row. There is no
+public raw "append a match result" seam: the only two persistence paths are the
+OPERATOR `run` and the APPROVER-only internal re-match, and both enforce their
+own role, case-lock and audit contract. `audit_entry` rejects `UPDATE` and
+`DELETE`.
+
+Audit before/after summaries are bounded by **UTF-8 byte length** (64 KiB), not
+character count, and line diffs store a bounded item-name preview plus its length
+and SHA-256 rather than the full 500-character name. A DTO-valid request (at most
+100 lines) therefore always audits successfully with meaningful, deterministic
+content; a summary that somehow exceeds the limit is replaced by a
+`{"truncated":true,"originalBytes":...,"sha256":...}` envelope instead of
+throwing, so the audit is never dropped, never partial and never a 500. The audit
+trigger reads the case version `FOR SHARE`, so a concurrent privileged raw-SQL
+version change cannot make a just-inserted audit immediately stale.
 
 The database validates the semantic relationships the app asserts (typed target
 exists and belongs to the case, `CASE` target equals the case, actor roles are a

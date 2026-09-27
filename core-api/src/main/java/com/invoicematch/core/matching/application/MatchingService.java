@@ -112,7 +112,44 @@ public class MatchingService {
 
         CurrentPurchaseOrderSnapshot purchasing = requireCurrentPurchasingSnapshot(caseSnapshot);
         MatchResultView view = appendResult(caseSnapshot, purchasing);
-        audit.record(new AuditEvent(
+        audit.record(matchAudit(actor, caseSnapshot, view, command.requestId()));
+        idempotency.recordResponse(SCOPE_MATCH, resourceKey, actor.username(), command.requestId(), 201, view);
+        return CommandResult.created(view);
+    }
+
+    /**
+     * Internal deterministic re-match used by the review mapping flow. It is
+     * not a client request: it independently enforces the authenticated APPROVER
+     * role, re-locks and revalidates the authoritative case, appends the result,
+     * and records its own {@code MATCH_RUN} audit in the caller's transaction.
+     *
+     * <p>There is deliberately no public raw append seam: the only two ways to
+     * persist a {@code match_result} are this method and {@link #run}, and both
+     * enforce their security, locking and audit contract. A caller without an
+     * APPROVER context is rejected before any persistence.
+     *
+     * <p>A mapping therefore produces two audit rows: the {@code ITEM_MAPPED}
+     * decision and the {@code MATCH_RUN} of the re-match it triggered. The
+     * {@code requestId} is null on this internal row because it is not tied to a
+     * client request id; the surrounding mapping row carries it.
+     */
+    @Transactional
+    public MatchResultView rematchForMapping(UUID caseId) {
+        MatchCaseSnapshot caseSnapshot = invoiceCaseQueries.loadForMatching(caseId);
+        matchLockInterceptor.afterCaseLocked(caseId);
+        authorization.requireRole(Role.APPROVER);
+        Actor actor = authorization.actor();
+
+        requireReviewable(caseSnapshot);
+        CurrentPurchaseOrderSnapshot purchasing = requireCurrentPurchasingSnapshot(caseSnapshot);
+        MatchResultView view = appendResult(caseSnapshot, purchasing);
+        audit.record(matchAudit(actor, caseSnapshot, view, null));
+        return view;
+    }
+
+    private AuditEvent matchAudit(
+            Actor actor, MatchCaseSnapshot caseSnapshot, MatchResultView view, String requestId) {
+        return new AuditEvent(
                 caseSnapshot.caseId(),
                 actor,
                 AuditAction.MATCH_RUN,
@@ -126,19 +163,17 @@ public class MatchingService {
                         "evidenceBundleId", view.evidenceBundleId().toString(),
                         "evidenceBundleVersion", caseSnapshot.evidenceBundleVersion(),
                         "purchasingSnapshotVersion", view.purchasingSnapshotVersion()),
-                command.requestId(),
-                view.createdAt()));
-        idempotency.recordResponse(SCOPE_MATCH, resourceKey, actor.username(), command.requestId(), 201, view);
-        return CommandResult.created(view);
+                requestId,
+                view.createdAt());
     }
 
     /**
-     * Computes and appends a result for an already-loaded case snapshot under a
-     * case row lock the caller holds (or for the plain match path). It is the
-     * seam the review module uses to re-match after a mapping decision inside
-     * the same transaction as the decision and its successor snapshot.
+     * Computes and appends a result for an already-loaded case snapshot. Private:
+     * callers must have already enforced their own role check and hold the case
+     * row lock through the shared entry points {@link #run} and
+     * {@link #rematchForMapping}.
      */
-    public MatchResultView appendResult(MatchCaseSnapshot caseSnapshot, CurrentPurchaseOrderSnapshot purchasing) {
+    private MatchResultView appendResult(MatchCaseSnapshot caseSnapshot, CurrentPurchaseOrderSnapshot purchasing) {
         List<UUID> duplicateCaseIds = invoiceCaseQueries.findOtherCaseIdsWithBusinessInvoice(
                 caseSnapshot.supplierId(), caseSnapshot.normalizedInvoiceNumber(), caseSnapshot.caseId());
 

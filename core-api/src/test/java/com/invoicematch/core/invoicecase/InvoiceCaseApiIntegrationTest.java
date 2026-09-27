@@ -443,6 +443,35 @@ class InvoiceCaseApiIntegrationTest extends AbstractPostgresIntegrationTest {
         assertThat(accepted.get("lines")).hasSize(100);
     }
 
+    @Test
+    void hundredLineUnicodeQuoteHeavyDraftIsAuditedAsABoundedSummary() throws Exception {
+        JsonNode created = createCase("req-unicode");
+        String caseId = created.get("id").asText();
+        long version = created.get("version").asLong();
+        // Korean (3 UTF-8 bytes) plus JSON-escape-amplifying quotes, near the
+        // 500-character DTO limit, repeated across 100 lines.
+        String heavyName = "\"\uAC00\uB098\uB2E4".repeat(100);
+        assertThat(heavyName.length()).isLessThanOrEqualTo(500);
+
+        List<ObjectNode> lines = new ArrayList<>();
+        for (int i = 1; i <= 100; i++) {
+            lines.add(line(i, heavyName, 1, 100, null));
+        }
+
+        JsonNode accepted = replaceDraft(caseId, "req-unicode-100", version, lines);
+        assertThat(accepted.get("lines")).hasSize(100);
+
+        String afterState = jdbc.queryForObject(
+                "select after_state::text from audit_entry"
+                        + " where invoice_case_id = ? and action = 'DRAFT_LINES_REPLACED'",
+                String.class,
+                UUID.fromString(caseId));
+        assertThat(afterState.getBytes(StandardCharsets.UTF_8).length)
+                .isLessThanOrEqualTo(65_536);
+        assertThat(afterState).doesNotContain("\"truncated\":true");
+        assertThat(afterState).contains("rawItemNameSha256");
+    }
+
     private String prepareDraftWithLines(String createRequestId, List<ObjectNode> lines) throws Exception {
         JsonNode created = createCase(createRequestId);
         String caseId = created.get("id").asText();

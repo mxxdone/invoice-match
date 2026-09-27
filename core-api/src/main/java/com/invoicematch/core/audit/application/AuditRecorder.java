@@ -1,7 +1,5 @@
 package com.invoicematch.core.audit.application;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.invoicematch.core.audit.domain.AuditAction;
 import com.invoicematch.core.audit.domain.AuditTargetType;
 import com.invoicematch.core.security.Role;
@@ -24,18 +22,12 @@ import org.springframework.transaction.annotation.Transactional;
 @Component
 public class AuditRecorder {
 
-    /**
-     * Upper bound on a serialized before/after change summary. Inputs are already
-     * bounded (line count, field lengths), so this is a defensive invariant that
-     * keeps the database free of unexpectedly large JSON.
-     */
-    public static final int MAX_AUDIT_JSON_BYTES = 65_536;
-
     private final JdbcTemplate jdbc;
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final AuditStateSummarizer summarizer;
 
-    public AuditRecorder(JdbcTemplate jdbc) {
+    public AuditRecorder(JdbcTemplate jdbc, AuditStateSummarizer summarizer) {
         this.jdbc = jdbc;
+        this.summarizer = summarizer;
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
@@ -62,8 +54,8 @@ public class AuditRecorder {
                 event.targetType().name(),
                 event.targetId(),
                 event.businessVersion(),
-                serialize(event.before()),
-                serialize(event.after()),
+                summarizer.summarize(event.before()),
+                summarizer.summarize(event.after()),
                 event.requestId(),
                 resolveTraceId());
     }
@@ -71,20 +63,5 @@ public class AuditRecorder {
     private static String resolveTraceId() {
         String current = TraceContext.current();
         return current != null ? current : TraceId.generate();
-    }
-
-    private String serialize(Object value) {
-        if (value == null) {
-            return null;
-        }
-        try {
-            String json = mapper.writeValueAsString(value);
-            if (json.length() > MAX_AUDIT_JSON_BYTES) {
-                throw new IllegalStateException("Audit change summary exceeds " + MAX_AUDIT_JSON_BYTES + " bytes");
-            }
-            return json;
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Audit change summary serialization failed", e);
-        }
     }
 }

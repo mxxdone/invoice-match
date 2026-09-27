@@ -7,12 +7,19 @@ import com.invoicematch.core.support.AbstractPostgresIntegrationTest;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * P1-06 migration checks: the mandatory, immutable authoritative
@@ -25,9 +32,48 @@ class AuditMigrationTest extends AbstractPostgresIntegrationTest {
     @Autowired
     private JdbcTemplate jdbc;
 
+    @Autowired
+    private PlatformTransactionManager transactionManager;
+
     @BeforeEach
     void clean() {
         jdbc.execute("truncate table invoice_case cascade");
+        jdbc.execute("truncate table idempotency_record");
+    }
+
+    @Test
+    void auditInsertionLocksTheCaseAgainstAConcurrentVersionChange() throws Exception {
+        UUID caseId = seedCase("DRAFT", 1);
+        CountDownLatch auditInserted = new CountDownLatch(1);
+        CountDownLatch releaseAudit = new CountDownLatch(1);
+        TransactionTemplate transactions = new TransactionTemplate(transactionManager);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> audit = pool.submit(() -> transactions.executeWithoutResult(status -> {
+                insertAudit(caseId, "submitter", "SUBMITTER", "CASE", caseId.toString(), 1, "CASE_CREATED");
+                auditInserted.countDown();
+                await(releaseAudit);
+            }));
+            assertThat(auditInserted.await(5, TimeUnit.SECONDS)).isTrue();
+
+            Future<?> update = pool.submit(() -> transactions.executeWithoutResult(status ->
+                    jdbc.update("update invoice_case set version = version + 1 where id = ?", caseId)));
+
+            Thread.sleep(500);
+            assertThat(update.isDone())
+                    .as("a concurrent case version update must wait for the audit's share lock")
+                    .isFalse();
+
+            releaseAudit.countDown();
+            audit.get(10, TimeUnit.SECONDS);
+            update.get(10, TimeUnit.SECONDS);
+        } finally {
+            releaseAudit.countDown();
+            pool.shutdownNow();
+        }
+
+        assertThat(jdbc.queryForObject("select version from invoice_case where id = ?", Long.class, caseId))
+                .isEqualTo(2L);
     }
 
     @Test
@@ -188,6 +234,14 @@ class AuditMigrationTest extends AbstractPostgresIntegrationTest {
         assertThatThrownBy(statement::run)
                 .isInstanceOf(DataAccessException.class)
                 .hasMessageContaining("append-only");
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private UUID seedCase(String status, long version) {
