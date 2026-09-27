@@ -229,6 +229,132 @@ class ApprovalWorkflowIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     @Test
+    void approveStoresValidInboundTraceIdIdenticallyInDecisionAndAudit() throws Exception {
+        String caseId = submittedCase(1, "A4 Paper", 60, 2500, ITEM_A);
+        runMatch(caseId, "match-1");
+        JsonNode snapshot = freeze(caseId, "snap-1");
+        String inboundTrace = "client-trace-approve-1";
+
+        MvcResult result = mockMvc.perform(approveRaw(caseId, "approve-trace", currentCaseVersion(caseId),
+                        snapshot.get("id").asText(), snapshot.get("payloadHash").asText())
+                .header("X-Trace-Id", inboundTrace))
+                .andReturn();
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        // The validated inbound correlation id is echoed and persisted identically.
+        assertThat(result.getResponse().getHeader("X-Trace-Id")).isEqualTo(inboundTrace);
+        assertThat(storedApprovalTrace(caseId)).isEqualTo(inboundTrace);
+        assertThat(storedAuditTrace(caseId)).isEqualTo(inboundTrace);
+        // The propagated id never changes the server-authenticated identity.
+        assertThat(storedDecisionActor(caseId)).isEqualTo("approver");
+        assertThat(storedApprovalRoles(caseId)).isEqualTo("APPROVER");
+        assertThat(storedAuditRoles(caseId)).isEqualTo("APPROVER");
+    }
+
+    @Test
+    void approveGeneratesTraceWhenHeaderAbsentAndStoresItIdentically() throws Exception {
+        String caseId = submittedCase(1, "A4 Paper", 60, 2500, ITEM_A);
+        runMatch(caseId, "match-1");
+        JsonNode snapshot = freeze(caseId, "snap-1");
+
+        MvcResult result = mockMvc.perform(approveRaw(caseId, "approve-no-trace", currentCaseVersion(caseId),
+                        snapshot.get("id").asText(), snapshot.get("payloadHash").asText()))
+                .andReturn();
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        String generated = result.getResponse().getHeader("X-Trace-Id");
+        assertThat(generated).isNotBlank().startsWith("trc-");
+        assertThat(storedApprovalTrace(caseId)).isEqualTo(generated);
+        assertThat(storedAuditTrace(caseId)).isEqualTo(generated);
+    }
+
+    @Test
+    void approveReplacesInvalidTraceHeaderAndStoresEffectiveTraceIdentically() throws Exception {
+        STUB.respond(200, largeReceiptPayload().toJson());
+        List<String> invalidHeaders = List.of("bad value with spaces", "x".repeat(200), "bad\tcontrol");
+        for (int i = 0; i < invalidHeaders.size(); i++) {
+            String invalid = invalidHeaders.get(i);
+            String caseId = submittedCase(
+                    "INV-TRACE-" + i, List.of(line(1, "A4 Paper", 60, 2500, ITEM_A)));
+            runMatch(caseId, "match-trace");
+            JsonNode snapshot = freeze(caseId, "snap-trace");
+
+            MvcResult result = mockMvc.perform(approveRaw(caseId, "approve-invalid-trace",
+                            currentCaseVersion(caseId), snapshot.get("id").asText(), snapshot.get("payloadHash").asText())
+                    .header("X-Trace-Id", invalid))
+                    .andReturn();
+
+            assertThat(result.getResponse().getStatus()).isEqualTo(200);
+            String effective = result.getResponse().getHeader("X-Trace-Id");
+            assertThat(effective).as("invalid header '%s' is replaced by the trace boundary", invalid)
+                    .isNotBlank().startsWith("trc-").isNotEqualTo(invalid);
+            assertThat(storedApprovalTrace(caseId)).isEqualTo(effective);
+            assertThat(storedAuditTrace(caseId)).isEqualTo(effective);
+            assertThat(storedApprovalRoles(caseId)).isEqualTo("APPROVER");
+        }
+    }
+
+    @Test
+    void inboundTraceIdDoesNotChangeAuthorization() throws Exception {
+        String caseId = submittedCase("INV-DENIED", List.of(line(1, "A4 Paper", 60, 2500, ITEM_A)));
+        runMatch(caseId, "match-denied");
+        JsonNode snapshot = freeze(caseId, "snap-denied");
+
+        MvcResult denied = mockMvc.perform(approveRaw(caseId, "approve-denied", currentCaseVersion(caseId),
+                        snapshot.get("id").asText(), snapshot.get("payloadHash").asText())
+                .header("X-Trace-Id", "client-trace-denied")
+                .with(user("submitter").roles("SUBMITTER")))
+                .andReturn();
+
+        assertThat(denied.getResponse().getStatus()).isEqualTo(403);
+        assertThat(count("review_decision")).isZero();
+        assertThat(count("payment_request")).isZero();
+    }
+
+    private String storedApprovalTrace(String caseId) {
+        return jdbc.queryForObject(
+                "select approval_trace_id from review_decision where invoice_case_id = ? and decision = 'APPROVED'",
+                String.class,
+                UUID.fromString(caseId));
+    }
+
+    private String storedApprovalRoles(String caseId) {
+        return jdbc.queryForObject(
+                "select approval_actor_roles from review_decision where invoice_case_id = ? and decision = 'APPROVED'",
+                String.class,
+                UUID.fromString(caseId));
+    }
+
+    private String storedDecisionActor(String caseId) {
+        return jdbc.queryForObject(
+                "select decided_by from review_decision where invoice_case_id = ? and decision = 'APPROVED'",
+                String.class,
+                UUID.fromString(caseId));
+    }
+
+    private String storedAuditTrace(String caseId) {
+        return jdbc.queryForObject(
+                "select trace_id from audit_entry where invoice_case_id = ? and action = 'APPROVE'",
+                String.class,
+                UUID.fromString(caseId));
+    }
+
+    private String storedAuditRoles(String caseId) {
+        return jdbc.queryForObject(
+                "select actor_roles from audit_entry where invoice_case_id = ? and action = 'APPROVE'",
+                String.class,
+                UUID.fromString(caseId));
+    }
+
+    private PurchasingPayloads largeReceiptPayload() {
+        return new PurchasingPayloads()
+                .snapshotVersion(5)
+                .addLine("POL-1001-1", ITEM_A, "Premium Copy Paper A4 80g", 100, 2500)
+                .addReceipt("RCV-1001-1", "CONFIRMED", "2026-01-05", 2,
+                        PurchasingPayloads.receiptLine("RCL-1001-1-1", 2, "POL-1001-1", 1000));
+    }
+
+    @Test
     void spoofedActorFieldIsIgnored() throws Exception {
         String caseId = submittedCase(1, "A4 Paper", 60, 2500, ITEM_A);
         runMatch(caseId, "match-1");

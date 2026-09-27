@@ -210,8 +210,12 @@ public class ApprovalService {
         long plannedQuantityTotal = sumPlannedQuantity(command.caseId(), snapshot.id(), plan);
         long caseVersionBefore = invoiceCase.version();
 
-        // Server-derived audit context, persisted on the immutable decision and
-        // reused for the audit row so both can be checked for exact equality.
+        // Approval audit context, persisted on the immutable decision and reused
+        // for the audit row so both can be checked for exact equality. Actor roles
+        // are server-authenticated; the request id is the actor-scoped idempotency
+        // input; the trace id is validated propagated correlation metadata, never
+        // an authentication, authorization, uniqueness or approval-identity
+        // credential.
         String approvalActorRoles = actor.rolesCsv();
         String approvalRequestId = command.requestId();
         String approvalTraceId = resolveTraceId();

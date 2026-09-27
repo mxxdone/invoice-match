@@ -289,7 +289,10 @@ Every request accepts an optional `X-Trace-Id` header. A bounded token of safe
 characters is kept, anything oversized or containing control characters is
 replaced with a generated `trc-...` id, and the effective id is returned in the
 `X-Trace-Id` response header and stored on audit entries (also on `401`/`403`
-responses).
+responses). The trace id is propagated correlation metadata only: it never
+participates in authentication, authorization, request-idempotency uniqueness or
+approval identity, and for an APPROVED decision it only has to match the
+`APPROVE` audit that records the same approval.
 
 Request limits keep resources bounded: a JSON request body is capped at
 `http.request.max-body-bytes` (default 256 KiB, `HTTP_MAX_BODY_BYTES` to change)

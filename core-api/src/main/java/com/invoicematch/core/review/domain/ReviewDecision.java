@@ -176,7 +176,7 @@ public class ReviewDecision {
                     || approvalRequestId == null || approvalRequestId.isBlank()
                     || approvalTraceId == null || approvalTraceId.isBlank()) {
                 throw new DomainValidationException(
-                        "An APPROVED decision requires server-derived actor roles, request id and trace id");
+                        "An APPROVED decision requires actor roles, request id and trace id");
             }
         } else if (approvedAmount != null || approvedCurrency != null
                 || approvedCaseVersionBefore != null || approvedCaseVersionAfter != null
@@ -269,10 +269,12 @@ public class ReviewDecision {
 
     /**
      * Records an APPROVED decision that binds the exact approved amount,
-     * currency, before/after case versions and the server-derived audit context
-     * (canonical actor roles, actor-scoped request id and trace id), so a payment
-     * request and the APPROVE audit can be checked against persisted
-     * authoritative metadata instead of the stated summary alone.
+     * currency, before/after case versions and the approval audit context, so a
+     * payment request and the APPROVE audit can be checked against persisted
+     * authoritative metadata instead of the stated summary alone. The actor roles
+     * are the server-authenticated canonical roles, the request id is the
+     * actor-scoped client idempotency input, and the trace id is validated
+     * propagated correlation metadata (not a security identity).
      */
     public static ReviewDecision recordApproval(
             UUID id,

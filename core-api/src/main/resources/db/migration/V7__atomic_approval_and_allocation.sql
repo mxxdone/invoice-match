@@ -8,9 +8,10 @@
 -- and the declarative/trigger guards that make every approval relationship
 -- unforgeable even under raw SQL:
 --
--- 1. review_decision gains the approved amount/currency and the server-derived
---    approval audit context (canonical actor roles, actor-scoped request id and
---    trace id) for APPROVED decisions, plus composite candidate keys so
+-- 1. review_decision gains the approved amount/currency and the approval audit
+--    context (server-authenticated canonical actor roles, the actor-scoped
+--    idempotency request id, and validated propagated correlation trace id) for
+--    APPROVED decisions, plus composite candidate keys so
 --    receipt_allocation and payment_request can bind the exact decision subject
 --    (case + snapshot + payload hash) and money.
 -- 2. receipt_allocation is append-only and, at INSERT, a trigger proves the
@@ -56,9 +57,11 @@ ALTER TABLE review_decision
     ADD COLUMN approved_currency varchar(3),
     ADD COLUMN approved_case_version_before bigint,
     ADD COLUMN approved_case_version_after bigint,
-    -- Server-derived approval audit context, persisted on the immutable decision
-    -- so the APPROVE audit can be bound to authoritative metadata rather than to
-    -- whatever the audit row claims.
+    -- Approval audit context persisted on the immutable decision so the APPROVE
+    -- audit can be bound to the decision's own metadata rather than to whatever
+    -- the audit row claims: server-authenticated canonical actor roles, the
+    -- actor-scoped idempotency request id, and the validated propagated
+    -- correlation trace id (not a security identity).
     ADD COLUMN approval_actor_roles varchar(255),
     ADD COLUMN approval_request_id varchar(128),
     ADD COLUMN approval_trace_id varchar(64);
@@ -526,9 +529,11 @@ BEGIN
                 USING ERRCODE = '23514';
         END IF;
 
-        -- Bind the audit context to the server-derived metadata persisted on the
-        -- immutable APPROVED decision. A raw audit can never invent its own
-        -- roles, request id or trace id, and a legacy APPROVED row without
+        -- Bind the audit context to the metadata persisted on the immutable
+        -- APPROVED decision, so a raw audit cannot substitute its own values.
+        -- Actor roles are server-authenticated; the request id is the actor-scoped
+        -- idempotency input; the trace id is validated propagated correlation
+        -- metadata, not a security identity. A legacy APPROVED row without
         -- metadata can never be matched by a fabricated audit.
         IF decision_row.approval_actor_roles IS NULL
             OR NEW.actor_roles IS DISTINCT FROM decision_row.approval_actor_roles THEN
