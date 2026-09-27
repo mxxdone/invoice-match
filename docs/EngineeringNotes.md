@@ -327,7 +327,7 @@ reflection 기반 경계 테스트와 직접 service 호출 테스트로 공개 
 
 외부 version이 승인 전에 바뀌면 `STALE_REVIEW_TARGET(PURCHASING_SNAPSHOT)`로 side effect 없이 실패하고, 동시 refresh는 승인 advisory lock 뒤에서 직렬화되어 version이 섞이지 않음을 실제 PostgreSQL 테스트로 확인했다. 다른 트랜잭션 경계의 read를 재사용할 때는 isolation/propagation이 그 트랜잭션의 미확정 쓰기를 볼 수 있는지 먼저 확인해야 한다.
 
-관련 커밋: `69dde46`, `5bdb6e0`, `89214db`, `d4fec02`, `b865376`
+관련 커밋: `69dde46`, `5bdb6e0`, `89214db`, `d4fec02`, `b865376`, `c3648f3`
 
 ## P1-07 — 검수 잔량 경합과 결정적 잠금 순서
 
@@ -345,7 +345,7 @@ reflection 기반 경계 테스트와 직접 service 호출 테스트로 공개 
 
 실제 PostgreSQL에서 40+40 경합(한 건 성공, 패자는 현재 confirmed/allocated/remaining 409), 같은 requestId 병렬 승인(효과 1세트 + replay), 다른 PO 다중 라인 동시 승인(deadlock 없음), decision/allocation/payment/audit/idempotency 단계별 실패 주입(전량 rollback)을 반복 검증했다. 케이스 락을 쥔 두 번째 커넥션이 같은 검수 라인을 잠그려는 raw insert와 역순으로 맞서는 재현 테스트와, 같은 PO의 두 raw writer가 두 검수 라인을 반대 순서로 삽입하는 다중 행 테스트에서도 `ERROR: deadlock detected` 없이 advisory lock 뒤에서 직렬화됨을 확인했다. 공유 자원 경합은 JVM 락이 아니라 DB 행 잠금과 제약으로 닫아야 한다.
 
-관련 커밋: `69dde46`, `5bdb6e0`, `89214db`, `d4fec02`, `b865376`
+관련 커밋: `69dde46`, `5bdb6e0`, `89214db`, `d4fec02`, `b865376`, `c3648f3`
 
 ## P1-07 — 저장 JSON을 신뢰하지 않는 승인 대상 독립 재구성과 관계 봉인
 
@@ -368,7 +368,7 @@ reflection 기반 경계 테스트와 직접 service 호출 테스트로 공개 
 
 위조 evidence/match/snapshot payload·hash, 임의 receipt date/ID, 잘못된 타입, overflow, REJECTED 결정, 교차 사건, 중복 배분, 비활성 검수, 임의 지급 금액/key, 보호 필드 UPDATE/DELETE를 raw SQL로 재현해 모두 side effect 없이 실패함을 확인했다. APPROVE 감사는 저장 metadata와 어긋나는 actor roles(부풀린/비정규 순서/미지원 역할/빈 값), 임의의 nonblank request id, 임의 trace id, 누락된 request/trace, actor 불일치, 각 숫자 필드의 문자열·boolean·null 치환, extra/missing field를 모두 거부하고, 권위 있는 행과 저장 metadata로 재구성한 audit만 수락함을 확인했다. 다른 계층이 소유한 직렬화 경계(jsonb key 재정렬)를 넘겨 값을 재사용하면 해시 재현성이 깨질 수 있으므로, 승인 같은 고위험 판단은 저장 JSON이 아니라 권위 있는 관계형 사실에서 다시 계산하고 DB 제약으로 관계를 봉인해야 한다.
 
-관련 커밋: `69dde46`, `6077d3d`, `5bdb6e0`, `89214db`, `d4fec02`, `b865376`
+관련 커밋: `69dde46`, `6077d3d`, `5bdb6e0`, `89214db`, `d4fec02`, `b865376`, `c3648f3`
 
 ## 앞으로 추가할 때의 형식
 
