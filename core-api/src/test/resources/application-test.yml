@@ -12,6 +12,14 @@ payment-export:
     lease-duration: 30s
     safety-margin: 1s
 
+# P1-09 webhook contract for tests. The integration tests sign with this secret;
+# production/local must supply MOCK_ERP_WEBHOOK_SECRET or the endpoint fails closed.
+mock-erp:
+  webhook:
+    provider: mock-erp
+    secret: test-webhook-secret
+    signature-tolerance: 5m
+
 security:
   demo:
     users:

@@ -13,6 +13,8 @@ jobs:
     env:
       # Disposable CI-only credential. Local and deployed environments must provide their own value.
       POSTGRES_PASSWORD: ci-only-not-for-production
+      # Disposable CI-only webhook secret for the signed mock-ERP result webhook.
+      MOCK_ERP_WEBHOOK_SECRET: ci-only-webhook-secret
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4

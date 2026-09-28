@@ -32,6 +32,11 @@ import org.springframework.security.web.access.AccessDeniedHandler;
  * authenticated but forbidden action is 403, both as the same JSON error body
  * the rest of the API uses. Business roles are attached to local demo users in
  * {@code application.yml}; there are no real secrets here.
+ *
+ * <p>{@code /webhooks/**} is a machine-to-machine surface. It is not HTTP Basic
+ * protected; the mock-ERP result webhook authenticates every request with a
+ * shared-secret HMAC signature inside the controller, and fails closed when no
+ * secret is configured.
  */
 @Configuration
 @EnableWebSecurity
@@ -49,6 +54,8 @@ public class SecurityConfiguration {
                         .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info")
                         .permitAll()
                         .requestMatchers("/error")
+                        .permitAll()
+                        .requestMatchers("/webhooks/**")
                         .permitAll()
                         .requestMatchers("/api/**")
                         .authenticated()

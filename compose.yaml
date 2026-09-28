@@ -25,10 +25,11 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       PURCHASING_BASE_URL: http://mock-purchasing:8082
       ERP_BASE_URL: http://mock-erp:8081
-      # Fail-closed: mock-erp is health-only and has no idempotent export
-      # receiver (P1-09), so the relay must stay disabled here. Opt in only with
-      # a real receiver: PAYMENT_EXPORT_RELAY_ENABLED=true.
-      PAYMENT_EXPORT_RELAY_ENABLED: "false"
+      # P1-09 makes mock-erp an idempotent receiver (ACK by idempotency key plus a
+      # signed result webhook), so the relay is intentionally opted in here. The
+      # deployable default in application.yml stays fail-closed (false).
+      PAYMENT_EXPORT_RELAY_ENABLED: "true"
+      MOCK_ERP_WEBHOOK_SECRET: ${MOCK_ERP_WEBHOOK_SECRET:?Set MOCK_ERP_WEBHOOK_SECRET in .env}
       SPRING_PROFILES_ACTIVE: local
       TZ: UTC
     ports:
@@ -37,6 +38,8 @@ services:
       postgres:
         condition: service_healthy
       mock-purchasing:
+        condition: service_healthy
+      mock-erp:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
@@ -65,6 +68,9 @@ services:
     build: ./mock-erp
     environment:
       TZ: UTC
+      # Processed exports emit a signed result webhook back to core-api.
+      WEBHOOK_URL: http://core-api:8080/webhooks/mock-erp/payment-results
+      WEBHOOK_SECRET: ${MOCK_ERP_WEBHOOK_SECRET:?Set MOCK_ERP_WEBHOOK_SECRET in .env}
     ports:
       - "${MOCK_ERP_PORT:-8081}:8081"
     healthcheck:

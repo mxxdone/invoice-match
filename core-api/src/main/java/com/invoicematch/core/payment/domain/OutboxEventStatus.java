@@ -16,8 +16,9 @@ package com.invoicematch.core.payment.domain;
  *       committed;</li>
  *   <li>{@code FAILED} — a definite non-retryable outcome;</li>
  *   <li>{@code RESULT_UNKNOWN} — the outcome cannot be known (timeout, reset,
- *       ambiguous response, expired SENDING); terminal for automatic relay in
- *       Phase 1.</li>
+ *       ambiguous response, expired SENDING); terminal for the automatic relay
+ *       in Phase 1. P1-09 may still resolve it to DELIVERED or FAILED once a
+ *       verified external result arrives, but the relay never resends it.</li>
  * </ul>
  */
 public enum OutboxEventStatus {
@@ -28,7 +29,8 @@ public enum OutboxEventStatus {
     FAILED,
     RESULT_UNKNOWN;
 
-    public boolean isTerminal() {
+    /** Terminal for the relay: no send will ever be attempted again. */
+    public boolean isTerminalForRelay() {
         return this == DELIVERED || this == FAILED || this == RESULT_UNKNOWN;
     }
 }

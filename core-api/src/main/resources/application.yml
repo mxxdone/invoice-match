@@ -29,12 +29,12 @@ purchasing-system:
 # Phase 1 in-process payment export relay.
 #
 # Fail-closed: the scheduler is disabled until an environment explicitly opts in
-# (PAYMENT_EXPORT_RELAY_ENABLED=true or payment-export.relay.enabled). Enable it
-# only once an idempotent ERP receiver is deployed (P1-09); the current mock-erp
-# is health-only, so enabling it would turn each approval into a definite 404
-# FAILED state. The sending lease must exceed the total request deadline plus a
-# positive safety margin (request-timeout + safety-margin), validated at startup.
-# Lease times come from PostgreSQL clock_timestamp(), not the JVM clock.
+# (PAYMENT_EXPORT_RELAY_ENABLED=true or payment-export.relay.enabled). P1-09 makes
+# mock-erp an idempotent receiver that ACKs by idempotency key and emits a signed
+# result webhook, so local/compose may opt in; the deployable default stays off.
+# The sending lease must exceed the total request deadline plus a positive safety
+# margin (request-timeout + safety-margin), validated at startup. Lease times come
+# from PostgreSQL clock_timestamp(), not the JVM clock.
 payment-export:
   relay:
     enabled: ${PAYMENT_EXPORT_RELAY_ENABLED:false}
@@ -53,6 +53,14 @@ payment-export:
 http:
   request:
     max-body-bytes: ${HTTP_MAX_BODY_BYTES:262144}
+
+# Signed mock-ERP result webhook (P1-09). A blank secret fails closed: every
+# webhook is rejected. The tolerance bounds replay of a captured signed request.
+mock-erp:
+  webhook:
+    provider: ${MOCK_ERP_PROVIDER:mock-erp}
+    secret: ${MOCK_ERP_WEBHOOK_SECRET:}
+    signature-tolerance: ${MOCK_ERP_WEBHOOK_TOLERANCE:5m}
 
 # Demo identities intentionally live only in the 'local' profile
 # (application-local.yml) and the test profile, never in the default deployable

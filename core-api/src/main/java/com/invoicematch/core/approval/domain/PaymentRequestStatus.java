@@ -16,8 +16,11 @@ import java.util.Set;
  *   ├─ ACKNOWLEDGED
  *   ├─ RETRY_SCHEDULED → SENDING
  *   ├─ FAILED
- *   └─ RESULT_UNKNOWN
+ *   └─ RESULT_UNKNOWN → ACKNOWLEDGED | FAILED
  * </pre>
+ *
+ * <p>P1-09 lets a verified external result resolve an unknown send. It never
+ * reopens a send from {@code RESULT_UNKNOWN} and never reaches a new export key.
  */
 public enum PaymentRequestStatus {
     NOT_SENT,
@@ -33,7 +36,7 @@ public enum PaymentRequestStatus {
             RETRY_SCHEDULED, EnumSet.of(SENDING),
             ACKNOWLEDGED, EnumSet.noneOf(PaymentRequestStatus.class),
             FAILED, EnumSet.noneOf(PaymentRequestStatus.class),
-            RESULT_UNKNOWN, EnumSet.noneOf(PaymentRequestStatus.class));
+            RESULT_UNKNOWN, EnumSet.of(ACKNOWLEDGED, FAILED));
 
     public boolean canTransitionTo(PaymentRequestStatus target) {
         return target != null && ALLOWED_TRANSITIONS.get(this).contains(target);

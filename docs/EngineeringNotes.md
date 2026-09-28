@@ -411,6 +411,26 @@ V7까지 `payment_request.status`는 `PENDING`만 허용했고 V7의 변경 보�
 
 관련 커밋: `9ac57df`, `bb74078`, `d07c426`, `a42a901`, `479504e`
 
+## P1-09 — 외부 결과를 기존 relay 상태 기계에 멱등하게 수렴시키기
+
+### 문제
+
+relay가 2xx를 관측하지 못하면 P1-08은 지급요청을 `RESULT_UNKNOWN`으로 종결하고 자동 재전송하지 않는다. 그런데 mock ERP는 이미 처리했을 수 있어, 후속 webhook이나 동일 key 상태 조회로 `ACKNOWLEDGED`로 수렴시켜야 한다. 하지만 P1-08의 상태 행렬·attempt ledger·tuple guard는 relay worker만을 전제로 해서, webhook이 outbox를 직접 전이하면 그 전이를 뒷받침할 증거가 없다. 동시에 중복·위조·역순 webhook과 응답 유실이 업무 효과를 두 번 만들면 안 된다.
+
+### 해결
+
+- V9에서 append-only `payment_result_event`를 도입했다. `(provider, external_event_id)` 유일, 수신 body의 SHA-256, 외부 지급 key를 outbox idempotency key에 묶은 FK를 저장하고, 지연 commit guard가 결과 outcome이 최종 `(payment, outbox, case)` tuple과 정확히 일치할 때만 commit을 허용한다. 즉 webhook 결과 자체가 전이 증거이며 raw SQL로도 standalone 위조 결과는 commit되지 않는다.
+- P1-08 행렬에는 `RESULT_UNKNOWN -> ACKNOWLEDGED | FAILED`(payment·outbox 동일)만 추가하고, `check_outbox_attempt_evidence`를 교체해 result event가 있으면 그 전이를 증거로 인정한다. relay 경로는 여전히 attempt ledger 증거를 요구한다. 성공만 `EXPORTED`로 가고 `FAILED`와 `RESULT_UNKNOWN`은 구분된다.
+- 수신은 `sha256=<HMAC(secret, "<timestamp>.<raw body>")>`를 timing-safe로 검증하고 timestamp tolerance로 재생을 제한하며 secret 미설정 시 fail-closed다. `(provider, externalEventId)` advisory lock으로 같은 event 중복을 직렬화한 뒤 outbox를 canonical 순서(case → payment → outbox)로 다시 잠그고 재검증한다. 같은 event 다른 payload·key 불일치·역순/downgrade는 side effect 없이 409, unknown key는 404, 위조/누락/만료 서명은 401이다.
+- webhook 적용은 relay finalize와 같은 조건부 update를 공유해, 동시에 도착한 relay finalize나 webhook과 경합해도 정확히 하나만 commit되고 나머지는 no-op이 된다. 새 PaymentRequest나 새 export key를 만들지 않는다.
+- mock-erp는 같은 key+같은 payload replay·다른 payload conflict·key 기반 상태 조회·응답 유실 후 동일 key 수렴·서명 webhook을 구현했다. relay 기본값은 계속 fail-closed이고, idempotent receiver가 준비된 local/compose에서만 명시적으로 켠다.
+
+### 검증과 교훈
+
+실제 PostgreSQL + MockMvc로 응답 유실(`RESULT_UNKNOWN`) 후 ACK/FAILED webhook 수렴, 중복 replay, 동일 event 다른 payload conflict, 병렬 중복 1회 효과, 위조/누락/만료 서명 거부, unknown key·payment key mismatch·역순/downgrade 거부와 zero side effect, standalone 위조 result event commit 거부, in-flight SENDING과의 경합에서 relay no-op을 고정했다. mock-erp 7개 테스트와 core-api 전체 496개 테스트(relay 상태 행렬·attempt ledger·`Propagation.NEVER`·lease/deadline 회귀 포함)가 통과한다. 알 수 없는 외부 결과를 "실패"로 단정하지 않고 별도 권위 증거로 모델링한 뒤 기존 relay 상태 기계에는 최소 전이만 추가하는 것이 중복 지급과 유실을 동시에 막는 핵심이었다.
+
+관련 커밋: `1bf9273`
+
 ## 앞으로 추가할 때의 형식
 
 새 사례는 아래 항목을 중심으로 짧게 추가한다.

@@ -23,7 +23,6 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -57,10 +56,9 @@ abstract class AbstractPaymentExportIntegrationTest extends AbstractPostgresInte
         registry.add("purchasing-system.read-timeout", () -> "1s");
     }
 
-    @AfterAll
-    static void stopPurchasing() {
-        PURCHASING.close();
-    }
+    // The stub is JVM-wide and shared by every subclass of this fixture; it is
+    // released by the JVM shutdown hook that Testcontainers also relies on, so no
+    // subclass can close it while another still needs it.
 
     @Autowired
     protected InvoiceCaseApplicationService invoiceCaseCommands;
