@@ -76,8 +76,14 @@ public class InvoiceCaseExceptionHandler {
     }
 
     @ExceptionHandler(StaleCaseVersionException.class)
-    public ResponseEntity<ApiError> handleStaleVersion(StaleCaseVersionException e) {
-        return error(HttpStatus.CONFLICT, "STALE_CASE_VERSION", e.getMessage());
+    public ResponseEntity<CaseVersionConflictError> handleStaleVersion(StaleCaseVersionException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new CaseVersionConflictError(
+                        "STALE_CASE_VERSION",
+                        e.getMessage(),
+                        e.caseId().toString(),
+                        e.expectedVersion(),
+                        e.actualVersion()));
     }
 
     @ExceptionHandler(DraftNotEditableException.class)
@@ -91,8 +97,14 @@ public class InvoiceCaseExceptionHandler {
     }
 
     @ExceptionHandler(ObjectOptimisticLockingFailureException.class)
-    public ResponseEntity<ApiError> handleOptimisticLock(ObjectOptimisticLockingFailureException e) {
-        return error(HttpStatus.CONFLICT, "STALE_CASE_VERSION", "The invoice case was modified concurrently");
+    public ResponseEntity<CaseVersionConflictError> handleOptimisticLock(ObjectOptimisticLockingFailureException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new CaseVersionConflictError(
+                        "STALE_CASE_VERSION",
+                        "The invoice case was modified concurrently",
+                        null,
+                        null,
+                        null));
     }
 
     @ExceptionHandler(DataIntegrityViolationException.class)

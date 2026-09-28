@@ -59,6 +59,15 @@ public final class AuthorizationPolicy {
     }
 
     /**
+     * Work-list reads are allowed to any Phase 1 business role. The row-level
+     * scope is applied separately: a SUBMITTER only sees cases they submitted,
+     * while APPROVER/OPERATOR see every case.
+     */
+    public static void requireCaseListRead(Actor actor) {
+        requireAnyRole(actor, Role.SUBMITTER, Role.APPROVER, Role.OPERATOR);
+    }
+
+    /**
      * Reusable P1-07 approval rule: the actor must be an APPROVER and must not
      * be the person who submitted the case. The comparison is on the canonical
      * username, so the same person cannot approve regardless of how their roles

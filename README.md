@@ -376,6 +376,94 @@ docker compose exec postgres psql -U invoice_match -d invoice_match -c "SELECT 1
 
 Stop the services with `docker compose down`. This preserves the named PostgreSQL volume. To remove local database data deliberately, use `docker compose down -v`.
 
+## Workflow read APIs (P1-10)
+
+These read endpoints let the minimum work screen render login, the case list, the
+case detail and the ERP hand-off state without re-deriving any server fact. They
+are additive: every P1-03..P1-09 write contract is unchanged.
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/me` | The authenticated login name and its business roles |
+| `GET` | `/api/invoice-cases` | Server-paged, filtered work list |
+| `GET` | `/api/invoice-cases/{id}/handoff` | Payment/outbox export status for an approved case |
+
+`GET /api/me` returns `{ "username": "...", "roles": ["APPROVER"] }` derived
+server-side from the security context. It uses the existing HTTP Basic identities
+and introduces no new authentication scheme.
+
+`GET /api/invoice-cases` accepts optional query parameters `status`
+(a `DRAFT|SUBMITTED|REVIEW_PENDING|SUPPLEMENT_REQUIRED|REJECTED|EXPORT_PENDING|EXPORTED`
+name), `supplierId`, `purchaseOrderId`, `invoiceNumber` (matched on the
+normalized supplier invoice number, so `INV-2026-001` and `inv 2026 001` are
+equal), `submittedBy`, the inclusive ISO-8601 instants `submittedFrom` /
+`submittedTo`, and the server-side paging parameters `page` (0-based, default 0)
+and `size` (default 20, capped at 100). The response is:
+
+```json
+{
+  "items": [
+    { "id": "…", "supplierId": "SUP-1", "purchaseOrderId": "PO-1001",
+      "invoiceNumber": "INV-1", "submittedBy": "submitter", "status": "REVIEW_PENDING",
+      "version": 4, "createdAt": "…", "updatedAt": "…", "submittedAt": "…" }
+  ],
+  "page": 0, "size": 20, "totalItems": 1, "totalPages": 1, "hasNext": false
+}
+```
+
+The list is ordered deterministically by `(createdAt DESC, id DESC)`, uses a
+single DTO-projection query plus a count query (no entity graph, no N+1), and is
+row-scoped server-side: a `SUBMITTER` only ever sees cases whose `submittedBy`
+is their own login (a `submittedBy` filter cannot widen that), while
+`APPROVER`/`OPERATOR` see every case.
+
+`GET /api/invoice-cases/{id}/handoff` returns the case status/version plus the
+approved payment and its outbox delivery state, or `"payment": null` before the
+case has been approved:
+
+```json
+{
+  "invoiceCaseId": "…", "caseStatus": "EXPORT_PENDING", "caseVersion": 5,
+  "payment": {
+    "paymentRequestId": "…", "externalRequestKey": "PAYMENT:{caseId}:{snapshotId}",
+    "amount": 150000, "currency": "KRW", "exportVersion": 1,
+    "paymentStatus": "NOT_SENT", "outboxStatus": "READY", "attemptCount": 0,
+    "lastErrorCode": null, "nextAttemptAt": null, "deliveredAt": null, "createdAt": "…"
+  }
+}
+```
+
+`paymentStatus` is one of `NOT_SENT`, `SENDING`, `ACKNOWLEDGED`,
+`RETRY_SCHEDULED`, `FAILED`, `RESULT_UNKNOWN`; `outboxStatus` is one of `READY`,
+`CLAIMED`, `SENDING`, `DELIVERED`, `FAILED`, `RESULT_UNKNOWN`. Both are returned
+verbatim so the UI displays the server state instead of recomputing it. A case
+read that requires access to another user's case is `403`, and an unknown case is
+`404`.
+
+### Stale-conflict error contract
+
+A write that loses an optimistic race returns `409` and now carries the latest
+server identifier so the browser can refetch instead of guessing. A stale case
+version returns `STALE_CASE_VERSION` with the current committed version:
+
+```json
+{ "code": "STALE_CASE_VERSION", "message": "…", "caseId": "…",
+  "expectedVersion": 3, "latestVersion": 5 }
+```
+
+A human action against a superseded review subject returns `STALE_REVIEW_TARGET`
+with the explicit reasons (`CASE_STATE`, `CASE_VERSION`, `EVIDENCE_BUNDLE`,
+`MATCH_RESULT`, `MAPPING`, `PURCHASING_SNAPSHOT`, `SUPERSEDED`) and the committed
+case version/status to re-read:
+
+```json
+{ "code": "STALE_REVIEW_TARGET", "message": "…",
+  "reasons": ["MATCH_RESULT"], "currentCaseVersion": 5, "currentCaseStatus": "REVIEW_PENDING" }
+```
+
+`401` (unauthenticated) and `403` (forbidden) continue to use the shared
+`{code,message}` body.
+
 ## Work on a service locally
 
 With PostgreSQL running (`docker compose up -d postgres`), set `DB_PASSWORD` to the same value as `POSTGRES_PASSWORD` in your private `.env`, then run (the `local` profile activates the demo identities; without it the API fails closed):

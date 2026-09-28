@@ -10,4 +10,6 @@ public interface PaymentRequestRepository extends JpaRepository<PaymentRequest, 
     Optional<PaymentRequest> findByExternalRequestKey(String externalRequestKey);
 
     Optional<PaymentRequest> findByInvoiceCaseIdAndReviewSnapshotId(UUID invoiceCaseId, UUID reviewSnapshotId);
+
+    Optional<PaymentRequest> findByInvoiceCaseId(UUID invoiceCaseId);
 }

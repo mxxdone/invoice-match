@@ -6,17 +6,22 @@ import com.invoicematch.core.invoicecase.application.EvidenceBundleDetail;
 import com.invoicematch.core.invoicecase.application.EvidenceBundleSummary;
 import com.invoicematch.core.invoicecase.application.InvoiceCaseApplicationService;
 import com.invoicematch.core.invoicecase.application.InvoiceCaseDetail;
+import com.invoicematch.core.invoicecase.application.InvoiceCasePage;
 import com.invoicematch.core.invoicecase.application.InvoiceCaseQueryService;
+import com.invoicematch.core.invoicecase.application.InvoiceCaseSearchCriteria;
 import com.invoicematch.core.invoicecase.application.InvoiceLineInput;
 import com.invoicematch.core.invoicecase.application.OpenSupplementRevisionCommand;
 import com.invoicematch.core.invoicecase.application.ReplaceDraftLinesCommand;
 import com.invoicematch.core.invoicecase.application.SubmissionResult;
 import com.invoicematch.core.invoicecase.application.SubmitInvoiceCaseCommand;
+import com.invoicematch.core.invoicecase.domain.InvoiceCaseStatus;
 import com.invoicematch.core.security.AuthorizationService;
 import com.invoicematch.core.security.Role;
 import jakarta.validation.Valid;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -24,6 +29,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -54,6 +60,26 @@ public class InvoiceCaseController {
         CommandResult<InvoiceCaseDetail> result = commands.create(new CreateInvoiceCaseCommand(
                 request.requestId(), request.supplierId(), request.purchaseOrderId(), request.invoiceNumber()));
         return ResponseEntity.status(result.status()).body(result.body());
+    }
+
+    @GetMapping
+    public InvoiceCasePage list(
+            @RequestParam(name = "status", required = false) InvoiceCaseStatus status,
+            @RequestParam(name = "supplierId", required = false) String supplierId,
+            @RequestParam(name = "purchaseOrderId", required = false) String purchaseOrderId,
+            @RequestParam(name = "invoiceNumber", required = false) String invoiceNumber,
+            @RequestParam(name = "submittedBy", required = false) String submittedBy,
+            @RequestParam(name = "submittedFrom", required = false)
+                    @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant submittedFrom,
+            @RequestParam(name = "submittedTo", required = false)
+                    @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant submittedTo,
+            @RequestParam(name = "page", defaultValue = "0") int page,
+            @RequestParam(name = "size", defaultValue = "20") int size) {
+        authorization.requireCaseListRead();
+        InvoiceCaseSearchCriteria criteria = new InvoiceCaseSearchCriteria(
+                status, supplierId, purchaseOrderId, invoiceNumber, submittedBy,
+                submittedFrom, submittedTo, page, size);
+        return queries.list(criteria, authorization.actor());
     }
 
     @GetMapping("/{id}")

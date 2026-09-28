@@ -12,35 +12,48 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 /**
  * Maps review workflow failures to the stable JSON error contract. A stale
- * target returns 409 with the explicit list of reasons; an invalid mapping
- * target returns 409 with no partial rows written.
+ * target returns 409 with the explicit list of reasons and the committed case
+ * version/status the UI must re-read; an invalid mapping target returns 409 with
+ * no partial rows written.
  */
 @RestControllerAdvice
 public class ReviewExceptionHandler {
 
     @ExceptionHandler(ReviewSnapshotNotFoundException.class)
     public ResponseEntity<ReviewConflictError> handleNotFound(ReviewSnapshotNotFoundException e) {
-        return error(HttpStatus.NOT_FOUND, "REVIEW_SNAPSHOT_NOT_FOUND", e.getMessage(), List.of());
+        return error(HttpStatus.NOT_FOUND, "REVIEW_SNAPSHOT_NOT_FOUND", e.getMessage(), List.of(), null, null);
     }
 
     @ExceptionHandler(StaleReviewTargetException.class)
     public ResponseEntity<ReviewConflictError> handleStale(StaleReviewTargetException e) {
         List<String> reasons = e.reasons().stream().map(Enum::name).toList();
-        return error(HttpStatus.CONFLICT, "STALE_REVIEW_TARGET", e.getMessage(), reasons);
+        return error(
+                HttpStatus.CONFLICT,
+                "STALE_REVIEW_TARGET",
+                e.getMessage(),
+                reasons,
+                e.currentCaseVersion(),
+                e.currentCaseStatus());
     }
 
     @ExceptionHandler(ReviewStateConflictException.class)
     public ResponseEntity<ReviewConflictError> handleStateConflict(ReviewStateConflictException e) {
-        return error(HttpStatus.CONFLICT, "REVIEW_STATE_CONFLICT", e.getMessage(), List.of());
+        return error(HttpStatus.CONFLICT, "REVIEW_STATE_CONFLICT", e.getMessage(), List.of(), null, null);
     }
 
     @ExceptionHandler(ReviewTargetInvalidException.class)
     public ResponseEntity<ReviewConflictError> handleTargetInvalid(ReviewTargetInvalidException e) {
-        return error(HttpStatus.CONFLICT, "REVIEW_TARGET_INVALID", e.getMessage(), List.of());
+        return error(HttpStatus.CONFLICT, "REVIEW_TARGET_INVALID", e.getMessage(), List.of(), null, null);
     }
 
     private static ResponseEntity<ReviewConflictError> error(
-            HttpStatus status, String code, String message, List<String> reasons) {
-        return ResponseEntity.status(status).body(new ReviewConflictError(code, message, reasons));
+            HttpStatus status,
+            String code,
+            String message,
+            List<String> reasons,
+            Long currentCaseVersion,
+            String currentCaseStatus) {
+        return ResponseEntity.status(status)
+                .body(new ReviewConflictError(code, message, reasons, currentCaseVersion, currentCaseStatus));
     }
 }

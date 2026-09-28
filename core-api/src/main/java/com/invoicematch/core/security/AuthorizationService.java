@@ -54,6 +54,11 @@ public class AuthorizationService {
         AuthorizationPolicy.requireCaseRead(actor(), caseId, invoiceCase.submittedBy());
     }
 
+    /** A work-list read; the row scope is applied by the list query itself. */
+    public void requireCaseListRead() {
+        AuthorizationPolicy.requireCaseListRead(actor());
+    }
+
     /** Confirms the case exists, mapping a missing case to 404 before any leak. */
     public void requireCaseExists(UUID caseId) {
         load(caseId);

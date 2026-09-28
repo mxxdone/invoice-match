@@ -181,7 +181,11 @@ public class ReviewCurrentnessService {
         ReviewFreshness freshness = evaluate(invoiceCase, snapshot);
         if (!freshness.current()) {
             throw new com.invoicematch.core.review.domain.StaleReviewTargetException(
-                    invoiceCase.id().value(), snapshot.id(), freshness.reasons());
+                    invoiceCase.id().value(),
+                    snapshot.id(),
+                    freshness.reasons(),
+                    freshness.currentCaseVersion(),
+                    freshness.currentCaseStatus());
         }
         return freshness;
     }
@@ -200,7 +204,11 @@ public class ReviewCurrentnessService {
                 evaluate(invoiceCase, snapshot, currentPurchasingVersion, currentPurchasingHash);
         if (!freshness.current()) {
             throw new com.invoicematch.core.review.domain.StaleReviewTargetException(
-                    invoiceCase.id().value(), snapshot.id(), freshness.reasons());
+                    invoiceCase.id().value(),
+                    snapshot.id(),
+                    freshness.reasons(),
+                    freshness.currentCaseVersion(),
+                    freshness.currentCaseStatus());
         }
         return freshness;
     }
