@@ -110,7 +110,21 @@ class ApprovalWorkflowIntegrationTest extends AbstractPostgresIntegrationTest {
         assertThat(count("review_decision")).isEqualTo(1);
         assertThat(count("receipt_allocation")).isEqualTo(1);
         assertThat(count("payment_request")).isEqualTo(1);
+        assertThat(count("outbox_event")).isEqualTo(1);
         assertThat(currentStatus(caseId)).isEqualTo("EXPORT_PENDING");
+
+        // The committed payment and its pending export are one unit of work.
+        Map<String, Object> outbox = jdbc.queryForMap(
+                "select o.status, o.idempotency_key, o.export_version from outbox_event o"
+                        + " join payment_request p on p.id = o.payment_request_id where p.invoice_case_id = ?",
+                UUID.fromString(caseId));
+        assertThat(outbox).containsEntry("status", "READY").containsEntry("export_version", 1L);
+        assertThat(outbox.get("idempotency_key"))
+                .isEqualTo(jdbc.queryForObject(
+                                "select id from payment_request where invoice_case_id = ?",
+                                UUID.class,
+                                UUID.fromString(caseId))
+                        + ":1");
 
         Map<String, Object> decision = jdbc.queryForMap(
                 "select decision, decided_by from review_decision where invoice_case_id = ?", UUID.fromString(caseId));
@@ -120,7 +134,7 @@ class ApprovalWorkflowIntegrationTest extends AbstractPostgresIntegrationTest {
                 "select amount, currency, status from payment_request where invoice_case_id = ?",
                 UUID.fromString(caseId));
         assertThat(payment).containsEntry("amount", 150_000L).containsEntry("currency", "KRW")
-                .containsEntry("status", "PENDING");
+                .containsEntry("status", "NOT_SENT");
 
         Map<String, Object> audit = jdbc.queryForMap(
                 "select action, actor, target_type from audit_entry where invoice_case_id = ? and action = 'APPROVE'",
@@ -506,6 +520,7 @@ class ApprovalWorkflowIntegrationTest extends AbstractPostgresIntegrationTest {
     private void assertNoApprovalEffects(String caseId) throws Exception {
         assertThat(count("receipt_allocation")).isZero();
         assertThat(count("payment_request")).isZero();
+        assertThat(count("outbox_event")).isZero();
         assertThat(jdbc.queryForObject(
                         "select count(*) from review_decision where invoice_case_id = ? and decision = 'APPROVED'",
                         Integer.class,

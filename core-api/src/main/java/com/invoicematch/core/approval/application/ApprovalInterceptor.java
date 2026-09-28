@@ -32,6 +32,12 @@ interface ApprovalInterceptor {
     default void afterPaymentRequestWritten(UUID caseId) {
     }
 
+    default void beforeOutboxWritten(UUID caseId) {
+    }
+
+    default void afterOutboxWritten(UUID caseId) {
+    }
+
     default void afterCaseTransitioned(UUID caseId) {
     }
 

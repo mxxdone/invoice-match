@@ -256,6 +256,7 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
             assertThat(count("review_decision")).isZero();
             assertThat(count("receipt_allocation")).isZero();
             assertThat(count("payment_request")).isZero();
+            assertThat(count("outbox_event")).isZero();
             assertThat(jdbc.queryForObject(
                             "select count(*) from audit_entry where invoice_case_id = ? and action = 'APPROVE'",
                             Integer.class,
@@ -817,6 +818,7 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
         DECISION,
         ALLOCATION,
         PAYMENT,
+        OUTBOX,
         CASE_TRANSITION,
         AUDIT,
         IDEMPOTENCY
@@ -924,6 +926,11 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
         @Override
         public void afterPaymentRequestWritten(UUID caseId) {
             failIfStage(ApprovalInterceptorStage.PAYMENT);
+        }
+
+        @Override
+        public void beforeOutboxWritten(UUID caseId) {
+            failIfStage(ApprovalInterceptorStage.OUTBOX);
         }
 
         @Override

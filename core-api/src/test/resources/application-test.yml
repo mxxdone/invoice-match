@@ -2,6 +2,16 @@
 # AbstractPostgresIntegrationTest, so tests can exercise real HTTP Basic
 # authentication without the demo credentials being part of the default
 # deployable configuration. Same BCrypt hashes as the local profile.
+# The relay scheduler never runs in tests; integration tests drive the relay
+# deterministically and assert exact states. Timeouts stay below the lease.
+payment-export:
+  relay:
+    enabled: false
+    connect-timeout: 500ms
+    request-timeout: 2s
+    lease-duration: 30s
+    safety-margin: 1s
+
 security:
   demo:
     users:

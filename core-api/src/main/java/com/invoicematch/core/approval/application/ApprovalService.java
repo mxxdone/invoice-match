@@ -29,6 +29,8 @@ import com.invoicematch.core.purchasingreference.application.PurchaseOrderSnapsh
 import com.invoicematch.core.purchasingreference.application.PurchasingReferenceService;
 import com.invoicematch.core.purchasingreference.persistence.PurchaseOrderSnapshot;
 import com.invoicematch.core.purchasingreference.persistence.PurchaseOrderSnapshotRepository;
+import com.invoicematch.core.payment.domain.OutboxEvent;
+import com.invoicematch.core.payment.persistence.OutboxEventRepository;
 import com.invoicematch.core.purchasingreference.persistence.ReceiptLineSnapshot;
 import com.invoicematch.core.purchasingreference.persistence.ReceiptLineSnapshotRepository;
 import com.invoicematch.core.purchasingreference.persistence.ReceiptSnapshot;
@@ -100,6 +102,7 @@ public class ApprovalService {
     private final ReceiptSnapshotRepository receiptSnapshots;
     private final ReceiptAllocationRepository receiptAllocations;
     private final PaymentRequestRepository paymentRequests;
+    private final OutboxEventRepository outboxEvents;
     private final RequestIdempotencyStore idempotency;
     private final AuthorizationService authorization;
     private final AuditRecorder audit;
@@ -120,6 +123,7 @@ public class ApprovalService {
             ReceiptSnapshotRepository receiptSnapshots,
             ReceiptAllocationRepository receiptAllocations,
             PaymentRequestRepository paymentRequests,
+            OutboxEventRepository outboxEvents,
             RequestIdempotencyStore idempotency,
             AuthorizationService authorization,
             AuditRecorder audit,
@@ -137,6 +141,7 @@ public class ApprovalService {
         this.receiptSnapshots = receiptSnapshots;
         this.receiptAllocations = receiptAllocations;
         this.paymentRequests = paymentRequests;
+        this.outboxEvents = outboxEvents;
         this.idempotency = idempotency;
         this.authorization = authorization;
         this.audit = audit;
@@ -277,7 +282,7 @@ public class ApprovalService {
         }
 
         String externalRequestKey = PaymentRequest.externalRequestKey(command.caseId(), snapshot.id());
-        PaymentRequest paymentRequest = PaymentRequest.pending(
+        PaymentRequest paymentRequest = PaymentRequest.notSent(
                 UUID.randomUUID(),
                 command.caseId(),
                 purchaseOrderId,
@@ -291,6 +296,12 @@ public class ApprovalService {
                 now);
         paymentRequests.saveAndFlush(paymentRequest);
         interceptor.afterPaymentRequestWritten(command.caseId());
+
+        // Same transaction: the pending export is committed with the payment, so
+        // the relay can never lose a committed approval (Spec 13.1, ADR 0003).
+        interceptor.beforeOutboxWritten(command.caseId());
+        outboxEvents.saveAndFlush(OutboxEvent.exportRequested(paymentRequest, now));
+        interceptor.afterOutboxWritten(command.caseId());
 
         invoiceCase.transitionTo(InvoiceCaseStatus.EXPORT_PENDING, now);
         invoiceCase = invoiceCases.saveAndFlush(invoiceCase);

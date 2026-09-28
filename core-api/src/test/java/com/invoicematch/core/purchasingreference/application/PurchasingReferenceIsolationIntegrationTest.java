@@ -87,6 +87,7 @@ class PurchasingReferenceIsolationIntegrationTest extends AbstractPostgresIntegr
     @BeforeEach
     void reset() {
         INTERCEPTOR.reset();
+        jdbc.execute("truncate table receipt_allocation");
         jdbc.update("delete from receipt_line_snapshot");
         jdbc.update("delete from receipt_snapshot");
         jdbc.update("delete from purchase_order_line_snapshot");

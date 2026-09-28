@@ -82,6 +82,7 @@ class PurchasingReferenceIntegrationTest extends AbstractPostgresIntegrationTest
 
     @BeforeEach
     void cleanSnapshots() {
+        jdbc.execute("truncate table receipt_allocation");
         jdbc.update("delete from receipt_line_snapshot");
         jdbc.update("delete from receipt_snapshot");
         jdbc.update("delete from purchase_order_line_snapshot");

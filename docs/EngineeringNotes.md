@@ -370,6 +370,47 @@ reflection 기반 경계 테스트와 직접 service 호출 테스트로 공개 
 
 관련 커밋: `69dde46`, `6077d3d`, `5bdb6e0`, `89214db`, `d4fec02`, `b865376`, `c3648f3`
 
+## P1-08 — 전달 유실/중복과 RESULT_UNKNOWN을 구분하는 최소 Outbox 릴레이
+
+### 문제
+
+승인 트랜잭션이 `PaymentRequest`를 commit한 직후 relay가 멈추거나 worker가 죽으면 ERP 인계 요청이 영영 사라질 수 있다. 반대로 HTTP timeout이나 5xx 후 무조건 재전송하면 ERP가 이미 처리했을 수 있는 요청이 중복될 수 있고, 상태를 `FAILED`로 단정하면 실제 처리 여부를 잘못 기록하게 된다. 또한 `PaymentRequest`/payload/key를 raw SQL로 다른 값으로 바꿔 인계하면 감사 근거가 깨진다.
+
+### 해결
+
+- 외부 HTTP 호출 전에 승인 트랜잭션 안에서 `PaymentRequest`와 `PaymentRequestExportRequested` Outbox 행을 함께 저장하고, outbox insert 실패 시 배분·결정·지급·감사·사건 상태가 전부 rollback되게 했다.
+- Java와 PostgreSQL이 byte 단위로 동일한 canonical payload 텍스트와 SHA-256을 생성하고, V8 insert/update trigger가 payload·hash·idempotency key·export version을 `payment_request`에 묶어 다른 지급·금액·주체로의 치환을 거부한다. 문자열 값은 PostgreSQL `to_jsonb` typed escaping과 동일한 규칙으로 Java에서 escape하므로 quote·backslash·CR/LF/control·Unicode가 양쪽에서 같은 bytes가 된다.
+- Outbox 상태를 `READY → CLAIMED → SENDING → {DELIVERED | FAILED | RESULT_UNKNOWN}`으로 분리하고, `payment_request` 상태 `NOT_SENT → SENDING → {ACKNOWLEDGED | RETRY_SCHEDULED | FAILED | RESULT_UNKNOWN}`도 DB check/trigger로 제한했다.
+- claim은 `FOR UPDATE SKIP LOCKED`와 opaque claim token + worker id + lease deadline을 사용하는 짧은 트랜잭션으로만 수행하고, HTTP 중에는 DB lock을 유지하지 않는다. 모든 전이는 claim token compare-and-set으로 수행해 stale worker가 현재 상태를 덮지 못한다. 만료 회수는 payment → outbox 순서로만 잠그고(식별은 비잠금 조회, 잠금 후 동일 token/status/expiry 재검증) 최종화(case → payment → outbox)와 같은 순서를 공유해 교착을 없앴다.
+- `CLAIMED` 만료는 안전하게 `READY`로 복구하지만, HTTP 시작 직전 commit한 `SENDING` 만료는 `RESULT_UNKNOWN`으로 종결해 자동 재전송하지 않는다. timeout·reset·5xx도 `RESULT_UNKNOWN`으로 처리하고, 명시적 429만 같은 key/payload로 bounded backoff 재시도한다. 2xx는 outbox `DELIVERED`·지급 `ACKNOWLEDGED`·사건 `EXPORTED`를 한 트랜잭션으로 확정한다.
+- relay scheduler는 fail-closed로 기본 disabled이며, Compose도 명시적 opt-in 없이는 켜지지 않는다. mock-erp가 health-only인 P1-09 이전에는 활성화하지 않는다(활성화 시 승인이 확정 404 `FAILED`가 되므로). HTTP adapter는 JDK `HttpClient`로 바꿔 body를 버리면서도 `sendAsync(...).get(totalDeadline)`으로 connect·header·body를 포함한 전체 요청 완료를 하나의 deadline으로 제한한다. sending lease는 개별 timeout이 아니라 `request-timeout + positive safety-margin`보다 길어야 하며 위반 시 기동이 실패한다. `runOnce`는 `@Transactional(propagation = NEVER)`로 ambient 호출자 트랜잭션을 HTTP/DB 효과 전에 거부한다(프록시 경계는 scheduler 직접 호출에도 적용).
+- lease deadline 생성·만료 비교와 attempt `occurred_at`은 JVM Clock이 아니라 PostgreSQL `clock_timestamp()`를 단일 기준으로 사용한다. 여러 node의 clock offset이 회수 판단에 영향을 주지 못하며, 테스트용 만료는 lease 행을 명시적으로 만료시킨다. 사건 `updated_at`만 P1-07과 일관되게 애플리케이션 clock을 쓴다.
+- 각 시도는 append-only `outbox_delivery_attempt`의 bounded code와 HTTP status로만 남긴다. `BEFORE INSERT` guard가 attempt를 실제 전이 증거로 강제한다: `SENDING`은 event가 `CLAIMED`이고 token/worker가 일치하며 `attempt_number = attempt_count + 1`일 때만, terminal/retry는 event가 `SENDING`이고 같은 attempt의 `SENDING` evidence가 있으며 HTTP status가 outcome 계약(`ACKNOWLEDGED`=2xx, `RETRY_SCHEDULED`=429, `FAILED`=비재시도 4xx 또는 소진된 429, `RESULT_UNKNOWN`=null/3xx/5xx, `LEASE_EXPIRED`=null)과 맞을 때만 허용한다. 애플리케이션은 evidence를 먼저 쓰고 같은 트랜잭션에서 상태를 바꾸며, 지연 constraint trigger가 outbox UPDATE 방향과 attempt INSERT 방향을 모두 검증한다. 즉 attempt 행 자체도 commit 최종 event/payment/case tuple과 정확히 일치해야 하고, attempt당 terminal/retry outcome은 partial unique로 최대 1개다(SENDING 1개 + terminal 1개는 허용). standalone evidence는 어떤 상태 전이도 만들지 못한다.
+- commit 시점 지연 guard가 사건의 모든 payment에 대해 `(payment, outbox, case)` tuple을 양방향으로 검증한다. 허용 조합은 `NOT_SENT`/`RETRY_SCHEDULED ↔ READY|CLAIMED`, `SENDING ↔ SENDING`, `ACKNOWLEDGED ↔ DELIVERED ↔ EXPORTED`, `FAILED ↔ FAILED`, `RESULT_UNKNOWN ↔ RESULT_UNKNOWN`이고, 성공이 아닌 모든 상태는 사건을 `EXPORT_PENDING`으로 강제한다. 같은 상태에서 claim identity(worker/token/attempt)를 바꾸는 raw UPDATE도 거부한다.
+
+### 검증과 교훈
+
+실제 PostgreSQL과 HTTP stub으로 전체 허용 tuple의 positive commit과 `ACK/READY`, `FAILED/READY`, `RESULT_UNKNOWN/SENDING`, `EXPORTED`-only 같은 mismatch의 commit-time 거부를 고정했다. attempt protocol은 jump·mixed token·standalone SENDING/terminal commit 거부·terminal-without-SENDING·duplicate·conflicting terminal·wrong HTTP·attempt_count 불일치를, 상태는 payload/hash/key/version/status/lease 위조·DELETE·token 탈취를 거부함을 확인했다. HTTP는 2xx/4xx/429/5xx/timeout에 더해 301/302/307이 rollback 없이 `RESULT_UNKNOWN`으로 저장되고 batch를 중단하지 않음을, header 즉시 응답 후 body를 trickle하는 응답이 전체 deadline으로 중단됨을, lease는 직전/직후 회수와 두 node clock offset(DB time 사용으로 무관)을 검증했다. ambient 트랜잭션 안에서 bean `runOnce`를 호출하면 `IllegalTransactionStateException`으로 ERP 호출·상태 변경 전에 거부됨도 확인했다. claim 경합(`SKIP LOCKED`로 각 event 1회 선점), stale token 거부, 4개 crash window와 `RESULT_UNKNOWN` 영구 비재전송, 회수/최종화 lock 순서(2-connection barrier, 교착 없음), V7 다건 `PENDING` backfill과 quote/backslash/CR/control/Unicode parity도 확인했다. 명시적 429 경로만 같은 key로 재전송되는 at-least-once이며 단일 업무 결과 보장(정확히 한 번)을 주장하지 않는다. 처리 여부를 알 수 없는 결과를 실패로 단정하지 않는 것이 중복 지급을 막는 핵심이며, 그 판단 근거는 애플리케이션 코드가 아니라 DB 상태 전이·attempt evidence·canonical payload binding으로 고정해야 raw SQL에 무너지지 않는다.
+
+관련 커밋: `9ac57df`, `bb74078`, `d07c426`, `a42a901`, `479504e`
+
+## P1-08 — 불변 이력 위에 상태 제약을 얹는 migration 순서
+
+### 문제
+
+V7까지 `payment_request.status`는 `PENDING`만 허용했고 V7의 변경 보호 trigger가 상태 전이를 검사한다. V8에서 새 status check를 먼저 추가하면 아직 `PENDING`인 기존 행 때문에 migration이 실패하고, 보호 trigger가 legacy 전이를 모르면 backfill UPDATE 자체가 거부된다.
+
+### 해결
+
+- 기존 status check를 먼저 drop하고, 보호 trigger 함수가 legacy `PENDING → NOT_SENT` 전이를 허용하도록 교체한 뒤 backfill UPDATE를 수행하고, 그 다음에 확장된 check를 추가했다.
+- V7까지만 적용한 별도 데이터베이스에 승인 완료 지급요청 2건을 넣고 V8로 올리는 upgrade test에서 `PENDING → NOT_SENT` 마이그레이션과 결정적 outbox backfill을 검증했다.
+
+### 검증과 교훈
+
+제약과 trigger가 이미 존재하는 불변 이력에 새 상태 모델을 도입할 때는 drop → legacy 전이 허용 → backfill → 새 제약 순서를 지켜야 한다. 새 설치 테스트만으로는 운영 upgrade를 보장하지 못하므로 `N-1 → N` 데이터 포함 migration test가 필요하다. V8은 아직 미병합이므로 전체 상태 행렬, attempt evidence guard, canonical escaping, DB time 같은 후속 수정을 같은 migration에서 마무리했다.
+
+관련 커밋: `9ac57df`, `bb74078`, `d07c426`, `a42a901`, `479504e`
+
 ## 앞으로 추가할 때의 형식
 
 새 사례는 아래 항목을 중심으로 짧게 추가한다.

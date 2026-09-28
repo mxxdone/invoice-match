@@ -26,6 +26,28 @@ purchasing-system:
   connect-timeout: ${PURCHASING_CONNECT_TIMEOUT:2s}
   read-timeout: ${PURCHASING_READ_TIMEOUT:3s}
 
+# Phase 1 in-process payment export relay.
+#
+# Fail-closed: the scheduler is disabled until an environment explicitly opts in
+# (PAYMENT_EXPORT_RELAY_ENABLED=true or payment-export.relay.enabled). Enable it
+# only once an idempotent ERP receiver is deployed (P1-09); the current mock-erp
+# is health-only, so enabling it would turn each approval into a definite 404
+# FAILED state. The sending lease must exceed the total request deadline plus a
+# positive safety margin (request-timeout + safety-margin), validated at startup.
+# Lease times come from PostgreSQL clock_timestamp(), not the JVM clock.
+payment-export:
+  relay:
+    enabled: ${PAYMENT_EXPORT_RELAY_ENABLED:false}
+    base-url: ${ERP_BASE_URL:http://localhost:8081}
+    connect-timeout: ${PAYMENT_EXPORT_CONNECT_TIMEOUT:1s}
+    request-timeout: ${PAYMENT_EXPORT_REQUEST_TIMEOUT:3s}
+    lease-duration: ${PAYMENT_EXPORT_LEASE_DURATION:30s}
+    safety-margin: ${PAYMENT_EXPORT_SAFETY_MARGIN:5s}
+    batch-size: ${PAYMENT_EXPORT_BATCH_SIZE:20}
+    interval: ${PAYMENT_EXPORT_INTERVAL:2s}
+    max-attempts: ${PAYMENT_EXPORT_MAX_ATTEMPTS:3}
+    retry-backoff: ${PAYMENT_EXPORT_RETRY_BACKOFF:5s}
+
 # Request body policy. The limit is enforced by reading the stream, so it also
 # bounds chunked bodies without a Content-Length.
 http:

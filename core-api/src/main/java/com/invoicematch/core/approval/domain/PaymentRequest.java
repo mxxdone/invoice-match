@@ -20,8 +20,9 @@ import java.util.UUID;
  * <p>The deterministic {@code externalRequestKey} is globally unique (Spec
  * invariant 6) and the {@code (case, snapshot)} uniqueness is the database
  * backstop that a second approval of the same snapshot can never create a second
- * logical payment. Transport, retries and the export status machine belong to
- * P1-08.
+ * logical payment. P1-08 adds the {@code exportVersion} and the hand-off state
+ * machine; the outbox relay drives the status via short, claim-token-guarded
+ * transactions.
  */
 @Entity
 @Table(name = "payment_request")
@@ -58,12 +59,19 @@ public class PaymentRequest {
     @Column(name = "currency", nullable = false, updatable = false, length = 3)
     private String currency;
 
+    /** Export line version; the ERP idempotency key is id + ":" + version (Spec 14.2). */
+    @Column(name = "export_version", nullable = false, updatable = false)
+    private long exportVersion;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
     private PaymentRequestStatus status;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
+
+    /** P1-08 hand-off version; P1-07 always emits the first export. */
+    public static final long INITIAL_EXPORT_VERSION = 1L;
 
     protected PaymentRequest() {
     }
@@ -79,6 +87,7 @@ public class PaymentRequest {
             String externalRequestKey,
             Money amount,
             String currency,
+            long exportVersion,
             PaymentRequestStatus status,
             Instant createdAt) {
         this.id = Objects.requireNonNull(id, "id");
@@ -94,6 +103,10 @@ public class PaymentRequest {
             throw new DomainValidationException("PaymentRequest amount must be positive");
         }
         this.currency = requireText(currency, "currency");
+        if (exportVersion != INITIAL_EXPORT_VERSION) {
+            throw new DomainValidationException("PaymentRequest exportVersion must be 1");
+        }
+        this.exportVersion = exportVersion;
         this.status = Objects.requireNonNull(status, "status");
         this.createdAt = Objects.requireNonNull(createdAt, "createdAt");
         if (!this.externalRequestKey.equals(externalRequestKey(invoiceCaseId, reviewSnapshotId))) {
@@ -102,7 +115,7 @@ public class PaymentRequest {
         }
     }
 
-    public static PaymentRequest pending(
+    public static PaymentRequest notSent(
             UUID id,
             UUID invoiceCaseId,
             String purchaseOrderId,
@@ -125,8 +138,26 @@ public class PaymentRequest {
                 externalRequestKey,
                 amount,
                 currency,
-                PaymentRequestStatus.PENDING,
+                INITIAL_EXPORT_VERSION,
+                PaymentRequestStatus.NOT_SENT,
                 createdAt);
+    }
+
+    /**
+     * Moves the export status along the P1-08 state machine. The database
+     * trigger repeats this check so raw SQL cannot bypass it.
+     */
+    public void transitionTo(PaymentRequestStatus target) {
+        Objects.requireNonNull(target, "target");
+        if (!status.canTransitionTo(target)) {
+            throw new DomainValidationException("illegal PaymentRequest transition " + status + " -> " + target);
+        }
+        this.status = target;
+    }
+
+    /** ERP idempotency key: {@code paymentRequestId + exportVersion} (Spec 14.2). */
+    public String exportIdempotencyKey() {
+        return id + ":" + exportVersion;
     }
 
     /**
@@ -182,6 +213,10 @@ public class PaymentRequest {
 
     public String currency() {
         return currency;
+    }
+
+    public long exportVersion() {
+        return exportVersion;
     }
 
     public PaymentRequestStatus status() {

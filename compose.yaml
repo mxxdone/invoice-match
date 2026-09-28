@@ -24,6 +24,11 @@ services:
       DB_USER: invoice_match
       DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       PURCHASING_BASE_URL: http://mock-purchasing:8082
+      ERP_BASE_URL: http://mock-erp:8081
+      # Fail-closed: mock-erp is health-only and has no idempotent export
+      # receiver (P1-09), so the relay must stay disabled here. Opt in only with
+      # a real receiver: PAYMENT_EXPORT_RELAY_ENABLED=true.
+      PAYMENT_EXPORT_RELAY_ENABLED: "false"
       SPRING_PROFILES_ACTIVE: local
       TZ: UTC
     ports:
