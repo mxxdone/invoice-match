@@ -10,3 +10,4 @@
 *.log
 output/
 .playwright-cli/
+*.tsbuildinfo

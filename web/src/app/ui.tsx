@@ -6,12 +6,13 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { useAuth } from './auth';
 
 export function Mark() { return <div className="brand"><span className="brand-mark">im<span>.</span></span><span>invoice match</span></div>; }
+// Navigation is role-aware, but the server remains the authority: hiding an
+// entry is guidance, not an authorization decision.
 const navigation = [
-  ['cases', '/cases', '청구서', 'document'],
-  ['detail', '/', '청구서 상세', 'document'],
-  ['new', '/cases/new', '청구 작성', 'plus'],
-  ['handoff', '/handoff', 'ERP 인계', 'send'],
-  ['operations', '/operations', '운영 작업', 'grid'],
+  ['cases', '/cases', '청구서', 'document', []],
+  ['new', '/cases/new', '청구 작성', 'plus', ['SUBMITTER']],
+  ['operations', '/operations', '운영 작업', 'grid', ['OPERATOR']],
+  ['handoff', '/handoff', 'ERP 인계', 'send', ['APPROVER', 'OPERATOR']],
 ] as const;
 
 export type IconName = 'grid' | 'search' | 'chevron' | 'arrow' | 'check' | 'close' | 'sliders' | 'clock' | 'document' | 'plus' | 'send';
@@ -45,7 +46,8 @@ export function Sidebar({ active, preview = false, actor, role }: { active: stri
       : '로그인이 필요합니다';
   const caption = preview ? '데모 계정' : isAuthenticated ? '로그인됨' : '인증 필요';
   function signOut() { logout(); router.push('/login'); }
-  return <aside className="sidebar" aria-label="작업 공간"><Mark /><div className="workspace-label">업무 공간</div><nav className="primary-nav" aria-label="디자인 화면 탐색">{navigation.map(([id, href, label, icon]) => <Link key={id} href={href} className={active === id ? 'nav-parent is-current' : 'nav-parent'} aria-current={active === id ? 'page' : undefined}><Icon name={icon} />{label}</Link>)}</nav>{preview && <div className="sidebar-note">전체 역할의 화면을 둘러보는<br />디자인 시안입니다.</div>}<div className="sidebar-bottom"><span className="avatar">{shownActor.slice(0, 2).toUpperCase()}</span><div><strong>{shownActor}</strong><span>{shownRole} · {caption}</span>{preview ? <Link href="/login" className="session-link">로그인 화면</Link> : isAuthenticated ? <button type="button" className="session-link" onClick={signOut}>로그아웃</button> : <Link href="/login" className="session-link">로그인</Link>}</div></div></aside>;
+  const visibleNav = preview ? navigation : navigation.filter(([, , , , roles]) => roles.length === 0 || roles.some(item => user?.roles.includes(item)));
+  return <aside className="sidebar" aria-label="작업 공간"><Mark /><div className="workspace-label">업무 공간</div><nav className="primary-nav" aria-label="업무 화면 탐색">{visibleNav.map(([id, href, label, icon]) => <Link key={id} href={href} className={active === id ? 'nav-parent is-current' : 'nav-parent'} aria-current={active === id ? 'page' : undefined}><Icon name={icon} />{label}</Link>)}</nav>{preview && <div className="sidebar-note">전체 역할의 화면을 둘러보는<br />디자인 시안입니다.</div>}<div className="sidebar-bottom"><span className="avatar">{shownActor.slice(0, 2).toUpperCase()}</span><div><strong>{shownActor}</strong><span>{shownRole} · {caption}</span>{preview ? <Link href="/login" className="session-link">로그인 화면</Link> : isAuthenticated ? <button type="button" className="session-link" onClick={signOut}>로그아웃</button> : <Link href="/login" className="session-link">로그인</Link>}</div></div></aside>;
 }
 export function Shell({ active, preview = true, actor, role, children }: { active: string; preview?: boolean; actor?: string; role?: string; children: ReactNode }) {
   return <div className="app-shell"><Sidebar active={active} preview={preview} actor={actor} role={role} /><main className="workspace">{preview ? <StatePreview>{children}</StatePreview> : children}</main></div>;
