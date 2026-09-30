@@ -1,0 +1,160 @@
+// Production adapters for the P1-10 verification script, importable on their
+// own so the real spawn/error/exit/close contract can be reproduced in tests.
+//
+// Everything uses the fixed IPv4 loopback 127.0.0.1 consistently (port probe,
+// HTTP readiness/verify, DB and service URLs, server binds and the docker
+// publish) so an unrelated IPv6-only listener can never be mistaken for our
+// child and receive seed writes.
+
+import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:net';
+import { join } from 'node:path';
+
+export const LOOPBACK = '127.0.0.1';
+
+export function loopbackUrl(port) {
+  return `http://${LOOPBACK}:${port}`;
+}
+
+export function createPortProbe({ host = LOOPBACK } = {}) {
+  return (port) =>
+    new Promise((resolve) => {
+      const server = createServer();
+      server.once('error', (error) => resolve(error.code === 'EADDRINUSE'));
+      server.once('listening', () => server.close(() => resolve(false)));
+      server.listen(port, host);
+    });
+}
+
+export function createDocker({ timeoutMs = 60000 } = {}) {
+  const run = (args) => {
+    const result = spawnSync('docker', args, { encoding: 'utf8', timeout: timeoutMs });
+    return { code: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+  };
+  return {
+    run: async (args) => run(args),
+    exec: async (id, args) => run(['exec', id, ...args]),
+    stop: async (id) => run(['stop', id]),
+  };
+}
+
+export function createRequest({ timeoutMs = 8000 } = {}) {
+  return async (url, init = {}) => {
+    const response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    const body = await response.text();
+    return { ok: response.ok, status: response.status, body };
+  };
+}
+
+export function startChild(spec, { timeoutMs = 5000 } = {}) {
+  const state = { error: null, exited: false, closed: false };
+  let child = null;
+  try {
+    // Explicit env: the caller's environment is never mutated; PATH is
+    // inherited only so the executable can be resolved.
+    child = spawn(spec.cmd, spec.args, {
+      cwd: spec.cwd,
+      env: { ...process.env, ...spec.env },
+      stdio: spec.stdio ?? 'ignore',
+      windowsHide: true,
+    });
+  } catch (error) {
+    state.error = error;
+    state.exited = true;
+  }
+
+  const closed = new Promise((resolve) => {
+    if (!child) {
+      resolve();
+      return;
+    }
+    // The error listener is mandatory: without it a missing executable or an
+    // invalid cwd becomes an unhandled 'error' event.
+    child.once('error', (error) => {
+      state.error = error;
+      state.exited = true;
+      resolve();
+    });
+    child.once('exit', () => {
+      state.exited = true;
+    });
+    child.once('close', () => {
+      state.closed = true;
+      resolve();
+    });
+  });
+  closed.catch(() => {});
+
+  return {
+    name: spec.name,
+    alive() {
+      return child !== null && state.error === null && !state.exited && !state.closed;
+    },
+    async stop() {
+      if (!child || state.closed || state.exited) {
+        return { ok: true };
+      }
+      try {
+        child.kill();
+      } catch (error) {
+        return { ok: false, error: String(error) };
+      }
+      const result = await Promise.race([
+        closed.then(() => 'closed'),
+        new Promise((resolve) => setTimeout(() => resolve('timeout'), timeoutMs)),
+      ]);
+      if (result === 'timeout') {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // best effort
+        }
+        return { ok: false, error: 'child did not exit within timeout' };
+      }
+      return { ok: true };
+    },
+  };
+}
+
+export function buildConfig({ ports, repo, pgPassword }) {
+  return {
+    ports,
+    images: { postgres: 'postgres:18-alpine' },
+    pgEnv: { POSTGRES_DB: 'invoice_match', POSTGRES_USER: 'invoice_match', POSTGRES_PASSWORD: pgPassword },
+    pgPublish: `${LOOPBACK}:${ports.pg}:5432`,
+    pgReadyArgs: ['pg_isready', '-U', 'invoice_match', '-d', 'invoice_match'],
+    readinessTimeoutMs: 90000,
+    children: [
+      {
+        name: 'mock-purchasing',
+        cmd: 'node',
+        args: ['server.js'],
+        cwd: join(repo, 'mock-purchasing'),
+        env: { PORT: String(ports.mock) },
+        readiness: { url: `${loopbackUrl(ports.mock)}/health`, verify: (body) => body.includes('"status":"UP"') },
+      },
+      {
+        name: 'core-api',
+        cmd: 'java',
+        args: ['-jar', join(repo, 'core-api', 'build', 'libs', 'core-api-0.1.0-SNAPSHOT.jar'), `--server.port=${ports.core}`, `--server.address=${LOOPBACK}`],
+        cwd: join(repo, 'core-api'),
+        env: {
+          DB_URL: `jdbc:postgresql://${LOOPBACK}:${ports.pg}/invoice_match`,
+          DB_USER: 'invoice_match',
+          DB_PASSWORD: pgPassword,
+          SPRING_PROFILES_ACTIVE: 'local',
+          PURCHASING_BASE_URL: loopbackUrl(ports.mock),
+        },
+        readiness: { url: `${loopbackUrl(ports.core)}/actuator/health`, verify: (body) => body.includes('"status":"UP"') },
+      },
+      {
+        name: 'web',
+        cmd: 'node',
+        args: ['server.js'],
+        cwd: join(repo, 'web', '.next', 'standalone'),
+        env: { CORE_API_URL: loopbackUrl(ports.core), PORT: String(ports.web), HOSTNAME: LOOPBACK },
+        readiness: { url: `${loopbackUrl(ports.web)}/login` },
+      },
+    ],
+  };
+}

@@ -3,7 +3,7 @@
 // All external effects (port probing, docker, child processes, HTTP) are
 // injected so the safety contract can be reproduced with stubs in unit tests:
 // port preflight, docker exit-code/id ownership, child-exit-aware readiness,
-// seed gating, and finally-cleanup of created resources only.
+// seed gating, bounded cleanup and cleanup-error reporting.
 
 import { randomUUID } from 'node:crypto';
 
@@ -39,12 +39,12 @@ export function randomContainerName(prefix) {
   return `${prefix}-${randomUUID()}`;
 }
 
-export async function dockerRun({ docker, name, image, env, hostPort, containerPort = 5432 }) {
+export async function dockerRun({ docker, name, image, env, publish, containerPort = 5432 }) {
   const args = ['run', '-d', '--rm', '--name', name];
   for (const [key, value] of Object.entries(env)) {
     args.push('-e', `${key}=${value}`);
   }
-  args.push('-p', `${hostPort}:${containerPort}`, image);
+  args.push('-p', publish ?? `${containerPort}`, image);
   const result = await docker.run(args);
   if (result.code !== 0) {
     throw new VerifyError(`docker run failed (exit ${result.code}): ${(result.stderr || '').trim() || 'no stderr'}`);
@@ -103,9 +103,35 @@ export async function waitForDockerReady({ docker, id, args, timeoutMs, interval
   }
 }
 
+async function cleanupCreated(docker, created) {
+  const errors = [];
+  for (const child of created.children) {
+    try {
+      const outcome = typeof child.stop === 'function' ? await child.stop() : { ok: true };
+      if (outcome && outcome.ok === false) {
+        errors.push(`stop ${child.name}: ${outcome.error ?? 'unknown'}`);
+      }
+    } catch (error) {
+      errors.push(`stop ${child.name}: ${String(error)}`);
+    }
+  }
+  for (const id of created.containers) {
+    try {
+      const result = await docker.stop(id);
+      if (result && typeof result.code === 'number' && result.code !== 0) {
+        errors.push(`docker stop ${id}: exit ${result.code}`);
+      }
+    } catch (error) {
+      errors.push(`docker stop ${id}: ${String(error)}`);
+    }
+  }
+  return errors;
+}
+
 export async function runVerification(deps) {
   const { config, isPortOpen, docker, startChild, request, now, sleep, log = () => {} } = deps;
   const created = { containers: [], children: [] };
+  let outcome;
   try {
     validatePorts(config.ports);
     await assertPortsFree(config.ports, isPortOpen);
@@ -116,7 +142,7 @@ export async function runVerification(deps) {
       name,
       image: config.images.postgres,
       env: config.pgEnv,
-      hostPort: config.ports.pg,
+      publish: config.pgPublish,
     });
     created.containers.push(pg.id);
     await waitForDockerReady({
@@ -129,7 +155,9 @@ export async function runVerification(deps) {
     });
 
     for (const spec of config.children) {
-      const child = startChild(spec);
+      // Await so an async adapter may finish wiring listeners, then register
+      // immediately so a later spawn/exit can never escape cleanup.
+      const child = await startChild(spec);
       created.children.push(child);
       await waitForHttp({
         request,
@@ -142,8 +170,6 @@ export async function runVerification(deps) {
       });
     }
 
-    // Only after every child owns its port do we allow seeding, and each seed
-    // step re-checks that all children are still alive.
     const guard = () => {
       for (const child of created.children) {
         if (!childAlive(child)) {
@@ -152,22 +178,20 @@ export async function runVerification(deps) {
       }
     };
     guard();
-    const result = await deps.verify({ request, config, guard, log });
-    return { ok: true, ...result };
-  } finally {
-    for (const child of created.children) {
-      try {
-        child.kill();
-      } catch {
-        // best effort
-      }
-    }
-    for (const id of created.containers) {
-      try {
-        await docker.stop(id);
-      } catch {
-        // best effort
-      }
-    }
+    outcome = { ok: true, value: await deps.verify({ request, config, guard, log }) };
+  } catch (error) {
+    outcome = { ok: false, failure: error };
   }
+
+  const cleanupErrors = await cleanupCreated(docker, created);
+  if (cleanupErrors.length > 0) {
+    if (outcome.ok) {
+      return { ok: false, cleanupErrors };
+    }
+    outcome.failure.message += ` (cleanup also failed: ${cleanupErrors.join('; ')})`;
+  }
+  if (!outcome.ok) {
+    throw outcome.failure;
+  }
+  return { ok: true, ...outcome.value };
 }
