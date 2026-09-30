@@ -210,3 +210,53 @@ test('a logout during a pending login prevents the late success from authenticat
     t.restore();
   }
 });
+
+// A stub that ignores the abort signal, so the login fetch resolves normally;
+// this isolates the "signal aborted after the body resolved" continuation check
+// rather than the fetch rejection path.
+function setupAuthIgnoringAbort() {
+  const originalFetch = globalThis.fetch;
+  const pending = [];
+  globalThis.fetch = () => new Promise((resolve) => {
+    const d = deferred();
+    pending.push({ resolve: (response) => d.resolve(response) });
+    d.promise.then(resolve);
+  });
+  let auth = null;
+  function Consumer() { auth = useAuth(); return null; }
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  return {
+    pending,
+    get auth() { return auth; },
+    async mount() { await act(async () => { root.render(createElement(AuthProvider, null, createElement(Consumer))); }); },
+    async unmount() { await act(async () => { root.unmount(); }); },
+    restore() { globalThis.fetch = originalFetch; container.remove(); },
+  };
+}
+
+test('an abort after the login body resolves but before continuation does not authenticate', async () => {
+  const t = setupAuthIgnoringAbort();
+  try {
+    await t.mount();
+    const controller = new AbortController();
+    let loginResult = null;
+    await act(async () => {
+      t.auth.login({ username: 'A', password: 'p' }, controller.signal).then((result) => { loginResult = result; });
+    });
+    const request = t.pending[0];
+    await act(async () => {
+      controller.abort();
+      request.resolve(jsonResponse(200, { username: 'A', roles: ['SUBMITTER'] }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(t.auth.isAuthenticated, false);
+    assert.equal(t.auth.isSubmitting, false);
+    assert.equal(loginResult, false);
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});

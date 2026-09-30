@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon, PageHeader, Shell } from '../ui';
 import { useAuth } from '../auth';
 import { formatInstant, presentStatus } from '../api/contract';
@@ -52,6 +52,12 @@ export default function Cases() {
     logout();
     router.replace('/login');
   }, [logout, router]);
+
+  // A direct visit or reload has no in-memory session: send the user to /login.
+  useEffect(() => {
+    if (!isAuthenticated) router.replace('/login');
+  }, [isAuthenticated, router]);
+
   const { state, page: pageResult, error: loadError, isLoading } = useInvoiceCases({
     credentials,
     sessionId,

@@ -51,6 +51,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null);
     try {
       const me = await fetchCurrentUser(next, signal);
+      // The signal can be aborted after the response body is fully read but
+      // before this continuation runs, so check both the abort state and the
+      // session generation before touching auth. Cleaning up isSubmitting is
+      // only safe while this attempt is still the current one.
+      if (signal?.aborted) {
+        if (sessions.current.isCurrent(token)) setIsSubmitting(false);
+        return false;
+      }
       if (!sessions.current.isCurrent(token)) return false;
       setCredentials(next);
       setUser(me);

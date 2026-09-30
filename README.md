@@ -549,4 +549,18 @@ cd ../mock-purchasing
 npm test
 ```
 
+The first live web slice (login + case list) has a self-contained smoke script.
+It starts throwaway resources only (an ephemeral PostgreSQL container plus the
+built core-api and web), records and owns their PIDs/container id, waits for
+child-aware readiness with a finite timeout, runs the read-API checks, and
+always cleans up only what it created. It never stops an existing container and
+never logs credentials:
+
+```sh
+cd core-api && ./gradlew bootJar
+cd ../web && npm ci && npm run build
+cd ..
+node scripts/verify-p1-10.mjs
+```
+
 The GitHub Actions workflow runs these checks and a five-service Compose smoke test. Source layout is intentionally small: `core-api` holds one Spring application organized by feature (`invoicecase`, `matching`, `purchasingreference`, `review`, `shared`); `web/src/app` holds the Next.js routes; `mock-erp` serves only a deterministic health response; `mock-purchasing` serves deterministic read-only purchase order aggregates. P1-01 defines the Phase 1 state contract and PostgreSQL baseline, P1-02 defines the external purchasing reference snapshot and refresh version semantics, P1-03 defines manual submission, evidence bundle versioning and request-id idempotency, P1-04 defines the deterministic AI-free 3-way match, P1-05 defines the frozen review snapshot, case-local mapping with deterministic re-match, supplement/reject and freshness, P1-06 defines role-based authorization, the authoritative submitter/reviewer identity, request trace ids and the append-only audit history, but later tickets still own approval, allocation, payment and P1-09 behavior.
