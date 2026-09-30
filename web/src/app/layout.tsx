@@ -1,12 +1,13 @@
 import type { Metadata } from 'next';
+import { AuthProvider } from './auth';
 import './globals.css';
 import './screens.css';
 
 export const metadata: Metadata = {
-  title: 'Invoice Match · 디자인 시안',
-  description: 'Ramp 레퍼런스를 적용한 청구 상세 디자인 시안. 가상 데이터이며 실제 API와 연결되지 않았습니다.',
+  title: 'Invoice Match',
+  description: '청구·발주·검수를 비교하고 검토 결정과 ERP 인계 상태를 확인하는 업무 화면.',
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="ko"><body>{children}</body></html>;
+  return <html lang="ko"><body><AuthProvider>{children}</AuthProvider></body></html>;
 }

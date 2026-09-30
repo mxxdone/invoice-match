@@ -52,6 +52,9 @@ services:
     build: ./web
     environment:
       TZ: UTC
+      # Server-only target of the same-origin /backend read proxy. Never a
+      # NEXT_PUBLIC variable; the browser never chooses the host.
+      CORE_API_URL: http://core-api:8080
     ports:
       - "${WEB_PORT:-3000}:3000"
     depends_on:

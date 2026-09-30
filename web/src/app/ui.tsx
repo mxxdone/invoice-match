@@ -1,7 +1,9 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useEffect, useState, type ReactNode } from 'react';
+import { useAuth } from './auth';
 
 export function Mark() { return <div className="brand"><span className="brand-mark">im<span>.</span></span><span>invoice match</span></div>; }
 const navigation = [
@@ -28,11 +30,26 @@ export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
 
-export function Sidebar({ active, actor = 'approver', role = '승인자' }: { active: string; actor?: string; role?: string }) {
-  return <aside className="sidebar" aria-label="작업 공간"><Mark /><div className="workspace-label">업무 공간</div><nav className="primary-nav" aria-label="디자인 화면 탐색">{navigation.map(([id, href, label, icon]) => <Link key={id} href={href} className={active === id ? 'nav-parent is-current' : 'nav-parent'} aria-current={active === id ? 'page' : undefined}><Icon name={icon} />{label}</Link>)}</nav><div className="sidebar-note">전체 역할의 화면을 둘러보는<br />디자인 시안입니다.</div><div className="sidebar-bottom"><span className="avatar">{actor.slice(0, 2).toUpperCase()}</span><div><strong>{actor}</strong><span>{role} · 데모 계정</span><Link href="/login" className="session-link">로그인 시안</Link></div></div></aside>;
+const roleLabels: Record<string, string> = { SUBMITTER: '제출자', APPROVER: '승인자', OPERATOR: '운영자' };
+
+export function Sidebar({ active, actor, role }: { active: string; actor?: string; role?: string }) {
+  const router = useRouter();
+  const { user, isAuthenticated, logout } = useAuth();
+  // Preview screens pass an explicit identity and stay design-only; a live
+  // screen shows the authoritative /api/me identity and can sign out.
+  const previewIdentity = Boolean(actor || role);
+  const shownActor = previewIdentity ? (actor ?? 'approver') : (user?.username ?? 'guest');
+  const shownRole = previewIdentity
+    ? (role ?? '승인자')
+    : isAuthenticated
+      ? (user?.roles.map(item => roleLabels[item] ?? item).join(' · ') || '역할 없음')
+      : '로그인이 필요합니다';
+  const caption = previewIdentity ? '데모 계정' : isAuthenticated ? '로그인됨' : '인증 필요';
+  function signOut() { logout(); router.push('/login'); }
+  return <aside className="sidebar" aria-label="작업 공간"><Mark /><div className="workspace-label">업무 공간</div><nav className="primary-nav" aria-label="디자인 화면 탐색">{navigation.map(([id, href, label, icon]) => <Link key={id} href={href} className={active === id ? 'nav-parent is-current' : 'nav-parent'} aria-current={active === id ? 'page' : undefined}><Icon name={icon} />{label}</Link>)}</nav><div className="sidebar-note">전체 역할의 화면을 둘러보는<br />디자인 시안입니다.</div><div className="sidebar-bottom"><span className="avatar">{shownActor.slice(0, 2).toUpperCase()}</span><div><strong>{shownActor}</strong><span>{shownRole} · {caption}</span>{previewIdentity ? <Link href="/login" className="session-link">로그인 화면</Link> : isAuthenticated ? <button type="button" className="session-link" onClick={signOut}>로그아웃</button> : <Link href="/login" className="session-link">로그인</Link>}</div></div></aside>;
 }
-export function Shell({ active, actor, role, children }: { active: string; actor?: string; role?: string; children: ReactNode }) {
-  return <div className="app-shell"><Sidebar active={active} actor={actor} role={role} /><main className="workspace"><StatePreview>{children}</StatePreview></main></div>;
+export function Shell({ active, preview = true, actor, role, children }: { active: string; preview?: boolean; actor?: string; role?: string; children: ReactNode }) {
+  return <div className="app-shell"><Sidebar active={active} actor={actor} role={role} /><main className="workspace">{preview ? <StatePreview>{children}</StatePreview> : children}</main></div>;
 }
 export function StatePreview({ children }: { children: ReactNode }) {
   const [state, setState] = useState('ready');

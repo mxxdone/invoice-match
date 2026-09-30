@@ -464,6 +464,31 @@ case version/status to re-read:
 `401` (unauthenticated) and `403` (forbidden) continue to use the shared
 `{code,message}` body.
 
+### Web login and case list (first connected slice)
+
+The web app now connects the first slice: `/login` calls `GET /api/me` and the
+`/cases` list calls `GET /api/invoice-cases`. Both go through the same-origin
+`/backend/...` proxy, so the browser never makes a cross-origin request. The
+proxy target is the server-only `CORE_API_URL` (default `http://localhost:8080`;
+`docker compose` sets `http://core-api:8080`) and only the `GET /api/me` and
+`GET /api/invoice-cases` paths are allowlisted, so it is not an open proxy and
+no user input selects the target. `CORE_API_URL` is never a `NEXT_PUBLIC_`
+variable.
+
+HTTP Basic credentials are kept only in React memory for the tab. They are sent
+as an `Authorization` header on each proxied request and are never written to
+`sessionStorage`/`localStorage`/IndexedDB, the URL, logs or error output.
+Reloading the page or signing out drops them, so the next visit requires signing
+in again. The backend still owns identity, roles and the list row scope; the UI
+never re-decides them. HTTP Basic is only acceptable on `localhost`: any
+non-local deployment must terminate TLS (HTTPS) in front of the web app and the
+Core API.
+
+The detail, manual entry, match, review, approval and hand-off screens are still
+design-only previews. The `/cases` list shows only the server list summary; the
+supplier name is not part of the list DTO, so a row shows the raw `supplierId`
+and the account `submittedBy` instead of an invented name.
+
 ## Work on a service locally
 
 With PostgreSQL running (`docker compose up -d postgres`), set `DB_PASSWORD` to the same value as `POSTGRES_PASSWORD` in your private `.env`, then run (the `local` profile activates the demo identities; without it the API fails closed):
@@ -482,6 +507,11 @@ cd web
 npm ci
 npm run dev
 ```
+
+For local web development outside Compose, the default `CORE_API_URL` already
+points at `http://localhost:8080`; set it only when the Core API runs elsewhere.
+Sign in at `/login` with a local demo identity from the table above (for example
+`approver` / `approver-pass`).
 
 The Mock ERP service has no external npm dependencies:
 
