@@ -12,7 +12,7 @@
 | Phase | 목표 | 핵심 산출물 | 완료 기준 |
 |---|---|---|---|
 | 1 — AI 없는 업무 코어 | 수동 입력으로 핵심 업무 불변식과 끝단 흐름 검증 | Spring core, PostgreSQL, 구매 Mock, 결정론적 대사, 검토/RBAC/감사, 동시 배분, 지급요청 Outbox, Mock ERP, 얇은 Next.js UI | 정상·5개 예외·보완·거절·승인·인계를 재현하고 동시 승인에서도 초과 배분 0건 |
-| 2 — 문서와 비동기 처리 | 파일 접수와 느린 작업·외부 장애 격리 | MinIO, presigned upload, PDF/Excel parser, AnalysisRun, RabbitMQ, retry/DLQ, 운영 화면 | worker/broker 중단과 중복 메시지에도 사건 유실·업무 중복 없음 |
+| 2 — 문서와 비동기 처리 | 파일 접수와 느린 작업·외부 장애 격리 | MinIO, presigned upload, PDF/Excel parser, 원본 미리보기·다운로드, PDF 표준 인쇄, AnalysisRun, RabbitMQ, retry/DLQ, 운영 화면 | worker/broker 중단과 중복 메시지에도 사건 유실·업무 중복 없음 |
 | 3 — AI 추출·매핑·근거 | 비정형 해석을 구조화하고 품질 측정 | Document/Item Mapping/Evidence/Resolution agent, 읽기 전용 도구, pgvector, schema validation, 평가셋 | 비-AI 기준선 대비 품질·비용·지연·실패 유형 제시 |
 | 4 — Human-in-the-loop | 사람 대기와 재개를 안전하게 모델링 | LangGraph checkpoint, mapping interrupt, 새 증빙 재분석, resume 멱등성, stale 차단 | worker/message 점유 없이 정확한 version만 재개·반영 |
 | 5 — 최적화·장애 시연·포트폴리오 | 측정 가능한 개선과 재현 가능한 설명 완성 | 조회·인덱스 실험, 부하·경합·장애 주입, ERP 대사, 관측성, README/ERD/보고서 | 5~7분 시연, Docker Compose 재현, 성능·AI 평가 결과와 trade-off 설명 |
@@ -163,6 +163,8 @@ Phase 2~5의 Ticket은 직전 Phase 완료 검토 후 상세화한다.
 
 ### P1-10 — 조회 API와 최소 업무 화면
 
+**디자인 기준:** `docs/Spec.md` 19.0을 따른다. 우선 비교표 중심 상세 화면 하나를 제작해 사용자 확인을 받은 뒤 다른 화면에 확장한다. 디자인 확정만으로 구현 착수를 간주하지 않는다.
+
 **목적과 범위:** 로그인, 사건 목록, 수동 작성, 3-way 비교, 매핑, 보완, 거절, 승인, 인계상태, 감사이력 화면을 구현한다.
 
 **관련 규칙/불변식:** 서버 계산을 UI가 재판정하지 않는다. 표시한 version/hash로 승인하며 stale/경합 후 최신 상세와 원인을 표시한다.
@@ -173,7 +175,7 @@ Phase 2~5의 Ticket은 직전 Phase 완료 검토 후 상세화한다.
 
 **의존성:** P1-03~P1-09 API 계약. Mock contract로 일부 병렬 진행 가능.
 
-**사람 확인:** 5~7분 시연 흐름, 접근성 기본 동작, Phase 1에 가짜 AI/원문 미리보기가 없는지 확인한다.
+**사람 확인:** 5~7분 시연 흐름, 접근성 기본 동작, Phase 1에 가짜 AI·원문 미리보기·원본 인쇄 버튼이 없는지 확인한다. 원본 PDF 미리보기·다운로드·표준 인쇄와 Excel 원본 다운로드는 실제 문서 접수가 추가되는 Phase 2에서 구현한다.
 
 ### P1-11 — Phase 1 통합 인수
 
