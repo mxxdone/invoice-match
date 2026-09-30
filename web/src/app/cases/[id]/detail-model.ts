@@ -242,6 +242,22 @@ export function freshnessVerdict(freshness: ReviewFreshness): string {
 // A match result is computed against one frozen evidence bundle. When the case
 // has since been resubmitted, the latest match no longer reflects the current
 // claim; the screen must say so instead of showing it as the current verdict.
+// Audit change bodies are arbitrary JSON. A number outside the safe integer
+// range cannot be represented exactly, so it is replaced by a marker instead of
+// being printed as if it were the exact value. The replacer walks nested
+// objects and arrays, so a deep unsafe value is redacted too.
+export const UNSAFE_NUMBER_MARKER = '[지원 범위 초과 값 생략]';
+
+export function safeJsonStringify(value: unknown): string {
+  const text = JSON.stringify(value, (_key, item) => {
+    if (typeof item === 'number' && (!Number.isFinite(item) || !Number.isSafeInteger(item))) {
+      return UNSAFE_NUMBER_MARKER;
+    }
+    return item;
+  });
+  return text ?? '';
+}
+
 export function isStaleMatch(
   match: MatchResultView,
   currentBundleVersion: number | null,

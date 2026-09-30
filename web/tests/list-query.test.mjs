@@ -82,4 +82,13 @@ test('a KST range is accepted only in the canonical form, and an invalid or reve
 
   const nonCanonical = filtersFromSearchParams(new URLSearchParams({ submittedFrom: '2026-09-30T00:00:00Z' }));
   assert.equal(nonCanonical.submittedFrom, null);
+
+  // A non-canonical start next to a canonical end resets the whole range rather
+  // than forwarding a valid end with a start the app never wrote.
+  const mixed = filtersFromSearchParams(new URLSearchParams({
+    submittedFrom: '2026-09-30T00:00:00Z',
+    submittedTo: '2026-09-30T23:59:59.999999+09:00',
+  }));
+  assert.equal(mixed.submittedFrom, null);
+  assert.equal(mixed.submittedTo, null);
 });

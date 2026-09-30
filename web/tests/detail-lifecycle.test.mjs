@@ -382,3 +382,111 @@ test('a current audit 401 signs out once, but a late one after a session switch 
     late.restore();
   }
 });
+
+function queuedFirstPages(pages) {
+  let index = 0;
+  return () => pages[index++] ?? auditPage([], null);
+}
+
+test('an in-flight audit page aborted by A → B → A does not stick loading and a new request works', async () => {
+  let cursorCalls = 0;
+  let resolveOldCursor;
+  const oldCursor = new Promise((resolve) => { resolveOldCursor = resolve; });
+  const t = setup(auditResponder({
+    first: queuedFirstPages([auditPage(['40', '21'], 'c1'), auditPage(['b'], 'cb'), auditPage(['40', '21'], 'c1')]),
+    cursor: () => { cursorCalls += 1; return cursorCalls === 1 ? oldCursor : auditPage(['20', '11'], 'c2'); },
+  }));
+  try {
+    await t.render({ ...reviewBase, onUnauthorized: () => t.unauthorized.push('a') });
+    await t.flush();
+    await t.flush();
+    await act(async () => { latest.loadMoreAudit(); });
+    assert.equal(cursorCalls, 1);
+    assert.equal(latest.auditLoadingMore, true);
+
+    await t.render({ ...reviewBase, caseId: 'B', onUnauthorized: () => t.unauthorized.push('a') });
+    await t.flush();
+    await t.flush();
+    await t.render({ ...reviewBase, caseId: 'A', onUnauthorized: () => t.unauthorized.push('a') });
+    await t.flush();
+    await t.flush();
+
+    assert.equal(latest.load.status, 'ready');
+    assert.equal(latest.auditLoadingMore, false);
+    assert.deepEqual(latest.auditEntries.map((entry) => entry.id), ['40', '21']);
+
+    await act(async () => { latest.loadMoreAudit(); });
+    assert.equal(cursorCalls, 2);
+    await t.flush();
+    await t.flush();
+    assert.deepEqual(latest.auditEntries.map((entry) => entry.id), ['40', '21', '20', '11']);
+
+    resolveOldCursor(auditPage(['999'], null));
+    await t.flush();
+    await t.flush();
+    assert.equal(latest.auditEntries.some((entry) => entry.id === '999'), false);
+    assert.equal(latest.auditNextCursor, 'c2');
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
+
+test('a completed audit pagination is dropped on A → B → A and the new cursor is respected', async () => {
+  const t = setup(auditResponder({
+    first: queuedFirstPages([auditPage(['40', '21'], 'c1'), auditPage(['b'], 'cb'), auditPage(['41', '22'], 'c2')]),
+    cursor: () => auditPage(['20', '11', '1'], null),
+  }));
+  try {
+    await t.render({ ...reviewBase, onUnauthorized: () => t.unauthorized.push('a') });
+    await t.flush();
+    await t.flush();
+    await act(async () => { latest.loadMoreAudit(); });
+    await t.flush();
+    await t.flush();
+    assert.deepEqual(latest.auditEntries.map((entry) => entry.id), ['40', '21', '20', '11', '1']);
+    assert.equal(latest.auditNextCursor, null);
+
+    await t.render({ ...reviewBase, caseId: 'B', onUnauthorized: () => t.unauthorized.push('a') });
+    await t.flush();
+    await t.flush();
+    await t.render({ ...reviewBase, caseId: 'A', onUnauthorized: () => t.unauthorized.push('a') });
+    await t.flush();
+    await t.flush();
+
+    assert.deepEqual(latest.auditEntries.map((entry) => entry.id), ['41', '22']);
+    assert.equal(latest.auditEntries.some((entry) => entry.id === '20'), false);
+    assert.equal(latest.auditNextCursor, 'c2');
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
+
+test('an audit failure from a previous A is not shown after A → B → A', async () => {
+  const t = setup(auditResponder({
+    first: queuedFirstPages([auditPage(['40', '21'], 'c1'), auditPage(['b'], 'cb'), auditPage(['41', '22'], 'c2')]),
+    cursor: () => jsonResponse(503, { code: 'CORE_API_UNAVAILABLE', message: 'down' }),
+  }));
+  try {
+    await t.render({ ...reviewBase, onUnauthorized: () => t.unauthorized.push('a') });
+    await t.flush();
+    await t.flush();
+    await act(async () => { latest.loadMoreAudit(); });
+    await t.flush();
+    await t.flush();
+    assert.equal(latest.auditError.kind, 'error');
+
+    await t.render({ ...reviewBase, caseId: 'B', onUnauthorized: () => t.unauthorized.push('a') });
+    await t.flush();
+    await t.flush();
+    await t.render({ ...reviewBase, caseId: 'A', onUnauthorized: () => t.unauthorized.push('a') });
+    await t.flush();
+    await t.flush();
+    assert.equal(latest.auditError, null);
+    assert.deepEqual(latest.auditEntries.map((entry) => entry.id), ['41', '22']);
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});

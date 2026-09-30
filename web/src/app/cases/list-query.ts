@@ -56,11 +56,15 @@ function resolveRange(params: URLSearchParams): { from: string | null; to: strin
   if (resolved.error) {
     return { from: null, to: null };
   }
-  // Only accept the canonical KST instant form this app produces.
-  return {
-    from: resolved.from === rawFrom ? resolved.from : null,
-    to: resolved.to === rawTo ? resolved.to : null,
-  };
+  // Only accept the canonical KST instant form this app produces. If either
+  // side is non-canonical the whole range is reset, so a valid end can never be
+  // combined with a start the app did not write.
+  const fromIsCanonical = resolved.from === rawFrom;
+  const toIsCanonical = resolved.to === rawTo;
+  if (!fromIsCanonical || !toIsCanonical) {
+    return { from: null, to: null };
+  }
+  return { from: resolved.from, to: resolved.to };
 }
 
 export function filtersFromSearchParams(params: URLSearchParams): InvoiceCaseFilters {

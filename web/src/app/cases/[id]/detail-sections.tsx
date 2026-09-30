@@ -31,6 +31,7 @@ import {
   presentMatchException,
   presentOutboxStatus,
   presentPaymentStatus,
+  safeJsonStringify,
 } from './detail-model';
 import type { AuditFailure, CaseDetailData, SectionState } from './use-case-detail';
 
@@ -42,7 +43,7 @@ export function shortId(value: string | null | undefined): string {
 function boundedJson(value: unknown): string {
   if (value === null || value === undefined) return '내용 없음';
   try {
-    const text = JSON.stringify(value);
+    const text = safeJsonStringify(value);
     if (!text) return '내용 없음';
     return text.length > 1200 ? `${text.slice(0, 1200)}…` : text;
   } catch {

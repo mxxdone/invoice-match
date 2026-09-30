@@ -17,6 +17,8 @@ import {
   presentMatchException,
   presentOutboxStatus,
   presentPaymentStatus,
+  safeJsonStringify,
+  UNSAFE_NUMBER_MARKER,
 } from '../src/app/cases/[id]/detail-model.ts';
 
 const detail = (lines) => ({
@@ -115,6 +117,20 @@ test('monetary values beyond the exact integer range are never formatted as exac
   assert.equal(formatExactInteger(Number.MAX_SAFE_INTEGER + 1), EXACT_RANGE_MESSAGE);
   assert.equal(formatExactInteger(Number.MAX_SAFE_INTEGER + 2), EXACT_RANGE_MESSAGE);
   assert.equal(formatExactInteger(1.5), EXACT_RANGE_MESSAGE);
+});
+
+test('unsafe numbers in audit JSON are redacted recursively, never printed as exact', () => {
+  const text = safeJsonStringify({
+    amount: Number.MAX_SAFE_INTEGER,
+    nested: { big: Number.MAX_SAFE_INTEGER + 1, list: [Number.MAX_SAFE_INTEGER + 2, 5] },
+  });
+  // The exact safe value is preserved.
+  assert.match(text, new RegExp(`"amount":${Number.MAX_SAFE_INTEGER}\\b`));
+  // The unsafe values are replaced by the marker, not printed.
+  assert.equal(text.includes(String(Number.MAX_SAFE_INTEGER + 1)), false);
+  assert.equal(text.includes(String(Number.MAX_SAFE_INTEGER + 2)), false);
+  assert.equal(text.split(UNSAFE_NUMBER_MARKER).length - 1, 2);
+  assert.match(text, /"list":\[".*",5\]/);
 });
 
 test('audit action labels reuse the confirmed UI phrasing without a new domain term', () => {
