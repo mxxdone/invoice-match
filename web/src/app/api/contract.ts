@@ -66,8 +66,9 @@ export function presentStatus(status: string): StatusPresentation {
   return statusPresentation[status as InvoiceCaseStatus] ?? { label: status, tone: 'neutral' };
 }
 
-// Server instants are UTC ISO-8601; render them deterministically in UTC so the
-// list and the server agree regardless of the viewer's timezone.
+// Server instants are UTC ISO-8601. Display them in the same Asia/Seoul (KST)
+// zone the submitted-date filter uses, so what is shown matches what is
+// filtered. Asia/Seoul has no DST and is a fixed +09:00 offset.
 export function formatInstant(value: string | null | undefined): string {
   if (!value) return '—';
   const date = new Date(value);
@@ -75,6 +76,6 @@ export function formatInstant(value: string | null | undefined): string {
   return new Intl.DateTimeFormat('ko-KR', {
     dateStyle: 'short',
     timeStyle: 'short',
-    timeZone: 'UTC',
+    timeZone: 'Asia/Seoul',
   }).format(date);
 }

@@ -41,7 +41,16 @@ async function requestJson<T>(
     throw new ApiRequestError(0, 'NETWORK_ERROR', '서버에 연결하지 못했습니다.');
   }
   if (!response.ok) {
-    const body = await response.text().catch(() => '');
+    let body = '';
+    try {
+      body = await response.text();
+    } catch (caught) {
+      // Preserve cancellation: reading the error body can itself be aborted, and
+      // swallowing it into a 401/403 would let a stale request sign the user out.
+      if (isAbortError(caught)) {
+        throw caught;
+      }
+    }
     throw toApiRequestError(response.status, body);
   }
   return (await response.json()) as T;

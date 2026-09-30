@@ -25,7 +25,10 @@ type AuthContextValue = {
   isAuthenticated: boolean;
   isSubmitting: boolean;
   error: string | null;
-  login: (credentials: Credentials) => Promise<boolean>;
+  // Increments on every successful login and on logout, so consumers can scope
+  // their own work to one session.
+  sessionId: number;
+  login: (credentials: Credentials, signal?: AbortSignal) => Promise<boolean>;
   logout: () => void;
 };
 
@@ -36,23 +39,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState(0);
   // A logout (or a newer login attempt) invalidates an in-flight login, so a
-  // late success never signs the user back in after they signed out.
+  // late success never signs the user back in after they signed out. The caller
+  // may also pass a signal so leaving the login screen cancels its own attempt.
   const sessions = useRef(new Generation());
 
-  const login = useCallback(async (next: Credentials) => {
+  const login = useCallback(async (next: Credentials, signal?: AbortSignal) => {
     const token = sessions.current.next();
     setIsSubmitting(true);
     setError(null);
     try {
-      const me = await fetchCurrentUser(next);
+      const me = await fetchCurrentUser(next, signal);
       if (!sessions.current.isCurrent(token)) return false;
       setCredentials(next);
       setUser(me);
+      setSessionId(value => value + 1);
       setIsSubmitting(false);
       return true;
     } catch (caught) {
       if (!sessions.current.isCurrent(token)) return false;
+      if (caught instanceof Error && caught.name === 'AbortError') {
+        setIsSubmitting(false);
+        return false;
+      }
       setCredentials(null);
       setUser(null);
       setIsSubmitting(false);
@@ -73,6 +83,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setError(null);
     setIsSubmitting(false);
+    setSessionId(value => value + 1);
   }, []);
 
   const value = useMemo<AuthContextValue>(
@@ -82,10 +93,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAuthenticated: Boolean(credentials && user),
       isSubmitting,
       error,
+      sessionId,
       login,
       logout,
     }),
-    [credentials, user, isSubmitting, error, login, logout],
+    [credentials, user, isSubmitting, error, sessionId, login, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

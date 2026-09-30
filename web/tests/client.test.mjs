@@ -81,3 +81,18 @@ test('a network failure becomes a typed error and an abort stays an abort', asyn
     });
   });
 });
+
+test('an abort while reading the error body stays an abort, not a 401', async () => {
+  const stream = new ReadableStream({
+    start(controller) {
+      setTimeout(() => controller.error(Object.assign(new Error('aborted'), { name: 'AbortError' })), 5);
+    },
+  });
+  await withStubbedFetch(() => new Response(stream, { status: 401 }), async () => {
+    await assert.rejects(fetchCurrentUser(credentials), error => {
+      assert.equal(error.name, 'AbortError');
+      assert.equal(error instanceof ApiRequestError, false);
+      return true;
+    });
+  });
+});

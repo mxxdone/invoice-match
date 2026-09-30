@@ -2,19 +2,14 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Icon, PageHeader, Shell } from '../ui';
 import { useAuth } from '../auth';
-import { fetchInvoiceCases } from '../api/client';
-import { ApiRequestError } from '../api/transport';
-import { formatInstant, presentStatus, type InvoiceCasePage } from '../api/contract';
+import { formatInstant, presentStatus } from '../api/contract';
 import { resolveSubmittedRange } from '../api/daterange';
-import { Generation } from '../api/generation';
 import type { InvoiceCaseFilters, SearchField } from '../api/query';
 import { pageNumbers } from './list-preview';
-
-type LoadState = 'ready' | 'empty' | 'error' | 'forbidden';
-type LoadResult = { key: string; state: LoadState; result: InvoiceCasePage | null; error: string };
+import { useInvoiceCases } from './use-invoice-cases';
 
 const tabs: Array<[string, string]> = [
   ['all', '전체'],
@@ -26,10 +21,13 @@ const tabs: Array<[string, string]> = [
 
 export default function Cases() {
   const router = useRouter();
-  const { credentials, isAuthenticated, logout } = useAuth();
+  const { credentials, sessionId, isAuthenticated, logout } = useAuth();
 
   const [status, setStatus] = useState('all');
   const [draftQuery, setDraftQuery] = useState('');
+  // The field and text are drafts until the user submits the search, so
+  // switching the field never re-queries the previous value under a new field.
+  const [searchFieldDraft, setSearchFieldDraft] = useState<SearchField>('invoiceNumber');
   const [searchField, setSearchField] = useState<SearchField>('invoiceNumber');
   const [searchValue, setSearchValue] = useState<string | null>(null);
   const [supplierDraft, setSupplierDraft] = useState('');
@@ -45,54 +43,28 @@ export default function Cases() {
   const [size, setSize] = useState(20);
   const [selected, setSelected] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
-  const [loaded, setLoaded] = useState<LoadResult | null>(null);
-  // Invalidates an in-flight query when filters change, so an outdated response
-  // can never overwrite a newer one even if its abort is delayed.
-  const requests = useRef(new Generation());
 
   const filters = useMemo<InvoiceCaseFilters>(
     () => ({ status, supplierId, submittedBy, submittedFrom, submittedTo, searchField, searchValue, page, size }),
     [status, supplierId, submittedBy, submittedFrom, submittedTo, searchField, searchValue, page, size],
   );
-  const requestKey = useMemo(() => `${JSON.stringify(filters)}#${reloadToken}`, [filters, reloadToken]);
-  const isLoading = !loaded || loaded.key !== requestKey;
-
-  useEffect(() => {
-    if (!isAuthenticated) router.replace('/login');
-  }, [isAuthenticated, router]);
-
-  // One server query per applied filter/page/size change. The previous request
-  // is aborted so a slow, outdated response can never overwrite a newer one.
-  useEffect(() => {
-    if (!credentials) return;
-    const controller = new AbortController();
-    const token = requests.current.next();
-    fetchInvoiceCases(credentials, filters, controller.signal)
-      .then(pageResult => {
-        if (!requests.current.isCurrent(token)) return;
-        setLoaded({ key: requestKey, state: pageResult.items.length ? 'ready' : 'empty', result: pageResult, error: '' });
-      })
-      .catch((caught: unknown) => {
-        if (!requests.current.isCurrent(token)) return;
-        if (caught instanceof Error && caught.name === 'AbortError') return;
-        if (caught instanceof ApiRequestError && caught.status === 401) {
-          logout();
-          router.replace('/login');
-          return;
-        }
-        if (caught instanceof ApiRequestError && caught.status === 403) {
-          setLoaded({ key: requestKey, state: 'forbidden', result: null, error: '' });
-          return;
-        }
-        setLoaded({ key: requestKey, state: 'error', result: null, error: caught instanceof Error ? caught.message : '목록을 불러오지 못했습니다.' });
-      });
-    return () => controller.abort();
-  }, [credentials, filters, requestKey, logout, router]);
+  const onUnauthorized = useCallback(() => {
+    logout();
+    router.replace('/login');
+  }, [logout, router]);
+  const { state, page: pageResult, error: loadError, isLoading } = useInvoiceCases({
+    credentials,
+    sessionId,
+    filters,
+    reloadToken,
+    onUnauthorized,
+  });
 
   const resetPage = useCallback(() => { setPage(0); setSelected(null); }, []);
   function applySearch(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const value = draftQuery.trim();
+    setSearchField(searchFieldDraft);
     setSearchValue(value ? value : null);
     resetPage();
   }
@@ -123,14 +95,13 @@ export default function Cases() {
     if (event.key === 'Enter') { event.preventDefault(); commit(); }
   }
   function resetFilters() {
-    setDraftQuery(''); setSearchValue(null); setSearchField('invoiceNumber');
+    setDraftQuery(''); setSearchValue(null); setSearchField('invoiceNumber'); setSearchFieldDraft('invoiceNumber');
     setSupplierDraft(''); setSupplierId(null); setSubmitterDraft(''); setSubmittedBy(null);
     setRangeStartDraft(''); setRangeEndDraft(''); setRangeError(null); setSubmittedFrom(null); setSubmittedTo(null);
     setStatus('all'); resetPage();
   }
   function retry() { setReloadToken(value => value + 1); }
 
-  const pageResult = loaded?.result ?? null;
   const rows = pageResult?.items ?? [];
   const totalItems = pageResult?.totalItems ?? 0;
   const totalPages = Math.max(1, pageResult?.totalPages ?? 1);
@@ -143,7 +114,7 @@ export default function Cases() {
       <div className="table-scroll" aria-busy={isLoading}>
         <table className="work-table case-list-table">
           <caption className="sr-only">매입 청구서 목록. 서버 부분 검색과 서버 페이지 이동이 적용됩니다.</caption>
-          <thead><tr><th>공급사 ID / 제출자</th><th>청구번호</th><th>상태</th><th>발주번호</th><th>제출 시각</th><th><span className="sr-only">선택</span></th></tr></thead>
+          <thead><tr><th>공급사 ID / 제출자</th><th>청구번호</th><th>상태</th><th>발주번호</th><th>제출 시각 (KST)</th><th><span className="sr-only">선택</span></th></tr></thead>
           <tbody>
             {rows.map(row => {
               const presentation = presentStatus(row.status);
@@ -179,7 +150,7 @@ export default function Cases() {
         <div><dt>제출자 계정</dt><dd>{selectedRow.submittedBy}</dd></div>
         <div><dt>상태</dt><dd>{selectedStatus?.label}</dd></div>
         <div><dt>발주번호</dt><dd>{selectedRow.purchaseOrderId}</dd></div>
-        <div><dt>제출 시각</dt><dd>{formatInstant(selectedRow.submittedAt)}</dd></div>
+        <div><dt>제출 시각 (KST)</dt><dd>{formatInstant(selectedRow.submittedAt)}</dd></div>
       </dl>
       <p className="panel-footnote">서버 목록 요약입니다. 상세·비교·승인 화면은 다음 작업 범위이며 가상 시안으로만 제공됩니다.</p>
     </aside>}
@@ -187,12 +158,12 @@ export default function Cases() {
 
   const body = !isAuthenticated
     ? <section className="empty-state" role="status"><Icon name="clock" size={25} /><h1>로그인이 필요합니다</h1><p>로그인 화면으로 이동합니다.</p></section>
-    : isLoading && !pageResult
+    : state === 'loading' && !pageResult
       ? <section className="empty-state" role="status" aria-busy="true"><Icon name="clock" size={25} /><h1>불러오는 중</h1><p>청구 목록을 서버에서 확인하고 있습니다.</p></section>
-      : loaded?.state === 'forbidden'
+      : state === 'forbidden'
         ? <section className="empty-state" role="status"><Icon name="document" size={25} /><h1>이 화면에 접근할 권한이 없습니다</h1><p>계정 역할을 확인해 주세요.</p><button className="button" onClick={retry}>다시 시도</button></section>
-        : loaded?.state === 'error'
-          ? <section className="empty-state" role="alert"><Icon name="document" size={25} /><h1>자료를 불러오지 못했습니다</h1><p>{loaded.error}</p><button className="button" onClick={retry}>다시 시도</button></section>
+        : state === 'error'
+          ? <section className="empty-state" role="alert"><Icon name="document" size={25} /><h1>자료를 불러오지 못했습니다</h1><p>{loadError}</p><button className="button" onClick={retry}>다시 시도</button></section>
           : pageResult
             ? workbench
             : <section className="empty-state" role="status" aria-busy="true"><Icon name="clock" size={25} /><h1>불러오는 중</h1><p>청구 목록을 서버에서 확인하고 있습니다.</p></section>;
@@ -202,8 +173,8 @@ export default function Cases() {
     <div className="tabs" role="tablist" aria-label="청구서 상태">{tabs.map(([id, label]) => <button key={id} role="tab" aria-selected={status === id} className={status === id ? 'active' : ''} onClick={() => { setStatus(id); resetPage(); }}>{label}</button>)}</div>
     <div className="list-filter-area">
       <form className="list-search-form" onSubmit={applySearch}>
-        <select aria-label="검색 항목" value={searchField} onChange={event => setSearchField(event.target.value as SearchField)}><option value="invoiceNumber">청구번호</option><option value="purchaseOrderId">발주번호</option></select>
-        <label className="search"><input aria-label="청구서 검색" aria-describedby="list-search-help" placeholder={searchField === 'invoiceNumber' ? '청구번호의 일부 입력 · 예: 0142' : '발주번호의 일부 입력 · 예: 0142'} value={draftQuery} onChange={event => setDraftQuery(event.target.value)} /></label>
+        <select aria-label="검색 항목" value={searchFieldDraft} onChange={event => setSearchFieldDraft(event.target.value as SearchField)}><option value="invoiceNumber">청구번호</option><option value="purchaseOrderId">발주번호</option></select>
+        <label className="search"><input aria-label="청구서 검색" aria-describedby="list-search-help" placeholder={searchFieldDraft === 'invoiceNumber' ? '청구번호의 일부 입력 · 예: 0142' : '발주번호의 일부 입력 · 예: 0142'} value={draftQuery} onChange={event => setDraftQuery(event.target.value)} /></label>
         <button className="button" type="submit"><Icon name="search" />검색</button>
         <span id="list-search-help" className="list-search-help">번호의 일부 입력 · Enter 또는 검색 · 서버 부분 검색</span>
       </form>

@@ -52,7 +52,7 @@ export default function Home() {
 
   return (
     <div className="app-shell">
-      <Sidebar active="detail" />
+      <Sidebar active="detail" preview />
 
       <main className="workspace">
         <StatePreview>

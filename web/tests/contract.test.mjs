@@ -26,9 +26,15 @@ test('the list response total uses the real server field name', () => {
   assert.equal('totalElements' in page, false);
 });
 
-test('unknown statuses fall back without inventing a colour and instants are deterministic', () => {
+test('unknown statuses fall back without inventing a colour and instants render in KST', () => {
   assert.equal(presentStatus('UNKNOWN').tone, 'neutral');
   assert.equal(formatInstant(null), '—');
   assert.equal(formatInstant('not-a-date'), '—');
-  assert.match(formatInstant('2026-09-30T01:38:00Z'), /1:38/);
+  // 01:38 UTC is 10:38 KST
+  assert.match(formatInstant('2026-09-30T01:38:00Z'), /10:38/);
+  // 15:00 UTC on the 29th is 00:00 KST on the 30th: the display matches the
+  // KST day the submitted-date filter operates on.
+  const kstMidnight = formatInstant('2026-09-29T15:00:00Z');
+  assert.match(kstMidnight, /9\. 30/);
+  assert.match(kstMidnight, /12:00/);
 });
