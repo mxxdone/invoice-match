@@ -22,6 +22,7 @@ import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Root;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,6 +37,8 @@ public class InvoiceCaseQueryService {
 
     public static final int DEFAULT_PAGE_SIZE = 20;
     public static final int MAX_PAGE_SIZE = 100;
+
+    private static final char LIKE_ESCAPE = '\\';
 
     private final InvoiceCaseRepository invoiceCases;
     private final DraftRevisionRepository draftRevisions;
@@ -61,6 +64,17 @@ public class InvoiceCaseQueryService {
      * authenticated actor: a SUBMITTER can only ever see their own cases, while
      * APPROVER/OPERATOR see every case. A DTO projection is selected so nothing
      * lazy is loaded and there is no N+1; the page size is bounded.
+     *
+     * <p>{@code invoiceNumber} and {@code purchaseOrderId} are safe partial
+     * searches so a caller does not need the full identifier: the invoice number
+     * is matched as a literal substring of the normalized value (uppercased,
+     * non-alphanumerics removed) and the purchase order id as a
+     * case-insensitive literal substring. The user never gets a wildcard query
+     * language: {@code %}, {@code _} and {@code \} are escaped and match a
+     * literal character. A filter whose input is blank, or whose invoice number
+     * normalizes to nothing, is ignored, which is the pre-existing behaviour.
+     * {@code supplierId} and {@code submittedBy} stay exact matches, and every
+     * active filter is combined with AND.
      */
     public InvoiceCasePage list(InvoiceCaseSearchCriteria criteria, Actor actor) {
         int size = Math.min(Math.max(criteria.size(), 1), MAX_PAGE_SIZE);
@@ -123,11 +137,18 @@ public class InvoiceCaseQueryService {
         if (criteria.supplierId() != null && !criteria.supplierId().isBlank()) {
             predicates.add(cb.equal(root.get("supplierId"), criteria.supplierId()));
         }
-        if (criteria.purchaseOrderId() != null && !criteria.purchaseOrderId().isBlank()) {
-            predicates.add(cb.equal(root.get("purchaseOrderId"), criteria.purchaseOrderId()));
+        String purchaseOrderFragment = criteria.purchaseOrderId() == null
+                ? null
+                : criteria.purchaseOrderId().trim();
+        if (purchaseOrderFragment != null && !purchaseOrderFragment.isEmpty()) {
+            predicates.add(cb.like(
+                    cb.lower(root.get("purchaseOrderId")),
+                    containsPattern(purchaseOrderFragment.toLowerCase(Locale.ROOT)),
+                    LIKE_ESCAPE));
         }
         if (normalizedInvoiceNumber != null) {
-            predicates.add(cb.equal(root.get("normalizedInvoiceNumber"), normalizedInvoiceNumber));
+            predicates.add(cb.like(
+                    root.get("normalizedInvoiceNumber"), containsPattern(normalizedInvoiceNumber), LIKE_ESCAPE));
         }
         if (criteria.submittedFrom() != null) {
             predicates.add(cb.greaterThanOrEqualTo(root.get("submittedAt"), criteria.submittedFrom()));
@@ -140,6 +161,28 @@ public class InvoiceCaseQueryService {
 
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value;
+    }
+
+    /**
+     * Builds a bound {@code LIKE} pattern for a contains match. The literal is
+     * escaped first so the caller's {@code %}, {@code _} and {@code \} are
+     * matched as ordinary characters instead of turning into wildcards or
+     * escape sequences.
+     */
+    private static String containsPattern(String literal) {
+        return "%" + escapeLike(literal) + "%";
+    }
+
+    private static String escapeLike(String literal) {
+        StringBuilder escaped = new StringBuilder(literal.length() + 8);
+        for (int i = 0; i < literal.length(); i++) {
+            char c = literal.charAt(i);
+            if (c == LIKE_ESCAPE || c == '%' || c == '_') {
+                escaped.append(LIKE_ESCAPE);
+            }
+            escaped.append(c);
+        }
+        return escaped.toString();
     }
 
     public InvoiceCaseDetail get(UUID caseId) {

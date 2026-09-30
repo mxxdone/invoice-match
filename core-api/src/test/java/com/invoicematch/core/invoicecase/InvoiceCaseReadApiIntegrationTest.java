@@ -154,6 +154,123 @@ class InvoiceCaseReadApiIntegrationTest extends AbstractPostgresIntegrationTest 
     }
 
     @Test
+    void invoiceNumberFilterMatchesNormalizedLiteralContains() throws Exception {
+        String longNumber = createCase("submitter", "INV-2026-000123");
+        String otherNumber = createCase("submitter", "INV-2026-000999");
+
+        // suffix, middle and prefix of a number the caller does not know in full
+        assertThat(ids(list("submitter", List.of("invoiceNumber=000123"))))
+                .containsExactly(longNumber);
+        assertThat(ids(list("submitter", List.of("invoiceNumber=6000123"))))
+                .containsExactly(longNumber);
+        assertThat(ids(list("submitter", List.of("invoiceNumber=inv-2026-000123"))))
+                .containsExactly(longNumber);
+        assertThat(ids(list("submitter", List.of("invoiceNumber=INV2026000"))))
+                .containsExactlyInAnyOrder(longNumber, otherNumber);
+        assertThat(ids(list("submitter", List.of("invoiceNumber=nomatch")))).isEmpty();
+
+        // blank input and input that normalizes to nothing are still "no filter"
+        assertThat(ids(list("submitter", List.of("invoiceNumber="))))
+                .containsExactlyInAnyOrder(longNumber, otherNumber);
+        assertThat(ids(list("submitter", List.of("invoiceNumber=%_"))))
+                .containsExactlyInAnyOrder(longNumber, otherNumber);
+    }
+
+    @Test
+    void purchaseOrderIdFilterMatchesCaseInsensitiveLiteralContains() throws Exception {
+        registerPurchaseOrder("PO-ABC-1001");
+        registerPurchaseOrder("PO-XYZ-2002");
+        registerPurchaseOrder("PO_ABC_1001");
+        String dashed = createCase("submitter", "PO-ABC-1001", "INV-PO-1");
+        String other = createCase("submitter", "PO-XYZ-2002", "INV-PO-2");
+        String underscored = createCase("submitter", "PO_ABC_1001", "INV-PO-3");
+
+        assertThat(ids(list("submitter", List.of("purchaseOrderId=abc"))))
+                .containsExactlyInAnyOrder(dashed, underscored);
+        assertThat(ids(list("submitter", List.of("purchaseOrderId=1001"))))
+                .containsExactlyInAnyOrder(dashed, underscored);
+        assertThat(ids(list("submitter", List.of("purchaseOrderId=xyz"))))
+                .containsExactly(other);
+        assertThat(ids(list("submitter", List.of("purchaseOrderId=PO-"))))
+                .containsExactlyInAnyOrder(dashed, other);
+
+        // '_' and '%' are literal, not single/multi character SQL wildcards
+        assertThat(ids(list("submitter", List.of("purchaseOrderId=PO_ABC_1001"))))
+                .containsExactly(underscored);
+        assertThat(ids(list("submitter", List.of("purchaseOrderId=PO%")))).isEmpty();
+        // a bare escape character neither turns into a wildcard nor breaks LIKE
+        assertThat(ids(list("submitter", List.of("purchaseOrderId=" + "\\")))).isEmpty();
+    }
+
+    @Test
+    void listCombinesPartialFiltersAndKeepsOwnershipScope() throws Exception {
+        registerPurchaseOrder("PO-1001A");
+        registerPurchaseOrder("PO-1001B");
+        String ownReview = submittedCase("submitter", "PO-1001A", "INV-COMBO-001");
+        String ownDraft = createCase("submitter", "PO-1001B", "INV-COMBO-002");
+        String otherDraft = createCase("submitter2", "PO-1001A", "INV-COMBO-003");
+
+        assertThat(ids(list("submitter", List.of("purchaseOrderId=1001a", "invoiceNumber=combo"))))
+                .containsExactly(ownReview);
+        assertThat(ids(list("submitter", List.of("purchaseOrderId=1001b", "invoiceNumber=combo"))))
+                .containsExactly(ownDraft);
+        assertThat(ids(list("approver", List.of("purchaseOrderId=1001a", "invoiceNumber=combo"))))
+                .containsExactlyInAnyOrder(ownReview, otherDraft);
+        assertThat(ids(list("submitter", List.of("status=REVIEW_PENDING", "invoiceNumber=combo"))))
+                .containsExactly(ownReview);
+        // a SUBMITTER's submittedBy filter is ignored, so it cannot widen scope
+        // to submitter2 and still returns only the submitter's own cases
+        assertThat(ids(list("submitter", List.of("submittedBy=submitter2", "invoiceNumber=combo"))))
+                .containsExactlyInAnyOrder(ownReview, ownDraft);
+    }
+
+    @Test
+    void listKeepsZeroBasedPageContractForPartialInvoiceSearch() throws Exception {
+        List<String> created = new ArrayList<>();
+        for (int i = 0; i < 25; i++) {
+            created.add(createCase("submitter", "INV-PAGE-" + String.format("%03d", i)));
+        }
+
+        JsonNode full = list("submitter", List.of("invoiceNumber=INV-PAGE", "size=100"));
+        assertThat(full.get("totalItems").asLong()).isEqualTo(25);
+        assertThat(full.get("totalPages").asInt()).isEqualTo(1);
+        assertThat(full.get("page").asInt()).isZero();
+        assertThat(full.get("size").asInt()).isEqualTo(100);
+        assertThat(full.get("hasNext").asBoolean()).isFalse();
+        assertThat(full.get("items")).hasSize(25);
+        assertDescendingByCreatedAtThenId(full.get("items"));
+        assertThat(ids(full)).containsExactlyInAnyOrderElementsOf(created);
+
+        JsonNode page0 = list("submitter", List.of("invoiceNumber=INV-PAGE", "size=20", "page=0"));
+        assertThat(page0.get("items")).hasSize(20);
+        assertThat(page0.get("hasNext").asBoolean()).isTrue();
+
+        JsonNode page1 = list("submitter", List.of("invoiceNumber=INV-PAGE", "size=20", "page=1"));
+        assertThat(page1.get("page").asInt()).isEqualTo(1);
+        assertThat(page1.get("items")).hasSize(5);
+        assertThat(page1.get("hasNext").asBoolean()).isFalse();
+
+        JsonNode size50 = list("submitter", List.of("invoiceNumber=INV-PAGE", "size=50"));
+        assertThat(size50.get("size").asInt()).isEqualTo(50);
+        assertThat(size50.get("items")).hasSize(25);
+
+        JsonNode clamped = list("submitter", List.of("invoiceNumber=INV-PAGE", "size=500"));
+        assertThat(clamped.get("size").asInt()).isEqualTo(100);
+    }
+
+    private static void assertDescendingByCreatedAtThenId(JsonNode items) {
+        for (int i = 1; i < items.size(); i++) {
+            JsonNode previous = items.get(i - 1);
+            JsonNode current = items.get(i);
+            int byCreatedAt = previous.get("createdAt").asText().compareTo(current.get("createdAt").asText());
+            assertThat(byCreatedAt).isGreaterThanOrEqualTo(0);
+            if (byCreatedAt == 0) {
+                assertThat(previous.get("id").asText()).isGreaterThanOrEqualTo(current.get("id").asText());
+            }
+        }
+    }
+
+    @Test
     void handoffIsNullUntilApprovedThenExposesPaymentAndOutboxState() throws Exception {
         String caseId = submittedCase("submitter", "INV-1");
         runMatch(caseId);
@@ -226,23 +343,58 @@ class InvoiceCaseReadApiIntegrationTest extends AbstractPostgresIntegrationTest 
     }
 
     private String submittedCase(String submitter, String invoiceNumber) throws Exception {
-        String caseId = createCase(submitter, invoiceNumber);
+        return submittedCase(submitter, PO_ID, invoiceNumber);
+    }
+
+    private String submittedCase(String submitter, String purchaseOrderId, String invoiceNumber) throws Exception {
+        String caseId = createCase(submitter, purchaseOrderId, invoiceNumber);
         replaceDraft(caseId, currentVersion(caseId, submitter), "draft-" + invoiceNumber);
         submit(caseId, currentVersion(caseId, submitter));
         return caseId;
     }
 
     private String createCase(String submitter, String invoiceNumber) throws Exception {
+        return createCase(submitter, PO_ID, invoiceNumber);
+    }
+
+    private String createCase(String submitter, String purchaseOrderId, String invoiceNumber) throws Exception {
         ObjectNode body = objectMapper.createObjectNode();
         body.put("requestId", "create-" + UUID.randomUUID());
         body.put("supplierId", SUPPLIER);
-        body.put("purchaseOrderId", PO_ID);
+        body.put("purchaseOrderId", purchaseOrderId);
         body.put("invoiceNumber", invoiceNumber);
         MvcResult result = performAs(submitter, post("/api/invoice-cases")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(body)));
         assertThat(result.getResponse().getStatus()).isEqualTo(201);
         return read(result).get("id").asText();
+    }
+
+    /**
+     * Registers a valid external aggregate for a non-default purchase order id
+     * so case creation validates it against the stub instead of {@code PO-1001}.
+     * Line and receipt ids are namespaced by the purchase order id because those
+     * ids are globally unique in the snapshot tables.
+     */
+    private void registerPurchaseOrder(String purchaseOrderId) {
+        String lineA = "POL-" + purchaseOrderId + "-1";
+        String lineB = "POL-" + purchaseOrderId + "-2";
+        STUB.respondFor(
+                purchaseOrderId,
+                PurchasingPayloads.confirmedPartialReceipt()
+                        .purchaseOrderId(purchaseOrderId)
+                        .clearLines()
+                        .addLine(lineA, ITEM_A, "Premium Copy Paper A4 80g", 100, 2500)
+                        .addLine(lineB, "ITEM-TONER-BK", "Laser Toner Black", 20, 55000)
+                        .clearReceipts()
+                        .addReceipt(
+                                "RCV-" + purchaseOrderId + "-1",
+                                "CONFIRMED",
+                                "2026-01-05",
+                                2,
+                                PurchasingPayloads.receiptLine("RCL-" + purchaseOrderId + "-1-1", 2, lineA, 60),
+                                PurchasingPayloads.receiptLine("RCL-" + purchaseOrderId + "-1-2", 2, lineB, 20))
+                        .toJson());
     }
 
     private void replaceDraft(String caseId, long expectedVersion, String requestId) throws Exception {
