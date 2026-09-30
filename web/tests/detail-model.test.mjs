@@ -4,7 +4,10 @@ import {
   claimLines,
   comparisonRows,
   decisionDetail,
+  EXACT_RANGE_MESSAGE,
+  formatExactInteger,
   freshnessVerdict,
+  isStaleMatch,
   latestBundle,
   parseEvidencePayload,
   presentAuditAction,
@@ -96,4 +99,26 @@ test('freshness and decision detail use server values without re-judging', () =>
 test('the latest bundle is the greatest version', () => {
   assert.equal(latestBundle([]), null);
   assert.equal(latestBundle([{ version: 1 }, { version: 3 }, { version: 2 }]).version, 3);
+});
+
+test('a match computed against an older bundle is stale, and a matching hash is not', () => {
+  const match = (version, hash) => ({ payload: { evidenceBundle: { version, payloadHash: hash } } });
+  assert.equal(isStaleMatch(match(1, 'h1'), 2, 'h2'), true);
+  assert.equal(isStaleMatch(match(2, 'h1'), 2, 'h2'), true);
+  assert.equal(isStaleMatch(match(2, 'h2'), 2, 'h2'), false);
+  assert.equal(isStaleMatch(match(2, 'h2'), 2, null), false);
+  assert.equal(isStaleMatch(match(1, 'h1'), null, null), false);
+});
+
+test('monetary values beyond the exact integer range are never formatted as exact', () => {
+  assert.equal(formatExactInteger(Number.MAX_SAFE_INTEGER), new Intl.NumberFormat('ko-KR').format(Number.MAX_SAFE_INTEGER));
+  assert.equal(formatExactInteger(Number.MAX_SAFE_INTEGER + 1), EXACT_RANGE_MESSAGE);
+  assert.equal(formatExactInteger(Number.MAX_SAFE_INTEGER + 2), EXACT_RANGE_MESSAGE);
+  assert.equal(formatExactInteger(1.5), EXACT_RANGE_MESSAGE);
+});
+
+test('audit action labels reuse the confirmed UI phrasing without a new domain term', () => {
+  assert.equal(presentAuditAction('CASE_CREATED'), '청구서 생성');
+  assert.equal(presentAuditAction('SUPPLEMENT_REVISION_OPENED'), '보완 작성 시작');
+  assert.equal(presentAuditAction('MATCH_RUN'), '비교 결과 생성');
 });

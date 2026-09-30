@@ -152,5 +152,103 @@ export async function runChecks({ request, config, guard, log }) {
   if (proxyBadId.status !== 404) throw sanitized('proxy non-UUID case path expected 404', proxyBadId);
   pass('proxy refuses a non-UUID case path');
 
+  // --- seeded normal match and an older-result-after-resubmit fixture ---
+  // All writes below go only to this run's throwaway database through the real
+  // API; no approval/payment is created and the UI has no write path.
+
+  const operator = { authorization: basic('operator', 'operator-pass') };
+  const detailAs = async (headers) => {
+    const response = await request(`${core}/api/invoice-cases/${created.id}`, { headers });
+    if (response.status !== 200) throw sanitized('detail read failed during seed', response);
+    return JSON.parse(response.body);
+  };
+
+  guard();
+  const matchRun = await request(`${core}/api/invoice-cases/${created.id}/match`, {
+    method: 'POST',
+    headers: { ...operator, 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'verify-match-1' }),
+  });
+  if (matchRun.status !== 201) throw sanitized('operator match run expected 201', matchRun);
+  const matchBody = JSON.parse(matchRun.body);
+  if (matchBody.payload?.normal !== true || matchBody.payload?.evidenceBundle?.version !== 1) {
+    throw new VerifyError('match run expected a normal result against evidence bundle v1');
+  }
+  pass('operator runs a normal match against evidence bundle v1');
+
+  const latestMatch = await request(`${core}/api/invoice-cases/${created.id}/match`, { headers: approver });
+  if (latestMatch.status !== 200 || JSON.parse(latestMatch.body).resultNumber !== matchBody.resultNumber) {
+    throw sanitized('latest match expected the seeded result', latestMatch);
+  }
+  pass('latest match read returns the seeded result');
+
+  guard();
+  const freeze = await request(`${core}/api/invoice-cases/${created.id}/review-snapshots`, {
+    method: 'POST',
+    headers: { ...approver, 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'verify-snapshot-1', expectedCaseVersion: (await detailAs(approver)).version }),
+  });
+  if (freeze.status !== 200 && freeze.status !== 201) throw sanitized('freeze review snapshot expected 200/201', freeze);
+  const snapshot = JSON.parse(freeze.body);
+  pass('approver freezes a review snapshot');
+
+  guard();
+  const supplement = await request(`${core}/api/invoice-cases/${created.id}/supplement-requests`, {
+    method: 'POST',
+    headers: { ...approver, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      requestId: 'verify-supplement-1',
+      expectedCaseVersion: (await detailAs(approver)).version,
+      reviewSnapshotId: snapshot.id,
+      reviewPayloadHash: snapshot.payloadHash,
+      reason: 'verify seed: resubmit for an older-result fixture',
+    }),
+  });
+  if (supplement.status !== 200 && supplement.status !== 201) throw sanitized('supplement request expected 200/201', supplement);
+  pass('approver requests a supplement');
+
+  const afterSupplement = await detailAs(submitter);
+  const revision = await request(`${core}/api/invoice-cases/${created.id}/revisions`, {
+    method: 'POST',
+    headers: { ...submitter, 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'verify-revision-1', expectedCaseVersion: afterSupplement.version }),
+  });
+  if (revision.status !== 200 && revision.status !== 201) throw sanitized('open supplement revision expected 200/201', revision);
+  pass('submitter opens the supplement revision');
+
+  const opened = JSON.parse(revision.body);
+  const replaced = await request(`${core}/api/invoice-cases/${created.id}/draft`, {
+    method: 'PUT',
+    headers: { ...submitter, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      requestId: 'verify-draft-2',
+      expectedCaseVersion: opened.version,
+      lines: [{ lineNumber: 1, rawItemName: 'Copy Paper', quantity: 6, unitPrice: 2500, confirmedItemId: 'ITEM-A4-80' }],
+    }),
+  });
+  if (replaced.status !== 200) throw sanitized('draft replace for v2 expected 200', replaced);
+  const resubmitted = await request(`${core}/api/invoice-cases/${created.id}/submit`, {
+    method: 'POST',
+    headers: { ...submitter, 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'verify-submit-2', expectedCaseVersion: JSON.parse(replaced.body).version }),
+  });
+  if (resubmitted.status !== 200) throw sanitized('v2 resubmit expected 200', resubmitted);
+  pass('submitter resubmits evidence bundle v2');
+
+  const bundlesAfter = JSON.parse((await request(`${core}/api/invoice-cases/${created.id}/evidence-bundles`, { headers: approver })).body);
+  const latestBundleVersion = Math.max(...bundlesAfter.map((bundle) => bundle.version));
+  if (latestBundleVersion !== 2) throw new VerifyError(`expected evidence bundle v2 but latest was v${latestBundleVersion}`);
+  const matchAfter = JSON.parse((await request(`${core}/api/invoice-cases/${created.id}/match`, { headers: approver })).body);
+  if (matchAfter.payload?.evidenceBundle?.version !== 1) {
+    throw new VerifyError(`latest match after resubmit should still cite bundle v1, was v${matchAfter.payload?.evidenceBundle?.version}`);
+  }
+  pass('latest match after resubmit is an older (v1) result while the current bundle is v2');
+
+  const proxyMatch = await request(`${web}/backend/api/invoice-cases/${created.id}/match`, { headers: approver });
+  if (proxyMatch.status !== 200) throw sanitized('proxy allowlisted match path expected 200', proxyMatch);
+  const proxyBundles = await request(`${web}/backend/api/invoice-cases/${created.id}/evidence-bundles`, { headers: approver });
+  if (proxyBundles.status !== 200) throw sanitized('proxy allowlisted evidence-bundles path expected 200', proxyBundles);
+  pass('proxy forwards the allowlisted match and evidence-bundles paths');
+
   return {};
 }

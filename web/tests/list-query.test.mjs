@@ -52,3 +52,34 @@ test('a negative page, a zero size and an unbounded status are clamped', () => {
   assert.equal(filtersFromSearchParams(new URLSearchParams('size=0')).size, DEFAULT_PAGE_SIZE);
   assert.equal(filtersFromSearchParams(new URLSearchParams('size=9999')).size, 100);
 });
+
+test('a page or size that is not a plain integer is rejected instead of truncated', () => {
+  assert.equal(filtersFromSearchParams(new URLSearchParams('page=2oops')).page, 0);
+  assert.equal(filtersFromSearchParams(new URLSearchParams('page=1.5')).page, 0);
+  assert.equal(filtersFromSearchParams(new URLSearchParams('size=2oops')).size, DEFAULT_PAGE_SIZE);
+  assert.equal(filtersFromSearchParams(new URLSearchParams('size=50abc')).size, DEFAULT_PAGE_SIZE);
+  assert.equal(filtersFromSearchParams(new URLSearchParams('page=99999999999999999999')).page, 0);
+});
+
+test('a KST range is accepted only in the canonical form, and an invalid or reversed one resets', () => {
+  const canonical = new URLSearchParams({
+    submittedFrom: '2026-09-30T00:00:00.000000+09:00',
+    submittedTo: '2026-09-30T23:59:59.999999+09:00',
+  });
+  const parsed = filtersFromSearchParams(canonical);
+  assert.equal(parsed.submittedFrom, canonical.get('submittedFrom'));
+  assert.equal(parsed.submittedTo, canonical.get('submittedTo'));
+
+  const reversed = filtersFromSearchParams(new URLSearchParams({
+    submittedFrom: '2026-10-01T00:00:00.000000+09:00',
+    submittedTo: '2026-09-30T23:59:59.999999+09:00',
+  }));
+  assert.equal(reversed.submittedFrom, null);
+  assert.equal(reversed.submittedTo, null);
+
+  const bogus = filtersFromSearchParams(new URLSearchParams({ submittedFrom: 'not-a-date' }));
+  assert.equal(bogus.submittedFrom, null);
+
+  const nonCanonical = filtersFromSearchParams(new URLSearchParams({ submittedFrom: '2026-09-30T00:00:00Z' }));
+  assert.equal(nonCanonical.submittedFrom, null);
+});

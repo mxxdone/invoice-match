@@ -19,6 +19,22 @@ import type {
 const numberFormat = new Intl.NumberFormat('ko-KR');
 export const formatNumber = (value: number) => numberFormat.format(value);
 
+// Monetary server fields are Java `long`. A value above 2^53-1 cannot be held
+// exactly by a JavaScript number, so it is never formatted or compared as if it
+// were exact; the screen states that the value is outside the supported exact
+// range instead. Replacing the wire type with an exact integer/string contract
+// is a backend decision and is left to the Head.
+export const EXACT_RANGE_MESSAGE = '지원 범위 초과 (정확 표시 불가)';
+export const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
+
+export function isExactInteger(value: number): boolean {
+  return Number.isInteger(value) && Number.isSafeInteger(value);
+}
+
+export function formatExactInteger(value: number): string {
+  return isExactInteger(value) ? numberFormat.format(value) : EXACT_RANGE_MESSAGE;
+}
+
 export type ComparisonRow = {
   lineNumber: number;
   rawItemName: string;
@@ -190,12 +206,14 @@ export function presentOutboxStatus(status: string): string {
   return OUTBOX_STATUS_LABELS[status] ?? status;
 }
 
+// The human-readable labels reuse the confirmed UI phrasing (청구서, 보완, 비교
+// 결과, 청구 거절); no new domain term is invented here.
 const AUDIT_ACTION_LABELS: Record<string, string> = {
-  CASE_CREATED: '사건 생성',
+  CASE_CREATED: '청구서 생성',
   DRAFT_LINES_REPLACED: '초안 저장',
   CASE_SUBMITTED: '청구 제출',
-  SUPPLEMENT_REVISION_OPENED: '보완 revision 열기',
-  MATCH_RUN: '대사 실행',
+  SUPPLEMENT_REVISION_OPENED: '보완 작성 시작',
+  MATCH_RUN: '비교 결과 생성',
   REVIEW_SNAPSHOT_FROZEN: '검토 대상 저장',
   ITEM_MAPPED: '품목 매핑',
   SUPPLEMENT_REQUESTED: '보완 요청',
@@ -219,4 +237,17 @@ export function decisionDetail(decision: ReviewDecisionView): string {
 
 export function freshnessVerdict(freshness: ReviewFreshness): string {
   return freshness.current ? '현재 자료와 일치' : '현재 자료와 불일치';
+}
+
+// A match result is computed against one frozen evidence bundle. When the case
+// has since been resubmitted, the latest match no longer reflects the current
+// claim; the screen must say so instead of showing it as the current verdict.
+export function isStaleMatch(
+  match: MatchResultView,
+  currentBundleVersion: number | null,
+  currentBundleHash: string | null,
+): boolean {
+  if (currentBundleVersion === null) return false;
+  if (match.payload.evidenceBundle.version !== currentBundleVersion) return true;
+  return currentBundleHash !== null && match.payload.evidenceBundle.payloadHash !== currentBundleHash;
 }

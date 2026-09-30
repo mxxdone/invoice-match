@@ -523,14 +523,27 @@ every write path stays `404` at the proxy.
 A `SUBMITTER` only receives their own case (the server enforces ownership), and
 the reviewer-only sections are not requested at all; they render a permission
 notice. A missing case is a `404` page; a missing match result or review
-snapshot is an empty section, not an error. The comparison table renders the
-server match `lineOutcomes` verbatim (invoice/PO quantity and unit price,
-available confirmed receipt quantity, expected allocation and the exception
-taxonomy); no total, supplier name or receipt balance is invented. Freshness is
-the server `current`/`reasons` value, and version/hash identifiers are shown
-under a technical disclosure. Approve, mapping, supplement, reject and create
-writes are out of scope for this slice: the buttons are disabled and say no
-request is sent.
+snapshot is an empty section, not an error. A `503` or `403` on a section is
+shown as that section's own error/permission state, never as "no data" or "not
+yet approved". The comparison table renders the server match `lineOutcomes`
+verbatim (invoice/PO quantity and unit price, available confirmed receipt
+quantity, expected allocation and the exception taxonomy); no total, supplier
+name or receipt balance is invented. The comparison states which evidence
+bundle version it was computed from; if the case has since been resubmitted, it
+is labelled an older result (`이전 제출자료 기준 비교 결과`) and the server's
+normal verdict is shown as the verdict at that time, not the current one.
+Freshness is the server `current`/`reasons` value, shown on the comparison and
+decision tabs, and version/hash identifiers are under a technical disclosure.
+The audit tab follows the server `nextCursor`; a failed further page keeps the
+records and cursor and shows a scoped error with a retry. Approve, mapping,
+supplement, reject and create writes are out of scope for this slice: the
+buttons are disabled and say no request is sent.
+
+Known boundary: monetary fields are Java `long`. A value above JavaScript's safe
+integer range cannot be held exactly, so the screen marks it as outside the
+supported exact range instead of formatting it as an exact amount. An exact
+integer/string money contract would be a backend change and needs Head
+sign-off; no backend type was changed here.
 
 ## Work on a service locally
 

@@ -204,6 +204,14 @@ type AuditExtra = {
   nextCursor: string | null;
 };
 
+export type AuditFailureKind = 'forbidden' | 'error';
+
+export type AuditFailure = {
+  key: string;
+  kind: AuditFailureKind;
+  message: string;
+};
+
 export function useCaseDetail({
   credentials,
   sessionId,
@@ -214,17 +222,26 @@ export function useCaseDetail({
 }: UseCaseDetailOptions) {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [auditExtra, setAuditExtra] = useState<AuditExtra | null>(null);
-  // The loading flag is scoped to the request key, so a pagination that was in
-  // flight when the case/session changed can never leave the new view loading.
+  // The loading flag and error are scoped to the request key, so a pagination
+  // that was in flight when the case/session changed can never leave the new
+  // view loading or show the old view's error.
   const [auditLoading, setAuditLoading] = useState<string | null>(null);
+  const [auditFailure, setAuditFailure] = useState<AuditFailure | null>(null);
   const requests = useRef(new Generation());
   const pagination = useRef(new Generation());
   const paginationController = useRef<AbortController | null>(null);
+  const paginationInFlight = useRef<number | null>(null);
   const requestKey = `${sessionId}#${caseId}#${canReadReview ? 'review' : 'basic'}#${reloadToken}`;
 
   useEffect(() => {
     const guard = requests.current;
+    const paginationGuard = pagination.current;
     const token = guard.next();
+    // A new view invalidates any pagination from the previous view immediately,
+    // so a late page can never append to a different case/session/reload view,
+    // including the A → B → A case where the key is the same again.
+    paginationGuard.next();
+    paginationInFlight.current = null;
     if (!credentials) {
       return;
     }
@@ -253,6 +270,7 @@ export function useCaseDetail({
     return () => {
       controller.abort();
       guard.next();
+      paginationGuard.next();
     };
   }, [credentials, sessionId, caseId, canReadReview, reloadToken, requestKey, onUnauthorized]);
 
@@ -268,17 +286,26 @@ export function useCaseDetail({
   ];
   const auditNextCursor = extra ? extra.nextCursor : (baseAudit?.nextCursor ?? null);
   const auditLoadingMore = auditLoading === requestKey;
+  const auditError = auditFailure && auditFailure.key === requestKey ? auditFailure : null;
 
   const loadMoreAudit = useCallback(() => {
-    if (!credentials || !baseAudit || auditLoadingMore) return;
+    // A synchronous guard stops a second click before the state update lands.
+    if (!credentials || !baseAudit || auditLoadingMore || paginationInFlight.current !== null) return;
     const cursor = extra ? extra.nextCursor : baseAudit.nextCursor;
     if (!cursor) return;
     const guard = pagination.current;
     const token = guard.next();
+    const mainToken = requests.current.current();
+    paginationInFlight.current = token;
     setAuditLoading(requestKey);
+    setAuditFailure(null);
     fetchAuditEntries(credentials, caseId, cursor, AUDIT_PAGE_SIZE, paginationController.current?.signal)
       .then((page) => {
-        if (!guard.isCurrent(token)) return;
+        // Only apply when both the pagination generation and the owning view are
+        // still current; otherwise a stale page is dropped and the failure (if
+        // any) is never shown on another view.
+        if (!guard.isCurrent(token) || !requests.current.isCurrent(mainToken)) return;
+        paginationInFlight.current = null;
         setAuditExtra((previous) => ({
           key: requestKey,
           entries: [...(previous && previous.key === requestKey ? previous.entries : []), ...page.entries],
@@ -287,12 +314,25 @@ export function useCaseDetail({
         setAuditLoading(null);
       })
       .catch((caught: unknown) => {
-        if (!guard.isCurrent(token)) return;
-        if (isAbort(caught)) return;
+        if (!guard.isCurrent(token) || !requests.current.isCurrent(mainToken)) return;
+        paginationInFlight.current = null;
         setAuditLoading(null);
-        if (caught instanceof ApiRequestError && caught.status === 401) onUnauthorized();
+        if (isAbort(caught)) return;
+        if (caught instanceof ApiRequestError && caught.status === 401) {
+          onUnauthorized();
+          return;
+        }
+        if (caught instanceof ApiRequestError && caught.status === 403) {
+          setAuditFailure({
+            key: requestKey,
+            kind: 'forbidden',
+            message: '이 감사 기록을 더 불러올 권한이 없습니다.',
+          });
+          return;
+        }
+        setAuditFailure({ key: requestKey, kind: 'error', message: errorMessage(caught) });
       });
   }, [credentials, caseId, requestKey, baseAudit, extra, auditLoadingMore, onUnauthorized]);
 
-  return { load, isLoading: !isCurrent, auditEntries, auditNextCursor, auditLoadingMore, loadMoreAudit };
+  return { load, isLoading: !isCurrent, auditEntries, auditNextCursor, auditLoadingMore, auditError, loadMoreAudit };
 }

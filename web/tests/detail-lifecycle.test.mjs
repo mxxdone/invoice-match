@@ -210,3 +210,175 @@ test('a late 401 from a replaced id never signs the user out', async () => {
     t.restore();
   }
 });
+
+// --- audit pagination lifecycle -------------------------------------------
+
+const reviewBase = { ...base, canReadReview: true };
+
+function auditPage(ids, nextCursor) {
+  return jsonResponse(200, { entries: ids.map((id) => ({ id })), nextCursor });
+}
+
+function auditResponder({ first, cursor }) {
+  return (url) => {
+    if (url.includes('/audit-entries')) {
+      return url.includes('cursor=') ? cursor(url) : first(url);
+    }
+    return defaultRespond(url);
+  };
+}
+
+test('an audit page that resolves after A → B → A never appends to the new view', async () => {
+  let resolveOldPage;
+  const oldPage = new Promise((resolve) => { resolveOldPage = resolve; });
+  const t = setup(auditResponder({
+    first: () => auditPage(['4', '3'], 'c1'),
+    cursor: () => oldPage,
+  }));
+  try {
+    await t.render({ ...reviewBase, onUnauthorized: () => t.unauthorized.push('a') });
+    await t.flush();
+    await t.flush();
+    assert.deepEqual(latest.auditEntries.map((entry) => entry.id), ['4', '3']);
+    assert.equal(latest.auditNextCursor, 'c1');
+
+    // Start the older page, then leave and return to the same case id.
+    await act(async () => { latest.loadMoreAudit(); });
+    await t.render({ ...reviewBase, caseId: 'B', onUnauthorized: () => t.unauthorized.push('a') });
+    await t.flush();
+    await t.flush();
+    await t.render({ ...reviewBase, caseId: 'A', onUnauthorized: () => t.unauthorized.push('a') });
+    await t.flush();
+    await t.flush();
+    assert.deepEqual(latest.auditEntries.map((entry) => entry.id), ['4', '3']);
+
+    resolveOldPage(auditPage(['1'], null));
+    await t.flush();
+    await t.flush();
+    assert.deepEqual(latest.auditEntries.map((entry) => entry.id), ['4', '3']);
+    assert.equal(latest.auditNextCursor, 'c1');
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
+
+test('a second load-more click while one is in flight is ignored', async () => {
+  let cursorCalls = 0;
+  let resolvePage;
+  const pendingPage = new Promise((resolve) => { resolvePage = resolve; });
+  const t = setup(auditResponder({
+    first: () => auditPage(['2'], 'c1'),
+    cursor: () => { cursorCalls += 1; return pendingPage; },
+  }));
+  try {
+    await t.render({ ...reviewBase, onUnauthorized: () => t.unauthorized.push('a') });
+    await t.flush();
+    await t.flush();
+    await act(async () => {
+      latest.loadMoreAudit();
+      latest.loadMoreAudit();
+      latest.loadMoreAudit();
+    });
+    assert.equal(cursorCalls, 1);
+    resolvePage(auditPage(['1'], null));
+    await t.flush();
+    await t.flush();
+    assert.deepEqual(latest.auditEntries.map((entry) => entry.id), ['2', '1']);
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
+
+test('a failed audit page keeps the records and cursor and can be retried', async () => {
+  let fail = true;
+  const t = setup(auditResponder({
+    first: () => auditPage(['4', '3'], 'c1'),
+    cursor: () => (fail ? jsonResponse(503, { code: 'CORE_API_UNAVAILABLE', message: 'down' }) : auditPage(['2', '1'], null)),
+  }));
+  try {
+    await t.render({ ...reviewBase, onUnauthorized: () => t.unauthorized.push('a') });
+    await t.flush();
+    await t.flush();
+    await act(async () => { latest.loadMoreAudit(); });
+    await t.flush();
+    await t.flush();
+    assert.equal(latest.auditError.kind, 'error');
+    assert.deepEqual(latest.auditEntries.map((entry) => entry.id), ['4', '3']);
+    assert.equal(latest.auditNextCursor, 'c1');
+    assert.equal(latest.auditLoadingMore, false);
+
+    fail = false;
+    await act(async () => { latest.loadMoreAudit(); });
+    await t.flush();
+    await t.flush();
+    assert.equal(latest.auditError, null);
+    assert.deepEqual(latest.auditEntries.map((entry) => entry.id), ['4', '3', '2', '1']);
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
+
+test('a 403 audit page is reported as forbidden and keeps the records', async () => {
+  const t = setup(auditResponder({
+    first: () => auditPage(['4'], 'c1'),
+    cursor: () => jsonResponse(403, { code: 'FORBIDDEN', message: 'no' }),
+  }));
+  try {
+    await t.render({ ...reviewBase, onUnauthorized: () => t.unauthorized.push('a') });
+    await t.flush();
+    await t.flush();
+    await act(async () => { latest.loadMoreAudit(); });
+    await t.flush();
+    await t.flush();
+    assert.equal(latest.auditError.kind, 'forbidden');
+    assert.deepEqual(latest.auditEntries.map((entry) => entry.id), ['4']);
+    assert.equal(latest.auditNextCursor, 'c1');
+    assert.deepEqual(t.unauthorized, []);
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
+
+test('a current audit 401 signs out once, but a late one after a session switch does not', async () => {
+  const current = setup(auditResponder({
+    first: () => auditPage(['4'], 'c1'),
+    cursor: () => jsonResponse(401, { code: 'UNAUTHENTICATED' }),
+  }));
+  try {
+    await current.render({ ...reviewBase, onUnauthorized: () => current.unauthorized.push('a') });
+    await current.flush();
+    await current.flush();
+    await act(async () => { latest.loadMoreAudit(); });
+    await current.flush();
+    await current.flush();
+    assert.deepEqual(current.unauthorized, ['a']);
+  } finally {
+    await current.unmount();
+    current.restore();
+  }
+
+  let resolveOld;
+  const oldPage = new Promise((resolve) => { resolveOld = resolve; });
+  const late = setup(auditResponder({ first: () => auditPage(['4'], 'c1'), cursor: () => oldPage }));
+  try {
+    await late.render({ ...reviewBase, sessionId: 1, onUnauthorized: () => late.unauthorized.push('old') });
+    await late.flush();
+    await late.flush();
+    await act(async () => { latest.loadMoreAudit(); });
+    // A new session replaces the view before the old page resolves.
+    await late.render({ ...reviewBase, sessionId: 5, credentials: { username: 'B', password: 'p' }, onUnauthorized: () => late.unauthorized.push('new') });
+    await late.flush();
+    await late.flush();
+    resolveOld(jsonResponse(401, { code: 'UNAUTHENTICATED' }));
+    await late.flush();
+    await late.flush();
+    assert.deepEqual(late.unauthorized, []);
+  } finally {
+    await late.unmount();
+    late.restore();
+  }
+});

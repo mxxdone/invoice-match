@@ -4,8 +4,14 @@
 // (browser back/forward or the detail's "목록으로" link) restores the same
 // server query. The serialized form is exactly `buildInvoiceCaseQuery`, so the
 // URL the browser keeps and the query the server receives can never drift.
+//
+// Parsing is strict: a page/size must be a plain non-negative integer (so
+// `2oops` or `1.5` is rejected, not truncated) and a date range must round-trip
+// to the canonical KST boundaries this app writes. An invalid, reversed or
+// non-canonical range is reset to no filter rather than forwarded as-is.
 
 import { buildInvoiceCaseQuery, type InvoiceCaseFilters, type SearchField } from '../api/query';
+import { resolveSubmittedRange } from '../api/daterange';
 
 export const DEFAULT_PAGE_SIZE = 20;
 
@@ -19,11 +25,13 @@ const STATUSES = new Set([
   'EXPORTED',
 ]);
 
-function positiveInt(value: string | null, fallback: number): number {
-  if (value === null) return fallback;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
-  return parsed;
+const PLAIN_INT = /^\d+$/;
+const DAY_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+function strictInt(value: string | null): number | null {
+  if (value === null || !PLAIN_INT.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function firstNonBlank(value: string | null): string | null {
@@ -31,9 +39,28 @@ function firstNonBlank(value: string | null): string | null {
   return trimmed ? trimmed : null;
 }
 
-function clampSize(size: number): number {
-  if (!Number.isFinite(size) || size < 1) return DEFAULT_PAGE_SIZE;
+function clampSize(size: number | null): number {
+  if (size === null || size < 1) return DEFAULT_PAGE_SIZE;
   return Math.min(size, 100);
+}
+
+function resolveRange(params: URLSearchParams): { from: string | null; to: string | null } {
+  const rawFrom = params.get('submittedFrom');
+  const rawTo = params.get('submittedTo');
+  const fromDate = rawFrom ? rawFrom.slice(0, 10) : '';
+  const toDate = rawTo ? rawTo.slice(0, 10) : '';
+  if ((rawFrom !== null && !DAY_ONLY.test(fromDate)) || (rawTo !== null && !DAY_ONLY.test(toDate))) {
+    return { from: null, to: null };
+  }
+  const resolved = resolveSubmittedRange(fromDate, toDate);
+  if (resolved.error) {
+    return { from: null, to: null };
+  }
+  // Only accept the canonical KST instant form this app produces.
+  return {
+    from: resolved.from === rawFrom ? resolved.from : null,
+    to: resolved.to === rawTo ? resolved.to : null,
+  };
 }
 
 export function filtersFromSearchParams(params: URLSearchParams): InvoiceCaseFilters {
@@ -44,16 +71,17 @@ export function filtersFromSearchParams(params: URLSearchParams): InvoiceCaseFil
     ? 'purchaseOrderId'
     : 'invoiceNumber';
   const searchValue = searchField === 'purchaseOrderId' ? purchaseOrderId : invoiceNumber;
+  const range = resolveRange(params);
   return {
     status: status && STATUSES.has(status) ? status : 'all',
     supplierId: firstNonBlank(params.get('supplierId')),
     submittedBy: firstNonBlank(params.get('submittedBy')),
-    submittedFrom: firstNonBlank(params.get('submittedFrom')),
-    submittedTo: firstNonBlank(params.get('submittedTo')),
+    submittedFrom: range.from,
+    submittedTo: range.to,
     searchField,
     searchValue,
-    page: Math.max(0, positiveInt(params.get('page'), 0)),
-    size: clampSize(positiveInt(params.get('size'), DEFAULT_PAGE_SIZE)),
+    page: Math.max(0, strictInt(params.get('page')) ?? 0),
+    size: clampSize(strictInt(params.get('size'))),
   };
 }
 
