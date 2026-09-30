@@ -30,29 +30,59 @@ function errorResponse(status: number, code: string, message: string): Response 
 }
 
 // Reads the inbound body from the actual stream so a chunked request with no
-// Content-Length is bounded too. Returns null when the body exceeds the limit;
-// the caller maps that to the same 413 the Core API returns.
-async function readBoundedRequestBody(request: Request, limit: number): Promise<Uint8Array<ArrayBuffer> | null> {
+// Content-Length is bounded too. The read, the oversize cancel and the final
+// unlock are all raced against the shared deadline/cancellation signal, so a
+// client that opens a body and then stalls (never enqueues, never closes) cannot
+// hold the proxy request open past the deadline. Returns null when the body
+// exceeds the limit; the caller maps that to the same 413 the Core API returns.
+async function readBoundedRequestBody(
+  request: Request,
+  limit: number,
+  signal: AbortSignal,
+): Promise<Uint8Array<ArrayBuffer> | null> {
   if (!request.body) {
-    return new Uint8Array();
+    return new Uint8Array(new ArrayBuffer(0));
   }
   const reader = request.body.getReader();
+  const aborted = new Promise<never>((_resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new DOMException('aborted', 'AbortError'));
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      if (signal.aborted) throw signal.reason ?? new DOMException('aborted', 'AbortError');
+      const { done, value } = await Promise.race([reader.read(), aborted]);
       if (done) break;
       if (!value) continue;
       total += value.byteLength;
       if (total > limit) {
-        await reader.cancel().catch(() => {});
+        reader.cancel().catch(() => {});
         return null;
       }
       chunks.push(value);
     }
   } finally {
-    reader.releaseLock();
+    // If we stopped on abort, a read is still attached; cancel it (bounded by
+    // the same already-fired abort) before releasing so releaseLock cannot throw
+    // on a live stream, and so a stalled reader never leaks.
+    if (signal.aborted) {
+      try {
+        await Promise.race([reader.cancel().catch(() => {}), aborted.catch(() => {})]);
+      } catch {
+        // The abort already decided the outcome.
+      }
+    }
+    try {
+      reader.releaseLock();
+    } catch {
+      // A cancel in flight can still own the lock; nothing more to release.
+    }
   }
   const body = new Uint8Array(new ArrayBuffer(total));
   let offset = 0;
@@ -140,7 +170,7 @@ export async function proxyWrite(
   const signal = AbortSignal.any([request.signal, timeout]);
 
   try {
-    const body = await readBoundedRequestBody(request, limit);
+    const body = await readBoundedRequestBody(request, limit, signal);
     if (body === null) {
       return errorResponse(413, 'PAYLOAD_TOO_LARGE', 'Request body exceeds the configured limit');
     }

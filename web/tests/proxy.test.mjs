@@ -185,6 +185,57 @@ test('a client cancellation during a write maps to 503 CLIENT_ABORTED', async ()
   await expectJson(await pending, 503, 'CLIENT_ABORTED');
 });
 
+function stalledWriteRequest(signal) {
+  const stream = new ReadableStream({ start() { /* never enqueue, never close */ } });
+  return new Request('http://localhost/backend/api/invoice-cases', {
+    method: 'POST',
+    headers: { authorization: 'Basic dGVzdDp0ZXN0', 'content-type': 'application/json' },
+    body: stream,
+    duplex: 'half',
+    signal,
+  });
+}
+
+test('a stalled upload body is bounded by the shared deadline, not left pending', async () => {
+  const started = Date.now();
+  const res = await proxyWrite(stalledWriteRequest(undefined), 'POST', ['api', 'invoice-cases'], {
+    env: 'http://core:8080',
+    timeoutMs: 60,
+    fetchImpl: async () => { throw new Error('must not fetch'); },
+  });
+  await expectJson(res, 504, 'CORE_API_TIMEOUT');
+  assert.ok(Date.now() - started < 2000, 'stalled upload did not resolve within a bounded time');
+});
+
+test('a client cancellation during a stalled upload maps to 503 CLIENT_ABORTED', async () => {
+  const controller = new AbortController();
+  const pending = proxyWrite(stalledWriteRequest(controller.signal), 'POST', ['api', 'invoice-cases'], {
+    env: 'http://core:8080',
+    timeoutMs: 5000,
+    fetchImpl: async () => { throw new Error('must not fetch'); },
+  });
+  setTimeout(() => controller.abort(), 20);
+  await expectJson(await pending, 503, 'CLIENT_ABORTED');
+});
+
+test('an oversized upload is rejected as 413 without waiting for the stream to close', async () => {
+  const stream = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(64)); /* stays open */ } });
+  const request = new Request('http://localhost/backend/api/invoice-cases', {
+    method: 'POST',
+    headers: { authorization: 'Basic dGVzdDp0ZXN0', 'content-type': 'application/json' },
+    body: stream,
+    duplex: 'half',
+  });
+  const started = Date.now();
+  const res = await proxyWrite(request, 'POST', ['api', 'invoice-cases'], {
+    env: 'http://core:8080',
+    requestBodyLimitBytes: 10,
+    fetchImpl: async () => { throw new Error('must not fetch'); },
+  });
+  await expectJson(res, 413, 'PAYLOAD_TOO_LARGE');
+  assert.ok(Date.now() - started < 2000, 'oversized upload did not resolve within a bounded time');
+});
+
 test('the read proxy still refuses write-only paths', async () => {
   const readOnlyRequest = new Request(`http://localhost/backend/api/invoice-cases/${CASE}/approve`, {
     headers: { authorization: 'Basic dGVzdDp0ZXN0' },

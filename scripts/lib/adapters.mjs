@@ -56,7 +56,9 @@ export function startChild(spec, { timeoutMs = 5000 } = {}) {
     child = spawn(spec.cmd, spec.args, {
       cwd: spec.cwd,
       env: { ...process.env, ...spec.env },
-      stdio: spec.stdio ?? 'ignore',
+      // Default is quiet; P110_CHILD_STDIO=inherit is a diagnostic switch that
+      // lets a failing child's own log be read without changing the normal run.
+      stdio: spec.stdio ?? process.env.P110_CHILD_STDIO ?? 'ignore',
       windowsHide: true,
     });
   } catch (error) {
@@ -117,6 +119,33 @@ export function startChild(spec, { timeoutMs = 5000 } = {}) {
   };
 }
 
+// Verification-only fifth identity: a submitter who is also an approver and
+// operator, so the browser check can obtain a real server self-approval 403.
+// Passwords reuse the already-committed local/demo BCrypt hashes; this only
+// extends the throwaway child's configuration and never changes production or
+// local files.
+const DUAL_ROLE_USER = {
+  username: 'dual',
+  password: '{bcrypt}$2a$10$zI98Q/Kc88bhkspHb/BRneFPm1bxu5d4ciVHaNBm/nUFEy9FYKE/O',
+  roles: ['SUBMITTER', 'APPROVER', 'OPERATOR'],
+};
+
+function demoUsersOverride() {
+  return JSON.stringify({
+    security: {
+      demo: {
+        users: [
+          { username: 'submitter', password: '{bcrypt}$2a$10$dy82eO2.Xqf1r/xnYb0d.umTy.YPhylxIHoWLR5gi.conT.c3lpHm', roles: ['SUBMITTER'] },
+          { username: 'submitter2', password: '{bcrypt}$2a$10$yU7d64ayCZUnbgPCLo0aC.xeH/jKDqJfVf8XjEK.9/6eXfXTeKD2S', roles: ['SUBMITTER'] },
+          { username: 'approver', password: '{bcrypt}$2a$10$zI98Q/Kc88bhkspHb/BRneFPm1bxu5d4ciVHaNBm/nUFEy9FYKE/O', roles: ['APPROVER'] },
+          { username: 'operator', password: '{bcrypt}$2a$10$43jqVAOkzegqkQVkGJi7luHB.MK5GGe1uexfRnH9C07fWEzVdcsfq', roles: ['OPERATOR'] },
+          DUAL_ROLE_USER,
+        ],
+      },
+    },
+  });
+}
+
 export function buildConfig({ ports, repo, pgPassword }) {
   return {
     ports,
@@ -145,6 +174,7 @@ export function buildConfig({ ports, repo, pgPassword }) {
           DB_PASSWORD: pgPassword,
           SPRING_PROFILES_ACTIVE: 'local',
           PURCHASING_BASE_URL: loopbackUrl(ports.mock),
+          SPRING_APPLICATION_JSON: demoUsersOverride(),
         },
         readiness: { url: `${loopbackUrl(ports.core)}/actuator/health`, verify: (body) => body.includes('"status":"UP"') },
       },

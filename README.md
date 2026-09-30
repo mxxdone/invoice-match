@@ -619,4 +619,20 @@ cd ..
 node scripts/verify-p1-10.mjs
 ```
 
+Add `--browser` to also drive a real Chromium against the same throwaway stack
+inside the verification callback (the stack stays up until the callback returns
+and the existing cleanup then stops it). It uses `npx @playwright/cli
+playwright-cli`, needs a local Chromium, adds no credentials to disk, and writes
+screenshots to `output/playwright/p1-10-complete-workflow/`:
+
+```sh
+node scripts/verify-p1-10.mjs --browser
+```
+
+The browser pass covers login → create → draft → submit → operator match →
+approver freeze/approve → handoff, exception mapping, supplement → resubmit v2,
+reject, the server self-approval denial (a verification-only dual-role identity
+is injected into the throwaway child's `SPRING_APPLICATION_JSON`), stale
+blocking, list return, console and a 1024px viewport overflow check.
+
 The GitHub Actions workflow runs these checks and a five-service Compose smoke test. Source layout is intentionally small: `core-api` holds one Spring application organized by feature (`invoicecase`, `matching`, `purchasingreference`, `review`, `shared`); `web/src/app` holds the Next.js routes; `mock-erp` serves only a deterministic health response; `mock-purchasing` serves deterministic read-only purchase order aggregates. P1-01 defines the Phase 1 state contract and PostgreSQL baseline, P1-02 defines the external purchasing reference snapshot and refresh version semantics, P1-03 defines manual submission, evidence bundle versioning and request-id idempotency, P1-04 defines the deterministic AI-free 3-way match, P1-05 defines the frozen review snapshot, case-local mapping with deterministic re-match, supplement/reject and freshness, P1-06 defines role-based authorization, the authoritative submitter/reviewer identity, request trace ids and the append-only audit history, but later tickets still own approval, allocation, payment and P1-09 behavior.

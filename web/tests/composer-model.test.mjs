@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { ApiRequestError } from '../src/app/api/transport.ts';
 import {
   classifyMutationFailure,
+  failureDetailLines,
   intentSignature,
   isDefiniteFailure,
   needsRefresh,
@@ -11,7 +12,7 @@ import {
 
 test('failures are classified by status and keep the server code and message', () => {
   assert.deepEqual(classifyMutationFailure(new ApiRequestError(401, 'UNAUTHENTICATED', 'no')), {
-    kind: 'unauthorized', status: 401, code: 'UNAUTHENTICATED', message: 'no',
+    kind: 'unauthorized', status: 401, code: 'UNAUTHENTICATED', message: 'no', details: null,
   });
   assert.equal(classifyMutationFailure(new ApiRequestError(403, 'FORBIDDEN', 'no')).kind, 'forbidden');
   assert.equal(classifyMutationFailure(new ApiRequestError(409, 'CASE_VERSION_CONFLICT', 'stale')).kind, 'conflict');
@@ -51,4 +52,25 @@ test('the identical intent reuses its request id and any change starts a new one
 test('the signature is stable for equal payloads and distinct for a changed version', () => {
   assert.equal(intentSignature('submit', { caseId: 'c', expectedCaseVersion: 1 }), intentSignature('submit', { caseId: 'c', expectedCaseVersion: 1 }));
   assert.notEqual(intentSignature('submit', { caseId: 'c', expectedCaseVersion: 1 }), intentSignature('submit', { caseId: 'c', expectedCaseVersion: 2 }));
+});
+
+test('a conflict failure keeps and renders its structured cause', () => {
+  const conflict = classifyMutationFailure(new ApiRequestError(409, 'STALE_REVIEW_TARGET', 'stale', {
+    reasons: ['CASE_VERSION', 'EVIDENCE_BUNDLE'],
+    currentCaseVersion: 7,
+    shortfalls: [{ receiptLineId: 'RCL-1', remaining: 5 }],
+  }));
+  assert.equal(conflict.kind, 'conflict');
+  assert.equal(conflict.details.reasons.length, 2);
+  const lines = failureDetailLines(conflict);
+  assert.ok(lines.includes('청구 버전이 변경됨'));
+  assert.ok(lines.includes('증빙 버전이 변경됨'));
+  assert.ok(lines.some((line) => line.includes('서버 최신 청구서 버전: v7')));
+  assert.ok(lines.some((line) => line.includes('RCL-1')));
+});
+
+test('details are null for a body without them and the presenter returns nothing', () => {
+  const plain = classifyMutationFailure(new ApiRequestError(409, 'CASE_STATE_CONFLICT', 'no'));
+  assert.equal(plain.details, null);
+  assert.deepEqual(failureDetailLines(plain), []);
 });

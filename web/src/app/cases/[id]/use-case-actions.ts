@@ -10,18 +10,19 @@ import {
   runMatch,
   type MappingDecisionInput,
 } from '../../api/client.ts';
-// The hook owns the idempotency request id, so callers pass the intent without it.
-type MappingInput = Omit<MappingDecisionInput, 'requestId'>;
 import type { Credentials } from '../../api/transport.ts';
+import { Generation } from '../../api/generation.ts';
 import {
   classifyMutationFailure,
+  intentSignature,
   isDefiniteFailure,
   newRequestId,
-  resolveIntent,
   type MutationFailure,
   type MutationOperation,
-  type PendingIntent,
 } from '../composer-model.ts';
+
+// The hook owns the idempotency request id, so callers pass the intent without it.
+type MappingInput = Omit<MappingDecisionInput, 'requestId'>;
 
 export type CaseActionsOptions = {
   credentials: Credentials | null;
@@ -31,6 +32,16 @@ export type CaseActionsOptions = {
   // Called after a successful write so the page re-reads the authoritative
   // state instead of applying the response locally.
   onCompleted: (operation: MutationOperation) => void;
+};
+
+export type UnresolvedAction = { operation: MutationOperation; requestId: string };
+
+type FrozenAction = {
+  operation: MutationOperation;
+  requestId: string;
+  signature: string;
+  payload: unknown;
+  invoke: (requestId: string, signal: AbortSignal) => Promise<unknown>;
 };
 
 export function useCaseActions({
@@ -43,89 +54,157 @@ export function useCaseActions({
   const [pendingAction, setPendingAction] = useState<MutationOperation | null>(null);
   const [failure, setFailure] = useState<MutationFailure | null>(null);
   const [lastSuccess, setLastSuccess] = useState<MutationOperation | null>(null);
+  const [unresolved, setUnresolved] = useState<UnresolvedAction | null>(null);
 
-  const pending = useRef<PendingIntent | null>(null);
+  const frozen = useRef<FrozenAction | null>(null);
   const activeController = useRef<AbortController | null>(null);
   const sessionRef = useRef(sessionId);
+  const caseIdRef = useRef(caseId);
   const credentialsRef = useRef(credentials);
-  const mounted = useRef(true);
+  const alive = useRef(false);
+  const generations = useRef(new Generation());
+
+  // A session or case change resets the visible action state during render; the
+  // effect below only clears refs so no late response can mark another case done.
+  const [identityMarker, setIdentityMarker] = useState(`${sessionId}#${caseId}`);
+  if (identityMarker !== `${sessionId}#${caseId}`) {
+    setIdentityMarker(`${sessionId}#${caseId}`);
+    setUnresolved(null);
+    setPendingAction(null);
+    setFailure(null);
+    setLastSuccess(null);
+  }
 
   useEffect(() => {
     credentialsRef.current = credentials;
   }, [credentials]);
 
-  useEffect(() => () => {
-    mounted.current = false;
-    activeController.current?.abort();
+  useEffect(() => {
+    alive.current = true;
+    const guard = generations.current;
+    return () => {
+      alive.current = false;
+      guard.next();
+      activeController.current?.abort();
+    };
   }, []);
 
   useEffect(() => {
     sessionRef.current = sessionId;
-    pending.current = null;
+    caseIdRef.current = caseId;
+    generations.current.next();
+    frozen.current = null;
     activeController.current?.abort();
-  }, [sessionId]);
-
-  const isCurrent = useCallback(
-    () => mounted.current && sessionRef.current === sessionId,
-    [sessionId],
-  );
+  }, [sessionId, caseId]);
 
   const run = useCallback(
     async <T,>(
       operation: MutationOperation,
       businessPayload: unknown,
-      call: (requestId: string, signal: AbortSignal) => Promise<T>,
+      invoke: (requestId: string, signal: AbortSignal) => Promise<T>,
     ): Promise<boolean> => {
       const current = credentialsRef.current;
+      const runCaseId = caseId;
       if (!current) {
-        const unauthorized: MutationFailure = { kind: 'unauthorized', status: 0, code: 'UNAUTHENTICATED', message: '로그인이 필요합니다.' };
+        const unauthorized: MutationFailure = { kind: 'unauthorized', status: 0, code: 'UNAUTHENTICATED', message: '로그인이 필요합니다.', details: null };
         setFailure(unauthorized);
         return false;
       }
-      const intent = resolveIntent(pending.current, operation, businessPayload, () => newRequestId('web'));
-      pending.current = intent;
-      if (isCurrent()) {
-        setPendingAction(operation);
-        setFailure(null);
+      const token = generations.current.next();
+      const signature = intentSignature(operation, businessPayload);
+      const existing = frozen.current;
+      if (existing && existing.signature !== signature) {
+        const blocked: MutationFailure = {
+          kind: 'error',
+          status: 0,
+          code: 'UNRESOLVED_INTENT',
+          message: '이전 요청의 결과가 확정되지 않았습니다. 같은 요청을 다시 시도하거나 최신 자료를 다시 조회해 먼저 해소하세요.',
+          details: null,
+        };
+        if (alive.current && generations.current.isCurrent(token)) setFailure(blocked);
+        return false;
       }
+      const intent: FrozenAction = existing && existing.signature === signature
+        ? existing
+        : { operation, requestId: newRequestId('web'), signature, payload: businessPayload, invoke };
+
+      setFailure(null);
+      if (alive.current && generations.current.isCurrent(token)) setPendingAction(operation);
       const controller = new AbortController();
       activeController.current = controller;
+      const stillCurrent = () => alive.current
+        && generations.current.isCurrent(token)
+        && sessionRef.current === sessionId
+        && caseIdRef.current === runCaseId;
       try {
-        await call(intent.requestId, controller.signal);
-        if (!isCurrent()) return true;
-        pending.current = null;
+        await intent.invoke(intent.requestId, controller.signal);
+        if (!stillCurrent()) return false;
+        frozen.current = null;
+        setUnresolved(null);
         setPendingAction(null);
         setLastSuccess(operation);
-        // A completed write reloads the case; the server values replace the
-        // previous view instead of being guessed from the response.
+        // A completed write reloads the case; server values replace the view.
         onCompleted(operation);
         return true;
       } catch (caught) {
         if (caught instanceof Error && caught.name === 'AbortError') {
           return false;
         }
+        if (!stillCurrent()) return false;
         const classified = classifyMutationFailure(caught);
         if (isDefiniteFailure(classified.kind)) {
-          pending.current = null;
+          frozen.current = null;
+          setUnresolved(null);
+        } else {
+          frozen.current = intent;
+          setUnresolved({ operation, requestId: intent.requestId });
         }
-        if (isCurrent()) {
-          setPendingAction(null);
-          setFailure(classified);
-        }
+        setPendingAction(null);
+        setFailure(classified);
         if (classified.kind === 'unauthorized') {
           onUnauthorized();
         }
         return false;
       }
     },
-    [isCurrent, onCompleted, onUnauthorized],
+    [caseId, onCompleted, onUnauthorized, sessionId],
   );
+
+  const retry = useCallback(async (): Promise<boolean> => {
+    const intent = frozen.current;
+    if (!intent) return false;
+    const runCaseId = caseIdRef.current;
+    const token = generations.current.next();
+    setFailure(null);
+    setPendingAction(intent.operation);
+    const controller = new AbortController();
+    activeController.current = controller;
+    try {
+      await intent.invoke(intent.requestId, controller.signal);
+      if (!alive.current || !generations.current.isCurrent(token) || caseIdRef.current !== runCaseId) return false;
+      frozen.current = null;
+      setUnresolved(null);
+      setPendingAction(null);
+      setLastSuccess(intent.operation);
+      onCompleted(intent.operation);
+      return true;
+    } catch (caught) {
+      if (!alive.current || !generations.current.isCurrent(token) || caseIdRef.current !== runCaseId) return false;
+      const classified = classifyMutationFailure(caught);
+      if (classified.kind === 'unauthorized') onUnauthorized();
+      setPendingAction(null);
+      setFailure(classified);
+      return false;
+    }
+  }, [onCompleted, onUnauthorized]);
 
   return {
     pendingAction,
     failure,
     lastSuccess,
+    unresolved,
     clearFailure: useCallback(() => setFailure(null), []),
+    retry,
     runMatch: useCallback(
       () => run('match', { caseId }, (requestId, signal) => runMatch(credentialsRef.current as Credentials, caseId, { requestId }, signal)),
       [run, caseId],

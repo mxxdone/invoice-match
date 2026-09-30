@@ -273,7 +273,7 @@ test('runChecks asserts seed statuses and stops on a submit failure with a sanit
   const cfg = { ports: { core: 3, web: 4 } };
   const calls = [];
   const base = {
-    '/api/me': () => ({ ok: true, status: 200, body: JSON.stringify({ username: 'approver', roles: ['APPROVER'] }) }),
+    '/api/me': () => ({ ok: true, status: 200, body: JSON.stringify({ username: 'approver', roles: ['APPROVER', 'SUBMITTER', 'OPERATOR'] }) }),
     '/actuator/health': () => ({ ok: true, status: 200, body: '{"status":"UP"}' }),
   };
   const request = async (url, init = {}) => {

@@ -7,7 +7,7 @@ import { Icon, Shell } from '../../ui';
 import { useAuth } from '../../auth';
 import { formatInstant, presentStatus } from '../../api/contract';
 import type { EvidenceBundleSummary } from '../../api/contract';
-import { comparisonRows, latestBundle } from './detail-model';
+import { comparisonRows, decisionSubjectPayload, latestBundle, reviewSubjectBinding } from './detail-model';
 import {
   AuditPanel,
   ComparePanel,
@@ -19,6 +19,7 @@ import {
 } from './detail-sections';
 import { useCaseDetail } from './use-case-detail';
 import { useCaseActions } from './use-case-actions';
+import { MutationFailureNotice } from '../mutation-failure-notice';
 
 const REVIEW_ROLES = ['APPROVER', 'OPERATOR'];
 
@@ -99,9 +100,19 @@ function Detail() {
 
   const snapshot = data.snapshot.status === 'ready' ? data.snapshot.data : null;
   const fresh = data.freshness.status === 'ready' ? data.freshness.data.current : null;
-  const subjectReady = snapshot !== null && fresh === true;
-  const mappingRows = data.match.status === 'ready' ? comparisonRows(data.match.data) : [];
-  const actionBusy = actions.pendingAction !== null;
+  const match = data.match.status === 'ready' ? data.match.data : null;
+  // A decision is only offered when the displayed comparison is exactly the
+  // frozen subject's own facts; a B snapshot + current flag alone is not enough.
+  const binding = reviewSubjectBinding({
+    snapshot,
+    freshnessCurrent: fresh,
+    match,
+    currentBundleVersion: newest?.version ?? null,
+    currentBundleHash: newest?.payloadHash ?? null,
+  });
+  const subjectReady = binding.bound;
+  const mappingRows = match ? comparisonRows(match) : [];
+  const actionBusy = actions.pendingAction !== null || Boolean(actions.unresolved);
 
   async function doFreeze() {
     if (!newest) return;
@@ -113,9 +124,7 @@ function Detail() {
     const itemId = mappingItem.trim();
     if (!Number.isInteger(line) || line < 1 || !itemId) return;
     if (await actions.recordMapping({
-      expectedCaseVersion: data.detail.version,
-      reviewSnapshotId: snapshot.id,
-      reviewPayloadHash: snapshot.payloadHash,
+      ...decisionSubjectPayload(data.detail.version, snapshot),
       lineNumber: line,
       itemId,
     })) {
@@ -126,9 +135,7 @@ function Detail() {
   async function doSupplement() {
     if (!snapshot || !subjectReady || !reason.trim()) return;
     if (await actions.requestSupplement({
-      expectedCaseVersion: data.detail.version,
-      reviewSnapshotId: snapshot.id,
-      reviewPayloadHash: snapshot.payloadHash,
+      ...decisionSubjectPayload(data.detail.version, snapshot),
       reason: reason.trim(),
     })) {
       setReason('');
@@ -138,9 +145,7 @@ function Detail() {
   async function doReject() {
     if (!snapshot || !subjectReady || !reason.trim()) return;
     if (await actions.reject({
-      expectedCaseVersion: data.detail.version,
-      reviewSnapshotId: snapshot.id,
-      reviewPayloadHash: snapshot.payloadHash,
+      ...decisionSubjectPayload(data.detail.version, snapshot),
       reason: reason.trim(),
     })) {
       setReason('');
@@ -149,11 +154,7 @@ function Detail() {
   }
   async function doApprove() {
     if (!snapshot || !subjectReady) return;
-    await actions.approve({
-      expectedCaseVersion: data.detail.version,
-      reviewSnapshotId: snapshot.id,
-      reviewPayloadHash: snapshot.payloadHash,
-    });
+    await actions.approve(decisionSubjectPayload(data.detail.version, snapshot));
   }
 
   const tabs: Array<[string, string]> = [
@@ -193,14 +194,10 @@ function Detail() {
       </header>
 
       {actions.failure && (
-        <div className="review-warning" role="alert">
-          <div>
-            <strong>{actions.failure.kind === 'conflict' ? '최신 자료와 충돌했습니다' : '요청을 완료하지 못했습니다'}</strong>
-            <p>{actions.failure.message} <span className="muted-text">({actions.failure.code})</span></p>
-            <p>화면은 서버의 권한·최신성·금액을 대신 판정하지 않습니다. 최신 자료를 다시 조회한 뒤 다시 확인하세요.</p>
-          </div>
-          <button className="button" onClick={() => { actions.clearFailure(); setReloadToken((value) => value + 1); }}>최신 자료 다시 조회</button>
-        </div>
+        <MutationFailureNotice
+          failure={actions.failure}
+          onRefresh={() => { actions.clearFailure(); setReloadToken((value) => value + 1); }}
+        />
       )}
       {actions.lastSuccess && !actions.failure && (
         <div className="review-note" role="status"><span className="status-dot" /><span>작업이 서버에 반영되었습니다. 최신 자료를 다시 조회했습니다.</span></div>
@@ -223,11 +220,21 @@ function Detail() {
       {isApprover && (
         <section className="form-section" aria-label="승인자 검토 동작">
           <div className="section-heading"><h2>검토 동작</h2><span>서버가 권한·소유권·최신성을 검증합니다</span></div>
+          {actions.unresolved && (
+            <SectionMessage tone="notice">
+              <strong>이전 요청의 결과가 확정되지 않았습니다</strong>
+              <p>자동으로 다시 보내지 않습니다. 같은 요청을 다시 시도하거나 최신 자료를 다시 조회해 먼저 해소하세요.</p>
+              <div className="dialog-actions">
+                <button className="button" disabled={actionBusy} onClick={() => actions.retry()}>같은 요청 다시 시도</button>
+                <button className="button" onClick={() => { actions.clearFailure(); setReloadToken((value) => value + 1); }}>최신 자료 다시 조회</button>
+              </div>
+            </SectionMessage>
+          )}
           {!subjectReady && (
             <SectionMessage tone="notice">
-              결정을 기록하려면 최신 자료로 동결한 검토 대상이 필요합니다.
+              결정을 기록하려면 표시된 비교·증빙·구매 사실이 동결된 검토 대상과 일치해야 합니다.
+              {binding.reasons.length > 0 && <ul className="failure-details">{binding.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>}
               {!snapshot && newest && ' 아직 검토 대상이 없어 동결할 수 있습니다.'}
-              {snapshot && fresh === false && ' 현재 동결된 검토 대상이 최신 자료와 일치하지 않습니다.'}
             </SectionMessage>
           )}
           <div className="dialog-actions">

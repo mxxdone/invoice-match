@@ -25,6 +25,7 @@ import { runVerification } from './lib/verify-core.mjs';
 import { runEntry } from './lib/entry.mjs';
 import { buildConfig, createDocker, createPortProbe, createRequest, startChild } from './lib/adapters.mjs';
 import { runChecks } from './lib/checks.mjs';
+import { runBrowserChecks } from './browser/p1-10-browser.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
@@ -57,7 +58,19 @@ if (!existsSync(join(webStandalone, '.next', 'static'))) {
   cpSync(join(repo, 'web', '.next', 'static'), join(webStandalone, '.next', 'static'), { recursive: true });
 }
 
+const withBrowser = process.argv.includes('--browser');
 const config = buildConfig({ ports, repo, pgPassword: randomUUID() });
+
+// The isolated stack stays up for the whole verify callback, so the browser
+// checks run against the same throwaway children and are torn down by the
+// existing cleanup afterwards.
+const verify = async (context) => {
+  const value = await runChecks(context);
+  if (withBrowser) {
+    await runBrowserChecks(context);
+  }
+  return value;
+};
 
 const outcome = await runEntry({
   run: () =>
@@ -70,7 +83,7 @@ const outcome = await runEntry({
       now: Date.now,
       sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
       log: (message) => console.log(message),
-      verify: runChecks,
+      verify,
     }),
 });
 

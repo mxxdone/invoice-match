@@ -52,6 +52,11 @@ function setup(responder) {
         root.render(createElement(Harness, { credentials, sessionId: 1, onUnauthorized: () => unauthorized.push('x'), ...options }));
       });
     },
+    async renderStrict(options = {}) {
+      await act(async () => {
+        root.render(createElement(React.StrictMode, null, createElement(Harness, { credentials, sessionId: 1, onUnauthorized: () => unauthorized.push('x'), ...options })));
+      });
+    },
     async run(fn) { await act(async () => { await fn(); }); },
     async unmount() { await act(async () => { root.unmount(); }); },
     restore() { globalThis.fetch = originalFetch; container.remove(); },
@@ -184,6 +189,111 @@ test('a 409 conflict clears the intent, blocks auto-retry and a refresh adopts t
     const submits = t.calls.filter((call) => call.url.endsWith('/submit'));
     assert.equal(submits[1].body.expectedCaseVersion, 5);
     assert.notEqual(submits[1].body.requestId, conflictedId, 'a corrected intent gets a new request id');
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
+
+test('an unresolved create blocks a different intent until the exact request is retried', async () => {
+  let attempts = 0;
+  const t = setup((url, init) => {
+    if (init.method === 'POST' && url.endsWith('/api/invoice-cases')) {
+      attempts += 1;
+      if (attempts === 1) throw new TypeError('failed to fetch');
+      return jsonResponse(201, created);
+    }
+    return jsonResponse(500, { code: 'X', message: 'unexpected' });
+  });
+  try {
+    await t.render();
+    await t.run(() => latest.createOrReuse(header));
+    assert.equal(latest.unresolved.operation, 'create');
+    const before = t.calls.length;
+    await t.run(() => latest.createOrReuse({ ...header, invoiceNumber: 'INV-EDITED' }));
+    assert.equal(t.calls.length, before, 'a different intent must not be sent while unresolved');
+    assert.equal(latest.failure.code, 'UNRESOLVED_INTENT');
+    await t.run(() => latest.retry());
+    assert.equal(latest.caseId, 'case-1');
+    assert.equal(latest.unresolved, null);
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
+
+test('an unresolved submit is retried exactly, without re-saving a draft, and edits are blocked', async () => {
+  let submitAttempts = 0;
+  const t = setup((url, init) => {
+    if (init.method === 'POST' && url.endsWith('/api/invoice-cases')) return jsonResponse(201, created);
+    if (init.method === 'PUT' && url.endsWith('/draft')) return jsonResponse(200, { ...created, version: 1 });
+    if (url.endsWith('/submit')) {
+      submitAttempts += 1;
+      return submitAttempts === 1
+        ? jsonResponse(503, { code: 'CORE_API_UNAVAILABLE', message: 'x' })
+        : jsonResponse(200, { caseId: 'case-1', status: 'REVIEW_PENDING', version: 2, evidenceBundle: { version: 1, payloadHash: 'h', submittedAt: 'x' } });
+    }
+    return jsonResponse(500, { code: 'X', message: 'unexpected' });
+  });
+  try {
+    await t.render();
+    await t.run(() => latest.saveDraft(header, lines));
+    await t.run(() => latest.submit());
+    assert.equal(latest.unresolved.operation, 'submit');
+    const submitCalls = t.calls.filter((call) => call.url.endsWith('/submit'));
+    const firstSubmitId = submitCalls[0].body.requestId;
+
+    const beforeEdit = t.calls.length;
+    await t.run(() => latest.saveDraft(header, [{ ...lines[0], quantity: 9 }]));
+    assert.equal(t.calls.length, beforeEdit, 'editing must not send a new draft while a submit is unresolved');
+
+    await t.run(() => latest.retry());
+    const submitCalls2 = t.calls.filter((call) => call.url.endsWith('/submit'));
+    assert.equal(submitCalls2.length, 2);
+    assert.equal(submitCalls2[1].body.requestId, firstSubmitId, 'retry reuses the exact submit request id');
+    assert.equal(t.calls.filter((call) => call.url.endsWith('/draft')).length, 1, 'retry must not re-save a draft');
+    assert.equal(latest.submittedBundleVersion, 1);
+    assert.equal(latest.unresolved, null);
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
+
+test('a late create success after a session change is discarded and does not restore the case', async () => {
+  let resolveCreate;
+  const pending = new Promise((resolve) => { resolveCreate = resolve; });
+  const t = setup((url, init) => (init.method === 'POST' && url.endsWith('/api/invoice-cases') ? pending : jsonResponse(500, { code: 'X', message: 'unexpected' })));
+  try {
+    await t.render({ sessionId: 1 });
+    let result = 'unset';
+    let promise;
+    await act(async () => { promise = latest.createOrReuse(header); promise.then((value) => { result = value; }); });
+    await t.render({ sessionId: 2 });
+    resolveCreate(jsonResponse(201, created));
+    await act(async () => { await promise; });
+    assert.equal(result, null);
+    assert.equal(latest.caseId, null);
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
+
+test('under React StrictMode the create to submit flow still completes exactly once', async () => {
+  const t = setup((url, init) => {
+    if (init.method === 'POST' && url.endsWith('/api/invoice-cases')) return jsonResponse(201, created);
+    if (init.method === 'PUT' && url.endsWith('/draft')) return jsonResponse(200, { ...created, version: 1 });
+    if (url.endsWith('/submit')) return jsonResponse(200, { caseId: 'case-1', status: 'REVIEW_PENDING', version: 2, evidenceBundle: { version: 1, payloadHash: 'h', submittedAt: 'x' } });
+    return jsonResponse(500, { code: 'X', message: 'unexpected' });
+  });
+  try {
+    await t.renderStrict();
+    await t.run(() => latest.saveDraft(header, lines));
+    assert.equal(latest.caseId, 'case-1');
+    await t.run(() => latest.submit());
+    assert.equal(latest.submittedBundleVersion, 1);
+    assert.equal(t.calls.filter((call) => call.url.endsWith('/draft')).length, 1);
   } finally {
     await t.unmount();
     t.restore();

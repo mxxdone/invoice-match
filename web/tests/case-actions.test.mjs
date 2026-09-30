@@ -60,6 +60,18 @@ function setup(responder) {
         }));
       });
     },
+    async renderStrict(options = {}) {
+      await act(async () => {
+        root.render(createElement(React.StrictMode, null, createElement(Harness, {
+          credentials,
+          sessionId: 1,
+          caseId: CASE,
+          onUnauthorized: () => unauthorized.push('x'),
+          onCompleted: (op) => completed.push(op),
+          ...options,
+        })));
+      });
+    },
     async run(fn) { await act(async () => { await fn(); }); },
     async unmount() { await act(async () => { root.unmount(); }); },
     restore() { globalThis.fetch = originalFetch; container.remove(); },
@@ -168,6 +180,95 @@ test('a 409 conflict is surfaced with the server code and is not auto-retried', 
     assert.equal(latest.failure.code, 'REVIEW_SNAPSHOT_STALE');
     assert.deepEqual(t.completed, []);
     assert.equal(latest.pendingAction, null);
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
+
+test('a late success from case A never marks case B as completed', async () => {
+  const B = '22222222-3333-4444-5555-666666666666';
+  let resolveApprove;
+  const pending = new Promise((resolve) => { resolveApprove = resolve; });
+  const t = setup((url) => {
+    if (url.includes(CASE) && url.endsWith('/approve')) return pending;
+    if (url.endsWith(`${B}/match`)) return jsonResponse(201, { id: 'mB', payload: {} });
+    return jsonResponse(200, {});
+  });
+  try {
+    await t.render({ caseId: CASE });
+    let promise;
+    await act(async () => { promise = latest.approve({ expectedCaseVersion: 2, reviewSnapshotId: 'snap-1', reviewPayloadHash: 'hash-1' }); });
+    await t.render({ caseId: B });
+    resolveApprove(jsonResponse(200, { invoiceCaseId: CASE, status: 'EXPORT_PENDING' }));
+    await act(async () => { await promise; });
+    assert.deepEqual(t.completed, []);
+    assert.equal(latest.lastSuccess, null);
+
+    await t.run(() => latest.runMatch());
+    assert.deepEqual(t.completed, ['match']);
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
+
+test('a late 401 from the previous session never signs out the new one', async () => {
+  let resolveApprove;
+  const pending = new Promise((resolve) => { resolveApprove = resolve; });
+  const t = setup((url) => (url.endsWith('/approve') ? pending : jsonResponse(200, {})));
+  try {
+    await t.render({ sessionId: 1, onUnauthorized: () => t.unauthorized.push('old') });
+    let promise;
+    await act(async () => { promise = latest.approve({ expectedCaseVersion: 2, reviewSnapshotId: 'snap-1', reviewPayloadHash: 'hash-1' }); });
+    await t.render({ sessionId: 2, credentials: { username: 'B', password: 'p' }, onUnauthorized: () => t.unauthorized.push('new') });
+    resolveApprove(jsonResponse(401, { code: 'UNAUTHENTICATED' }));
+    await act(async () => { await promise; });
+    assert.deepEqual(t.unauthorized, []);
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
+
+test('an unresolved action blocks a different action until the exact request is retried', async () => {
+  let attempts = 0;
+  const t = setup((url) => {
+    if (url.endsWith('/approve')) {
+      attempts += 1;
+      return attempts === 1
+        ? jsonResponse(503, { code: 'CORE_API_UNAVAILABLE', message: 'x' })
+        : jsonResponse(200, { invoiceCaseId: CASE, status: 'EXPORT_PENDING' });
+    }
+    return jsonResponse(500, { code: 'X', message: 'unexpected' });
+  });
+  try {
+    await t.render();
+    await t.run(() => latest.approve({ expectedCaseVersion: 2, reviewSnapshotId: 'snap-1', reviewPayloadHash: 'hash-1' }));
+    assert.equal(latest.unresolved.operation, 'approve');
+    const before = t.calls.length;
+    await t.run(() => latest.requestSupplement({ expectedCaseVersion: 2, reviewSnapshotId: 'snap-2', reviewPayloadHash: 'h2', reason: 'r' }));
+    assert.equal(t.calls.length, before, 'a different action must not be sent while unresolved');
+    const firstId = t.calls[0].body.requestId;
+    await t.run(() => latest.retry());
+    const approves = t.calls.filter((call) => call.url.endsWith('/approve'));
+    assert.equal(approves.length, 2);
+    assert.equal(approves[1].body.requestId, firstId);
+    assert.equal(latest.unresolved, null);
+    assert.deepEqual(t.completed, ['approve']);
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
+
+test('under React StrictMode a review action still completes exactly once', async () => {
+  const t = setup(() => jsonResponse(201, { id: 'm1', payload: {} }));
+  try {
+    await t.renderStrict();
+    await t.run(() => latest.runMatch());
+    assert.deepEqual(t.completed, ['match']);
+    assert.equal(t.calls.length, 1);
   } finally {
     await t.unmount();
     t.restore();

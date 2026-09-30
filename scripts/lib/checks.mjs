@@ -33,6 +33,15 @@ export async function runChecks({ request, config, guard, log }) {
   if (me.status !== 200 || !me.body.includes('APPROVER')) throw new VerifyError(`approver /api/me expected 200 with APPROVER (status ${me.status})`);
   pass('approver /api/me is 200');
 
+  // Verification-only dual identity (SUBMITTER+APPROVER+OPERATOR) injected into
+  // the throwaway child env so the browser check can obtain a real self-approval
+  // 403. Production/local config is untouched.
+  const dualMe = await request(`${core}/api/me`, { headers: { authorization: basic('dual', 'approver-pass') } });
+  if (dualMe.status !== 200 || !dualMe.body.includes('SUBMITTER') || !dualMe.body.includes('APPROVER') || !dualMe.body.includes('OPERATOR')) {
+    throw sanitized('verification dual-role identity expected 200 with SUBMITTER/APPROVER/OPERATOR', dualMe);
+  }
+  pass('verification dual-role identity is available');
+
   guard();
   const health = await request(`${core}/actuator/health`);
   if (health.status !== 200 || !health.body.includes('"status":"UP"')) throw new VerifyError(`isolated core health not UP (status ${health.status})`);

@@ -10,6 +10,7 @@ import { fetchEvidenceBundle, fetchEvidenceBundles, fetchInvoiceCase } from '../
 import { ApiRequestError } from '../../api/transport';
 import { claimLines, latestBundle } from '../[id]/detail-model';
 import { useCaseComposer } from '../use-case-composer';
+import { MutationFailureNotice } from '../mutation-failure-notice';
 
 type DraftLine = { id: number; name: string; quantity: number; price: number; item: string };
 
@@ -39,11 +40,8 @@ function statusText(status: string): string {
   }
 }
 
-function NewCase() {
+function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supplementId: string | null }) {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const supplementId = searchParams.get('supplement');
-  const draftId = searchParams.get('case');
   const existingId = draftId ?? supplementId;
   const { credentials, user, isAuthenticated, sessionId, logout } = useAuth();
   const isSubmitter = (user?.roles ?? []).includes('SUBMITTER');
@@ -134,7 +132,7 @@ function NewCase() {
     && rows.every(row => row.name.trim() && Number.isInteger(row.quantity) && row.quantity > 0 && Number.isSafeInteger(row.price) && row.price >= 0);
 
   const dirty = rows.some(row => row.name.trim() || row.price > 0);
-  const leavingRisk = composer.hasPending || composer.failure?.kind === 'uncertain' || (dirty && composer.status !== 'submitted');
+  const leavingRisk = composer.hasPending || composer.unresolved !== null || (dirty && composer.status !== 'submitted');
 
   useEffect(() => {
     if (!leavingRisk) return;
@@ -142,6 +140,14 @@ function NewCase() {
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
   }, [leavingRisk]);
+
+  // Navigate only after the composer has actually confirmed a submit; using the
+  // hook's own state avoids a stale-render case id.
+  useEffect(() => {
+    if (composer.status === 'submitted' && composer.submittedBundleVersion !== null && composer.caseId) {
+      router.push(`/cases/${composer.caseId}`);
+    }
+  }, [composer.status, composer.submittedBundleVersion, composer.caseId, router]);
 
   const header = { supplierId: supplier, purchaseOrderId: po, invoiceNumber: invoice };
   const draftLines = () => rows.map((row, index) => ({
@@ -162,6 +168,7 @@ function NewCase() {
   }
 
   async function onSave() {
+    if (composer.unresolved) return;
     if (!(await ensureRevision())) return;
     if (await composer.saveDraft(header, draftLines())) {
       setToast('초안을 서버에 저장했습니다.');
@@ -169,13 +176,10 @@ function NewCase() {
   }
 
   async function onSubmit() {
+    if (composer.unresolved) return;
     if (!(await ensureRevision())) return;
     if (!(await composer.saveDraft(header, draftLines()))) return;
-    if (await composer.submit()) {
-      const id = composer.caseId;
-      setToast('제출했습니다. 최신 증빙 버전으로 동결되었습니다.');
-      if (id) router.push(`/cases/${id}`);
-    }
+    await composer.submit();
   }
 
   async function refreshLatest() {
@@ -211,6 +215,7 @@ function NewCase() {
   }
 
   const blocked = composer.status === 'creating' || composer.status === 'saving' || composer.status === 'submitting' || composer.status === 'opening';
+  const locked = blocked || composer.unresolved !== null;
 
   return (
     <Shell active="new" preview={false}>
@@ -229,26 +234,26 @@ function NewCase() {
         <div className="review-warning" role="status"><div><strong>제출자 역할이 아닙니다</strong><p>작성 저장·제출은 제출자만 가능합니다. 화면은 안내일 뿐이며 서버가 역할과 소유권을 판정합니다.</p></div></div>
       )}
       {loadError && <div className="review-warning" role="alert"><div><strong>진행할 수 없습니다</strong><p>{loadError}</p></div></div>}
-      {composer.notice && <div className="review-note" role="status"><span className="status-dot" /><span>{composer.notice}</span></div>}
-      {composer.hasPending && composer.failure?.kind === 'uncertain' && (
+      {composer.unresolved && (
         <div className="review-warning" role="alert">
           <div>
-            <strong>결과를 확인할 수 없습니다</strong>
-            <p>서버 응답이 유실되었을 수 있어 작업이 반영되었는지 알 수 없습니다. 자동으로 다시 보내지 않습니다. 같은 내용으로 다시 시도하면 동일한 요청 식별자로 한 번만 반영됩니다.</p>
+            <strong>이전 요청의 결과가 확정되지 않았습니다</strong>
+            <p>서버 응답이 유실되었을 수 있어 요청이 반영되었는지 알 수 없습니다. 자동으로 다시 보내지 않습니다.</p>
+            <p className="muted-text">미확정 작업이 있는 동안에는 내용을 수정하거나 새 요청을 보낼 수 없습니다. 같은 요청을 다시 시도하거나 최신 서버 상태를 조회해 먼저 해소하세요.</p>
+          </div>
+          <div className="dialog-actions">
+            <button className="button primary" disabled={blocked} onClick={() => composer.retry()}>같은 요청 다시 시도</button>
+            {composer.caseId && <button className="button" disabled={refreshing} onClick={refreshLatest}>최신 청구서 다시 불러오기</button>}
           </div>
         </div>
       )}
-      {composer.failure && composer.failure.kind !== 'uncertain' && (
-        <div className="review-warning" role="alert">
-          <div>
-            <strong>{composer.failure.kind === 'conflict' ? '최신 상태와 충돌했습니다' : '요청을 완료하지 못했습니다'}</strong>
-            <p>{composer.failure.message} <span className="muted-text">({composer.failure.code})</span></p>
-            <p>화면 이동은 서버에 반영된 내용을 취소하지 않습니다. 서버의 최신 상태를 다시 확인한 뒤 진행하세요.</p>
-          </div>
-          {composer.failure.kind === 'conflict' && composer.caseId && (
-            <button className="button" disabled={refreshing} onClick={refreshLatest}>{refreshing ? '불러오는 중…' : '최신 청구서 다시 불러오기'}</button>
-          )}
-        </div>
+      {composer.notice && <div className="review-note" role="status"><span className="status-dot" /><span>{composer.notice}</span></div>}
+      {composer.failure && (
+        <MutationFailureNotice
+          failure={composer.failure}
+          onRefresh={composer.caseId ? refreshLatest : undefined}
+          refreshing={refreshing}
+        />
       )}
 
       <div className="form-content">
@@ -257,9 +262,9 @@ function NewCase() {
         <section className="form-section">
           <div className="section-heading"><h2>청구 기본 정보</h2><span>필수 입력 *</span></div>
           <div className="field-grid">
-            <label>공급사 ID *<input maxLength={64} required value={supplier} onChange={event => setSupplier(event.target.value)} disabled={Boolean(existingId)} /><small>구매시스템의 공급사 식별자</small></label>
-            <label>발주번호 *<input maxLength={64} required value={po} onChange={event => setPo(event.target.value)} disabled={Boolean(existingId)} /><small>연결할 발주 건의 식별자</small></label>
-            <label>청구번호 *<input maxLength={100} required value={invoice} onChange={event => setInvoice(event.target.value)} disabled={Boolean(existingId)} /><small>공급사가 발행한 청구번호</small></label>
+            <label>공급사 ID *<input maxLength={64} required value={supplier} onChange={event => setSupplier(event.target.value)} disabled={Boolean(existingId) || locked} /><small>구매시스템의 공급사 식별자</small></label>
+            <label>발주번호 *<input maxLength={64} required value={po} onChange={event => setPo(event.target.value)} disabled={Boolean(existingId) || locked} /><small>연결할 발주 건의 식별자</small></label>
+            <label>청구번호 *<input maxLength={100} required value={invoice} onChange={event => setInvoice(event.target.value)} disabled={Boolean(existingId) || locked} /><small>공급사가 발행한 청구번호</small></label>
           </div>
         </section>
         <section className="form-section">
@@ -271,18 +276,18 @@ function NewCase() {
                 {rows.map((row, index) => (
                   <tr key={row.id}>
                     <td>{String(index + 1).padStart(2, '0')}</td>
-                    <td><input aria-label={`${index + 1}번 품목명`} maxLength={500} value={row.name} onChange={event => edit(row.id, 'name', event.target.value)} /></td>
-                    <td><input aria-label={`${index + 1}번 수량`} type="number" min={1} step={1} value={row.quantity} onChange={event => edit(row.id, 'quantity', Number(event.target.value))} /></td>
-                    <td><input aria-label={`${index + 1}번 단가`} type="number" min={0} step={1} value={row.price} onChange={event => edit(row.id, 'price', Number(event.target.value))} /></td>
-                    <td><input aria-label={`${index + 1}번 품목 ID`} maxLength={64} value={row.item} placeholder="선택 입력" onChange={event => edit(row.id, 'item', event.target.value)} /></td>
+                    <td><input aria-label={`${index + 1}번 품목명`} maxLength={500} value={row.name} disabled={locked} onChange={event => edit(row.id, 'name', event.target.value)} /></td>
+                    <td><input aria-label={`${index + 1}번 수량`} type="number" min={1} step={1} value={row.quantity} disabled={locked} onChange={event => edit(row.id, 'quantity', Number(event.target.value))} /></td>
+                    <td><input aria-label={`${index + 1}번 단가`} type="number" min={0} step={1} value={row.price} disabled={locked} onChange={event => edit(row.id, 'price', Number(event.target.value))} /></td>
+                    <td><input aria-label={`${index + 1}번 품목 ID`} maxLength={64} value={row.item} placeholder="선택 입력" disabled={locked} onChange={event => edit(row.id, 'item', event.target.value)} /></td>
                     <td className="numeric">{num(row.quantity * row.price)}</td>
-                    <td><button className="icon-button" aria-label={`${index + 1}번 품목 삭제`} disabled={rows.length <= 1} onClick={() => setRows(rows.filter(item => item.id !== row.id))}><Icon name="close" size={14} /></button></td>
+                    <td><button className="icon-button" aria-label={`${index + 1}번 품목 삭제`} disabled={locked || rows.length <= 1} onClick={() => setRows(rows.filter(item => item.id !== row.id))}><Icon name="close" size={14} /></button></td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <button className="add-line" disabled={rows.length >= LINE_LIMIT} onClick={() => { setRows([...rows, { id: nextId, name: '', quantity: 1, price: 0, item: '' }]); setNextId(nextId + 1); }}><Icon name="plus" size={14} />품목 추가</button>
+          <button className="add-line" disabled={locked || rows.length >= LINE_LIMIT} onClick={() => { setRows([...rows, { id: nextId, name: '', quantity: 1, price: 0, item: '' }]); setNextId(nextId + 1); }}><Icon name="plus" size={14} />품목 추가</button>
           <p className="panel-footnote">확정 품목 ID는 선택 입력입니다. 합계는 입력 확인용이며 실제 업무 금액은 서버가 검증합니다. 품목 매핑 후보 조회·자동 매핑·원본 파일 접수는 제공하지 않습니다.</p>
         </section>
       </div>
@@ -297,8 +302,8 @@ function NewCase() {
             {composer.caseId ? `사건 ${composer.caseId.slice(0, 8)} · v${composer.caseVersion ?? '—'}` : '사건 미생성'}
             {composer.submittedBundleVersion ? ` · 증빙 v${composer.submittedBundleVersion}` : ''}
           </span>
-          <button className="button footer-secondary" disabled={!isSubmitter || !valid || blocked || Boolean(loadError)} onClick={onSave}>초안 저장</button>
-          <button className="button primary" disabled={!isSubmitter || !valid || blocked || Boolean(loadError)} onClick={onSubmit}>{supplementId ? '보완 재제출' : '제출'}<Icon name="chevron" size={14} /></button>
+          <button className="button footer-secondary" disabled={!isSubmitter || !valid || locked || Boolean(loadError)} onClick={onSave}>초안 저장</button>
+          <button className="button primary" disabled={!isSubmitter || !valid || locked || Boolean(loadError)} onClick={onSubmit}>{supplementId ? '보완 재제출' : '제출'}<Icon name="chevron" size={14} /></button>
         </div>
       </footer>
       <Toast message={toast} dismiss={() => setToast('')} />
@@ -306,10 +311,20 @@ function NewCase() {
   );
 }
 
+// Keyed by the target case: navigating from one draft/supplement to another
+// mounts a fresh form, so no adoption ref, row or intent from the previous case
+// can leak into the next.
+function NewCaseRoute() {
+  const searchParams = useSearchParams();
+  const draftId = searchParams.get('case');
+  const supplementId = searchParams.get('supplement');
+  return <NewCaseForm key={draftId ?? supplementId ?? 'new'} draftId={draftId} supplementId={supplementId} />;
+}
+
 export default function NewCasePage() {
   return (
     <Suspense fallback={<Shell active="new" preview={false}><section className="empty-state" role="status" aria-busy="true"><Icon name="clock" size={25} /><h1>불러오는 중</h1><p>청구 작성 화면을 준비하고 있습니다.</p></section></Shell>}>
-      <NewCase />
+      <NewCaseRoute />
     </Suspense>
   );
 }

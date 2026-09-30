@@ -6,15 +6,22 @@ export type Credentials = {
   password: string;
 };
 
+// Structured server fields that carry the reason a write was refused. They are
+// kept verbatim so the UI can show the exact stale reasons / allocation
+// shortfalls instead of flattening every 409 into a single message.
+export type ApiErrorDetails = Record<string, unknown>;
+
 export class ApiRequestError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly details: ApiErrorDetails | null;
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string, details: ApiErrorDetails | null = null) {
     super(message);
     this.name = 'ApiRequestError';
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -43,13 +50,17 @@ export function toApiRequestError(status: number, bodyText: string): ApiRequestE
     message = '서버와 통신하지 못했습니다.';
   }
   const trimmed = bodyText?.trim();
+  let details: ApiErrorDetails | null = null;
   if (trimmed) {
     try {
-      const parsed = JSON.parse(trimmed) as { code?: unknown; message?: unknown };
-      if (typeof parsed.code === 'string' && parsed.code) {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        details = parsed;
+      }
+      if (typeof parsed?.code === 'string' && parsed.code) {
         code = parsed.code;
       }
-      if (typeof parsed.message === 'string' && parsed.message) {
+      if (typeof parsed?.message === 'string' && parsed.message) {
         message = parsed.message;
       }
     } catch {
@@ -61,5 +72,5 @@ export function toApiRequestError(status: number, bodyText: string): ApiRequestE
   } else if (status === 403 && code === 'HTTP_403') {
     code = 'FORBIDDEN';
   }
-  return new ApiRequestError(status, code, message);
+  return new ApiRequestError(status, code, message, details);
 }

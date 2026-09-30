@@ -24,6 +24,28 @@ test('a structured server error keeps its machine code', () => {
   assert.equal(conflict.message, 'stale');
 });
 
+test('a 409 body keeps its structured reasons, shortfalls and versions', () => {
+  const conflict = toApiRequestError(409, JSON.stringify({
+    code: 'STALE_REVIEW_TARGET',
+    message: 'stale target',
+    reasons: ['CASE_VERSION', 'EVIDENCE_BUNDLE'],
+    currentCaseVersion: 7,
+    expectedVersion: 3,
+    actualVersion: 7,
+    shortfalls: [{ receiptLineId: 'RCL-1', remaining: 5 }],
+  }));
+  assert.equal(conflict.code, 'STALE_REVIEW_TARGET');
+  assert.deepEqual(conflict.details.reasons, ['CASE_VERSION', 'EVIDENCE_BUNDLE']);
+  assert.equal(conflict.details.currentCaseVersion, 7);
+  assert.deepEqual(conflict.details.shortfalls, [{ receiptLineId: 'RCL-1', remaining: 5 }]);
+});
+
+test('a non-object or unparseable body leaves details null', () => {
+  assert.equal(toApiRequestError(500, 'boom').details, null);
+  assert.equal(toApiRequestError(409, '"just-a-string"').details, null);
+  assert.equal(toApiRequestError(409, '[1,2,3]').details, null);
+});
+
 test('an unparseable body still yields a typed error', () => {
   const server = toApiRequestError(500, '<html>boom</html>');
   assert.equal(server.status, 500);

@@ -14,6 +14,7 @@ import type {
   PlannedAllocation,
   ReviewDecisionView,
   ReviewFreshness,
+  ReviewSnapshotView,
 } from '../../api/contract';
 
 const numberFormat = new Intl.NumberFormat('ko-KR');
@@ -256,6 +257,54 @@ export function safeJsonStringify(value: unknown): string {
     return item;
   });
   return text ?? '';
+}
+
+// A decision may only be sent for the exact frozen subject whose actual source
+// facts are what the screen is showing. A B snapshot with a current freshness
+// flag is not enough: the displayed comparison must be the snapshot's own match
+// result against the snapshot's own evidence/purchasing facts. If any required
+// read is missing or disagrees, the subject is not bound and decisions are
+// blocked (the server would reject them anyway; the UI must not offer them).
+export type ReviewBinding = {
+  bound: boolean;
+  reasons: string[];
+};
+
+export function reviewSubjectBinding(input: {
+  snapshot: ReviewSnapshotView | null;
+  freshnessCurrent: boolean | null;
+  match: MatchResultView | null;
+  currentBundleVersion: number | null;
+  currentBundleHash: string | null;
+}): ReviewBinding {
+  const reasons: string[] = [];
+  const { snapshot, freshnessCurrent, match, currentBundleVersion, currentBundleHash } = input;
+  if (!snapshot) return { bound: false, reasons: ['동결된 검토 대상이 없습니다.'] };
+  if (freshnessCurrent !== true) reasons.push('검토 대상의 최신성이 확인되지 않았습니다.');
+  if (!match) {
+    reasons.push('비교 결과를 확인할 수 없습니다.');
+    return { bound: false, reasons };
+  }
+  if (snapshot.matchResultId !== match.id) reasons.push('표시된 비교 결과가 검토 대상의 비교 결과와 다릅니다.');
+  if (snapshot.evidenceBundleVersion !== currentBundleVersion) reasons.push('표시된 증빙 버전이 검토 대상의 근거와 다릅니다.');
+  if (snapshot.evidenceBundleId !== match.evidenceBundleId) reasons.push('비교 결과의 증빙이 검토 대상의 근거와 다릅니다.');
+  if (currentBundleHash !== null && match.payload.evidenceBundle.payloadHash !== currentBundleHash) reasons.push('표시된 증빙 지문이 현재 증빙과 다릅니다.');
+  if (snapshot.purchasingSnapshotVersion !== match.payload.purchasingSnapshot.snapshotVersion) reasons.push('비교 결과의 구매 스냅샷 버전이 검토 대상과 다릅니다.');
+  if (snapshot.purchasingSnapshotHash !== match.payload.purchasingSnapshot.payloadHash) reasons.push('비교 결과의 구매 스냅샷 지문이 검토 대상과 다릅니다.');
+  return { bound: reasons.length === 0, reasons };
+}
+
+// The exact approval/decision body: always the frozen snapshot the reviewer is
+// looking at, never a match result or a different snapshot.
+export function decisionSubjectPayload(
+  expectedCaseVersion: number,
+  snapshot: ReviewSnapshotView,
+): { expectedCaseVersion: number; reviewSnapshotId: string; reviewPayloadHash: string } {
+  return {
+    expectedCaseVersion,
+    reviewSnapshotId: snapshot.id,
+    reviewPayloadHash: snapshot.payloadHash,
+  };
 }
 
 export function isStaleMatch(
