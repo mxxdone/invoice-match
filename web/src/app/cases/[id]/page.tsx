@@ -81,6 +81,9 @@ function Detail() {
   const newest = latestBundle(bundles);
   const handoff = data.handoff;
   const payment = handoff.status === 'ready' ? handoff.data.payment : null;
+  // The server is the authority for ownership; this only decides whether to
+  // offer the authoring entry. A wrong guess is still rejected by the API.
+  const ownerSubmitter = Boolean(user?.username) && user?.username === data.detail.submittedBy;
 
   const tabs: Array<[string, string]> = [
     ['compare', '발주·검수·청구 비교'],
@@ -143,6 +146,8 @@ function Detail() {
         <HandoffSummary handoff={handoff} payment={payment} />
         <div className="action-buttons">
           <span className="footer-context">검토 #{data.snapshot.status === 'ready' ? data.snapshot.data.snapshotNumber : '—'} · 증빙 {newest ? `v${newest.version}` : '—'}</span>
+          {ownerSubmitter && data.detail.status === 'DRAFT' && <Link className="button" href={`/cases/new?case=${data.detail.id}`}>초안 편집</Link>}
+          {ownerSubmitter && data.detail.status === 'SUPPLEMENT_REQUIRED' && <Link className="button primary" href={`/cases/new?supplement=${data.detail.id}`}>보완 작성</Link>}
           <button className="button footer-secondary" disabled title={WRITE_DISABLED}>청구 거절</button>
           <button className="button footer-secondary" disabled title={WRITE_DISABLED}>보완 요청</button>
           <button className="button primary" disabled title={WRITE_DISABLED}>승인 검토</button>

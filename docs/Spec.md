@@ -521,7 +521,7 @@ flowchart LR
 | `POST` | `/webhooks/mock-erp/payment-results` | ERP 처리 결과 수신 |
 | `POST` | `/api/operations/jobs/{id}/retry` | 실패 작업 운영자 재처리 |
 
-쓰기 API는 요청 ID 또는 version을 요구한다. 승인 API는 `requestId`, `caseVersion`, `evidenceBundleVersion`, `reviewSnapshotId`, `reviewPayloadHash`를 받는다. AI Proposal이 존재하면 ReviewSnapshot의 선택적 근거로 포함하지만 승인 API의 필수 식별자는 아니다.
+쓰기 API는 요청 ID와 기대 version을 요구한다. 승인 API는 `requestId`, `expectedCaseVersion`, `reviewSnapshotId`, `reviewPayloadHash`를 받는다. 증빙 bundle 식별은 요청에 별도로 싣지 않고 승인 대상 `reviewSnapshotId`가 동결한 증빙 근거로 서버가 재검증한다. AI Proposal이 존재하면 ReviewSnapshot의 선택적 근거로 포함하지만 승인 API의 필수 식별자는 아니다.
 
 ## 19. 화면 범위
 

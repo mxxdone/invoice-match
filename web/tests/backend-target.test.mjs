@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { coreApiUrl, resolveBackendTarget, DEFAULT_CORE_API_URL, CORE_API_TIMEOUT_MS } from '../src/app/backend/target.ts';
+import {
+  CORE_API_TIMEOUT_MS,
+  DEFAULT_CORE_API_URL,
+  REQUEST_BODY_LIMIT_BYTES,
+  coreApiUrl,
+  resolveBackendMutationTarget,
+  resolveBackendTarget,
+} from '../src/app/backend/target.ts';
 
 test('only the allowlisted read endpoints resolve to a target', () => {
   assert.equal(resolveBackendTarget('http://localhost:8080/', ['api', 'me'], ''), 'http://localhost:8080/api/me');
@@ -51,4 +58,32 @@ test('the base URL comes from the server env, defaulting to localhost', () => {
 test('the upstream deadline is finite and positive', () => {
   assert.ok(Number.isFinite(CORE_API_TIMEOUT_MS));
   assert.ok(CORE_API_TIMEOUT_MS > 0);
+});
+
+test('the request body limit matches the Core API 256 KiB cap', () => {
+  assert.equal(REQUEST_BODY_LIMIT_BYTES, 262144);
+});
+
+test('a write resolves only with its exact method and path', () => {
+  const base = 'http://localhost:8080';
+  assert.equal(resolveBackendMutationTarget(base, 'POST', ['api', 'invoice-cases']), `${base}/api/invoice-cases`);
+  assert.equal(resolveBackendMutationTarget(base, 'PUT', ['api', 'invoice-cases', CASE, 'draft']), `${base}/api/invoice-cases/${CASE}/draft`);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', ['api', 'invoice-cases', CASE, 'submit']), `${base}/api/invoice-cases/${CASE}/submit`);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', ['api', 'invoice-cases', CASE, 'revisions']), `${base}/api/invoice-cases/${CASE}/revisions`);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', ['api', 'invoice-cases', CASE, 'match']), `${base}/api/invoice-cases/${CASE}/match`);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', ['api', 'invoice-cases', CASE, 'review-snapshots']), `${base}/api/invoice-cases/${CASE}/review-snapshots`);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', ['api', 'invoice-cases', CASE, 'mapping-decisions']), `${base}/api/invoice-cases/${CASE}/mapping-decisions`);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', ['api', 'invoice-cases', CASE, 'supplement-requests']), `${base}/api/invoice-cases/${CASE}/supplement-requests`);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', ['api', 'invoice-cases', CASE, 'reject']), `${base}/api/invoice-cases/${CASE}/reject`);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', ['api', 'invoice-cases', CASE, 'approve']), `${base}/api/invoice-cases/${CASE}/approve`);
+});
+
+test('a method or path mismatch never resolves a write', () => {
+  const base = 'http://localhost:8080';
+  assert.equal(resolveBackendMutationTarget(base, 'GET', ['api', 'invoice-cases', CASE, 'submit']), null);
+  assert.equal(resolveBackendMutationTarget(base, 'PUT', ['api', 'invoice-cases', CASE, 'submit']), null);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', ['api', 'invoice-cases', CASE, 'draft']), null);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', ['api', 'me']), null);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', ['api', 'invoice-cases', 'not-a-uuid', 'submit']), null);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', ['api', 'invoice-cases', CASE, 'approve', 'extra']), null);
 });

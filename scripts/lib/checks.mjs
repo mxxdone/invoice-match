@@ -250,5 +250,51 @@ export async function runChecks({ request, config, guard, log }) {
   if (proxyBundles.status !== 200) throw sanitized('proxy allowlisted evidence-bundles path expected 200', proxyBundles);
   pass('proxy forwards the allowlisted match and evidence-bundles paths');
 
+  // --- write proxy (P1-10 authoring slice) ---
+
+  guard();
+  const proxyCreate = await request(`${web}/backend/api/invoice-cases`, {
+    method: 'POST',
+    headers: { ...submitter, 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'verify-proxy-create', supplierId: 'SUP-1', purchaseOrderId: 'PO-1001', invoiceNumber: 'INV-VERIFY-PROXY' }),
+  });
+  if (proxyCreate.status !== 201) throw sanitized('proxy allowlisted create expected 201', proxyCreate);
+  const proxyCreated = JSON.parse(proxyCreate.body);
+  pass('proxy forwards an allowlisted create write');
+
+  const proxyWrongMethod = await request(`${web}/backend/api/invoice-cases/${created.id}/draft`, {
+    method: 'POST',
+    headers: { ...submitter, 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'verify-proxy-wrong-method', expectedCaseVersion: 1, lines: [] }),
+  });
+  if (proxyWrongMethod.status !== 404) throw sanitized('proxy draft with POST expected 404', proxyWrongMethod);
+  pass('proxy refuses a write path with the wrong method');
+
+  const proxyUnknownWrite = await request(`${web}/backend/api/me`, {
+    method: 'POST',
+    headers: { ...submitter, 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'verify-proxy-unknown' }),
+  });
+  if (proxyUnknownWrite.status !== 404) throw sanitized('proxy non-allowlisted write expected 404', proxyUnknownWrite);
+  pass('proxy refuses a non-allowlisted write path');
+
+  const oversizedBody = JSON.stringify({ requestId: 'verify-proxy-large', supplierId: 'SUP-1', purchaseOrderId: 'PO-1001', invoiceNumber: 'X'.repeat(300000) });
+  const proxyTooLarge = await request(`${web}/backend/api/invoice-cases`, {
+    method: 'POST',
+    headers: { ...submitter, 'content-type': 'application/json' },
+    body: oversizedBody,
+  });
+  if (proxyTooLarge.status !== 413) throw sanitized('proxy oversized request body expected 413', proxyTooLarge);
+  pass('proxy bounds the request body to the Core API limit');
+
+  guard();
+  const proxyDraft = await request(`${web}/backend/api/invoice-cases/${proxyCreated.id}/draft`, {
+    method: 'PUT',
+    headers: { ...submitter, 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'verify-proxy-draft', expectedCaseVersion: proxyCreated.version, lines: [{ lineNumber: 1, rawItemName: 'Proxy Paper', quantity: 3, unitPrice: 1000, confirmedItemId: null }] }),
+  });
+  if (proxyDraft.status !== 200) throw sanitized('proxy allowlisted draft expected 200', proxyDraft);
+  pass('proxy forwards an allowlisted draft write');
+
   return {};
 }

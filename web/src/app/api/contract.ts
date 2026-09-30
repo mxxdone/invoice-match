@@ -293,6 +293,44 @@ export type AuditHistoryPage = {
   nextCursor: string | null;
 };
 
+// POST /api/invoice-cases/{id}/submit -> SubmissionResult.
+export type SubmissionResult = {
+  caseId: string;
+  status: InvoiceCaseStatus;
+  version: number;
+  evidenceBundle: EvidenceBundleSummary;
+};
+
+// POST /api/invoice-cases/{id}/mapping-decisions -> MappingDecisionResult.
+export type MappingDecisionResult = {
+  decision: ReviewDecisionView;
+  successorSnapshot: ReviewSnapshotView;
+};
+
+export type ApprovedAllocation = {
+  invoiceLineNumber: number;
+  receiptId: string;
+  receiptLineId: string;
+  allocatedQuantity: number;
+};
+
+// POST /api/invoice-cases/{id}/approve -> ApprovalResult.
+export type ApprovalResult = {
+  invoiceCaseId: string;
+  status: string;
+  caseVersion: number;
+  reviewDecisionId: string;
+  decisionNumber: number;
+  reviewSnapshotId: string;
+  reviewPayloadHash: string;
+  paymentRequestId: string;
+  externalRequestKey: string;
+  amount: number;
+  currency: string;
+  allocations: ApprovedAllocation[];
+  approvedAt: string;
+};
+
 // Shared error body for 400/401/403/404/409/503 responses.
 export type ApiErrorBody = {
   code: string;

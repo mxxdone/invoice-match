@@ -31,6 +31,24 @@ const ALLOWED_ROUTES: readonly (readonly string[])[] = [
   ['api', 'invoice-cases', '*', 'handoff'],
 ];
 
+// Write endpoints are allowed only with their exact HTTP method. The proxy
+// forwards the authenticated principal as-is; the server remains the authority
+// for role and ownership, so this list gates reachability, not authorization.
+export type BackendMutationMethod = 'POST' | 'PUT';
+
+const MUTATION_ROUTES: readonly (readonly [BackendMutationMethod, readonly string[]])[] = [
+  ['POST', ['api', 'invoice-cases']],
+  ['PUT', ['api', 'invoice-cases', '*', 'draft']],
+  ['POST', ['api', 'invoice-cases', '*', 'submit']],
+  ['POST', ['api', 'invoice-cases', '*', 'revisions']],
+  ['POST', ['api', 'invoice-cases', '*', 'match']],
+  ['POST', ['api', 'invoice-cases', '*', 'review-snapshots']],
+  ['POST', ['api', 'invoice-cases', '*', 'mapping-decisions']],
+  ['POST', ['api', 'invoice-cases', '*', 'supplement-requests']],
+  ['POST', ['api', 'invoice-cases', '*', 'reject']],
+  ['POST', ['api', 'invoice-cases', '*', 'approve']],
+];
+
 function matchesRoute(segments: readonly string[], pattern: readonly string[]): boolean {
   if (segments.length !== pattern.length) return false;
   for (let index = 0; index < pattern.length; index += 1) {
@@ -63,4 +81,24 @@ export function resolveBackendTarget(
   const path = segments.join('/');
   const base = baseUrl.replace(/\/+$/, '');
   return `${base}/${path}${search}`;
+}
+
+// Request bodies are bounded to the same 256 KiB the Core API enforces, read
+// from the actual stream so a chunked body with no Content-Length is bounded
+// too. Response bodies keep the unbounded stream the read proxy already used.
+export const REQUEST_BODY_LIMIT_BYTES = 262144;
+
+export function resolveBackendMutationTarget(
+  baseUrl: string,
+  method: BackendMutationMethod,
+  segments: string[],
+): string | null {
+  const allowed = MUTATION_ROUTES.some(
+    ([routeMethod, pattern]) => routeMethod === method && matchesRoute(segments, pattern),
+  );
+  if (!allowed) {
+    return null;
+  }
+  const base = baseUrl.replace(/\/+$/, '');
+  return `${base}/${segments.join('/')}`;
 }
