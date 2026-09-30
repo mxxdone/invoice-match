@@ -5,7 +5,9 @@
 // PIDs/container ids, waits for child-aware readiness with a finite timeout,
 // runs the read-API checks, and always cleans up only what it created. It never
 // stops an existing container, never mutates the caller environment and never
-// logs a credential. Everything uses the fixed IPv4 loopback 127.0.0.1.
+// logs a credential. Everything the script probes or targets uses the fixed
+// IPv4 loopback 127.0.0.1 (the mock-purchasing fixture itself listens on
+// 0.0.0.0, but it is only ever reached through 127.0.0.1).
 //
 // Prerequisites:
 //   cd core-api; ./gradlew bootJar
@@ -20,6 +22,7 @@ import { existsSync, mkdirSync, cpSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { runVerification } from './lib/verify-core.mjs';
+import { runEntry } from './lib/entry.mjs';
 import { buildConfig, createDocker, createPortProbe, createRequest, startChild } from './lib/adapters.mjs';
 import { runChecks } from './lib/checks.mjs';
 
@@ -56,20 +59,19 @@ if (!existsSync(join(webStandalone, '.next', 'static'))) {
 
 const config = buildConfig({ ports, repo, pgPassword: randomUUID() });
 
-try {
-  await runVerification({
-    config,
-    isPortOpen: createPortProbe(),
-    docker: createDocker(),
-    startChild,
-    request: createRequest(),
-    now: Date.now,
-    sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
-    log: (message) => console.log(message),
-    verify: runChecks,
-  });
-  console.log('ALL CHECKS PASSED');
-} catch (error) {
-  console.error(`VERIFICATION FAILED: ${error instanceof Error ? error.message : String(error)}`);
-  process.exitCode = 1;
-}
+const outcome = await runEntry({
+  run: () =>
+    runVerification({
+      config,
+      isPortOpen: createPortProbe(),
+      docker: createDocker(),
+      startChild,
+      request: createRequest(),
+      now: Date.now,
+      sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
+      log: (message) => console.log(message),
+      verify: runChecks,
+    }),
+});
+
+process.exitCode = outcome.exitCode;

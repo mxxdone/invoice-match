@@ -1,10 +1,11 @@
 // Production adapters for the P1-10 verification script, importable on their
 // own so the real spawn/error/exit/close contract can be reproduced in tests.
 //
-// Everything uses the fixed IPv4 loopback 127.0.0.1 consistently (port probe,
-// HTTP readiness/verify, DB and service URLs, server binds and the docker
-// publish) so an unrelated IPv6-only listener can never be mistaken for our
-// child and receive seed writes.
+// The probe, HTTP readiness/verify, DB and service URLs, server binds and the
+// docker publish all use the fixed IPv4 loopback 127.0.0.1, so an unrelated
+// IPv6-only listener can never be mistaken for our child and receive seed
+// writes. (The mock-purchasing fixture itself listens on 0.0.0.0, but it is
+// only ever reached and probed through 127.0.0.1.)
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';

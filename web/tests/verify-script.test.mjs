@@ -21,6 +21,7 @@ import {
   startChild,
 } from '../../scripts/lib/adapters.mjs';
 import { runChecks } from '../../scripts/lib/checks.mjs';
+import { runEntry } from '../../scripts/lib/entry.mjs';
 
 async function poll(predicate, timeoutMs = 4000, intervalMs = 50) {
   const deadline = Date.now() + timeoutMs;
@@ -297,4 +298,52 @@ test('runChecks asserts seed statuses and stops on a submit failure with a sanit
   );
   assert.ok(calls.includes('POST'));
   assert.ok(calls.includes('PUT'));
+});
+
+// --- CLI entry honors runVerification's ok flag (core + entry connection) ---
+
+test('the entry reports success only for ok:true', async () => {
+  const logs = []; const errors = [];
+  const outcome = await runEntry({ run: async () => ({ ok: true }), log: (m) => logs.push(m), error: (m) => errors.push(m) });
+  assert.deepEqual(outcome, { ok: true, exitCode: 0 });
+  assert.deepEqual(logs, ['ALL CHECKS PASSED']);
+  assert.deepEqual(errors, []);
+});
+
+test('the entry fails closed when run throws or returns nothing', async () => {
+  const logs = []; const errors = [];
+  const thrown = await runEntry({ run: async () => { throw new Error('boom'); }, log: (m) => logs.push(m), error: (m) => errors.push(m) });
+  assert.equal(thrown.ok, false);
+  assert.equal(thrown.exitCode, 1);
+  const empty = await runEntry({ run: async () => undefined, log: (m) => logs.push(m), error: (m) => errors.push(m) });
+  assert.equal(empty.ok, false);
+  assert.equal(logs.includes('ALL CHECKS PASSED'), false);
+});
+
+test('core + entry: a failed docker stop yields no success line and exit 1', async () => {
+  const { deps } = harness({ stopResult: { code: 1 } });
+  const logs = []; const errors = [];
+  const outcome = await runEntry({ run: () => runVerification(deps), log: (m) => logs.push(m), error: (m) => errors.push(m) });
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.exitCode, 1);
+  assert.equal(logs.includes('ALL CHECKS PASSED'), false);
+  assert.match(errors.join(' '), /cleanup failed/);
+});
+
+test('core + entry: a failed child stop yields no success line and exit 1', async () => {
+  const { deps } = harness({ childStopResult: { ok: false, error: 'did not exit' } });
+  const logs = []; const errors = [];
+  const outcome = await runEntry({ run: () => runVerification(deps), log: (m) => logs.push(m), error: (m) => errors.push(m) });
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.exitCode, 1);
+  assert.equal(logs.includes('ALL CHECKS PASSED'), false);
+});
+
+test('core + entry: a fully successful run prints the success line and exit 0', async () => {
+  const { deps } = harness();
+  const logs = []; const errors = [];
+  const outcome = await runEntry({ run: () => runVerification(deps), log: (m) => logs.push(m), error: (m) => errors.push(m) });
+  assert.deepEqual(outcome, { ok: true, exitCode: 0 });
+  assert.ok(logs.includes('ALL CHECKS PASSED'));
+  assert.deepEqual(errors, []);
 });
