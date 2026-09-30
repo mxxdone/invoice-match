@@ -466,14 +466,30 @@ case version/status to re-read:
 
 ### Web login and case list (first connected slice)
 
-The web app now connects the first slice: `/login` calls `GET /api/me` and the
-`/cases` list calls `GET /api/invoice-cases`. Both go through the same-origin
-`/backend/...` proxy, so the browser never makes a cross-origin request. The
-proxy target is the server-only `CORE_API_URL` (default `http://localhost:8080`;
-`docker compose` sets `http://core-api:8080`) and only the `GET /api/me` and
-`GET /api/invoice-cases` paths are allowlisted, so it is not an open proxy and
-no user input selects the target. `CORE_API_URL` is never a `NEXT_PUBLIC_`
-variable.
+The web app connects the first slices: `/login` calls `GET /api/me`, the
+`/cases` list calls `GET /api/invoice-cases`, and `/cases/[id]` reads one case
+detail with its evidence, match, review and hand-off state. All calls go through
+the same-origin `/backend/...` proxy, so the browser never makes a cross-origin
+request. The proxy target is the server-only `CORE_API_URL` (default
+`http://localhost:8080`; `docker compose` sets `http://core-api:8080`) and the
+path is a fixed allowlist: `api/me`, `api/invoice-cases`, and the read
+subresources of one case (`/{id}`, `/evidence-bundles[/{version}]`, `/match`,
+`/review-snapshots/latest`, `/review-snapshots/{number}/freshness`,
+`/review-decisions`, `/audit-entries`, `/handoff`). The case id must be a UUID
+and a version/number a small positive integer, so the route cannot be turned
+into an open proxy and no user input selects the target. `CORE_API_URL` is never
+a `NEXT_PUBLIC_` variable.
+
+The live detail screen is read-only. It shows only values the read APIs return
+(no invented supplier name, total, receipt stock, mapping candidate or
+freshness verdict), and it does not request the reviewer-only sections for a
+`SUBMITTER`; those show a `403`-style notice instead. A case `404` is shown as a
+missing case, while a missing match result or review snapshot is shown as an
+empty section. Approve, mapping, supplement, reject and create writes are not
+connected in this slice: their buttons are disabled and explain that no request
+is sent. The audit tab follows the server `nextCursor` with a "이전 기록 더 보기"
+button. The `/cases` list keeps its filters in the URL, so opening a detail and
+returning restores the same query.
 
 HTTP Basic credentials are kept only in React memory for the tab. They are sent
 as an `Authorization` header on each proxied request and are never written to
@@ -484,10 +500,37 @@ never re-decides them. HTTP Basic is only acceptable on `localhost`: any
 non-local deployment must terminate TLS (HTTPS) in front of the web app and the
 Core API.
 
-The detail, manual entry, match, review, approval and hand-off screens are still
-design-only previews. The `/cases` list shows only the server list summary; the
-supplier name is not part of the list DTO, so a row shows the raw `supplierId`
-and the account `submittedBy` instead of an invented name.
+The `/cases/[id]` detail and `/cases` list are live reads. The `/`, `/cases/new`,
+`/handoff` and `/operations` screens are still design-only previews, and the
+write actions are not connected. The `/cases` list shows only the server list
+summary; the supplier name is not part of the list DTO, so a row shows the raw
+`supplierId` and the account `submittedBy` instead of an invented name.
+
+### Web case detail (second connected slice)
+
+`/cases/[id]` is a read-only live detail for a real case id reached from a list
+row or summary. It reads `GET /api/invoice-cases/{id}`, the evidence bundle list
+and (only when a submitted case has no OPEN draft) the latest sealed bundle
+payload, `GET /api/invoice-cases/{id}/handoff`, and, for `APPROVER`/`OPERATOR`,
+the latest match (`.../match`), the latest review snapshot
+(`.../review-snapshots/latest`), its freshness
+(`.../review-snapshots/{number}/freshness`), the decision history
+(`.../review-decisions`) and the cursor-paged audit history
+(`.../audit-entries?limit=20&cursor=...`). The proxy allowlist accepts only these
+read paths with a validated UUID case id and positive integer version/number;
+every write path stays `404` at the proxy.
+
+A `SUBMITTER` only receives their own case (the server enforces ownership), and
+the reviewer-only sections are not requested at all; they render a permission
+notice. A missing case is a `404` page; a missing match result or review
+snapshot is an empty section, not an error. The comparison table renders the
+server match `lineOutcomes` verbatim (invoice/PO quantity and unit price,
+available confirmed receipt quantity, expected allocation and the exception
+taxonomy); no total, supplier name or receipt balance is invented. Freshness is
+the server `current`/`reasons` value, and version/hash identifiers are shown
+under a technical disclosure. Approve, mapping, supplement, reject and create
+writes are out of scope for this slice: the buttons are disabled and say no
+request is sent.
 
 ## Work on a service locally
 

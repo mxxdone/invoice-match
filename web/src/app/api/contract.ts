@@ -42,6 +42,257 @@ export type CurrentUser = {
   roles: string[];
 };
 
+// --- Live detail read contracts (P1-10 detail slice) -----------------------
+// These mirror the Java records exactly. A missing field is a missing server
+// field: nothing below is filled in with a design fixture.
+
+export type InvoiceLineDetail = {
+  lineNumber: number;
+  rawItemName: string;
+  quantity: number;
+  unitPrice: number;
+  confirmedItemId: string | null;
+};
+
+export type DraftRevisionDetail = {
+  id: string;
+  revisionNumber: number;
+  status: string;
+};
+
+// GET /api/invoice-cases/{id} -> InvoiceCaseDetail.
+export type InvoiceCaseDetail = {
+  id: string;
+  supplierId: string;
+  purchaseOrderId: string;
+  invoiceNumber: string;
+  submittedBy: string;
+  status: InvoiceCaseStatus;
+  version: number;
+  currentRevision: DraftRevisionDetail | null;
+  lines: InvoiceLineDetail[];
+};
+
+// GET /api/invoice-cases/{id}/evidence-bundles -> EvidenceBundleSummary[].
+export type EvidenceBundleSummary = {
+  version: number;
+  payloadHash: string;
+  submittedAt: string;
+};
+
+// GET /api/invoice-cases/{id}/evidence-bundles/{version} -> EvidenceBundleDetail.
+// `payload` is the canonical JSON stored as a string, so it must be parsed
+// before its lines are read.
+export type EvidenceBundleDetail = {
+  version: number;
+  payloadHash: string;
+  payload: string;
+  submittedAt: string;
+};
+
+// Parsed shape of EvidenceBundleDetail.payload.
+export type EvidenceBundlePayload = {
+  caseId: string;
+  supplierId: string;
+  purchaseOrderId: string;
+  invoiceNumber: string;
+  revisionNumber: number;
+  lines: InvoiceLineDetail[];
+};
+
+export type MatchExceptionDetail = {
+  type: string;
+  lineNumber: number | null;
+  details: Record<string, unknown>;
+};
+
+export type MatchPoLine = {
+  purchaseOrderLineId: string;
+  itemId: string;
+  orderedQuantity: number;
+  unitPrice: number;
+};
+
+export type PlannedAllocation = {
+  receiptId: string;
+  receiptLineId: string;
+  receiptDate: string;
+  receiptLineVersion: number;
+  confirmedQuantity: number;
+  plannedQuantity: number;
+};
+
+export type MatchLineOutcome = {
+  lineNumber: number;
+  rawItemName: string;
+  confirmedItemId: string | null;
+  status: string;
+  candidatePoLineIds: string[];
+  purchaseOrderLine: MatchPoLine | null;
+  invoiceQuantity: number;
+  invoiceUnitPrice: number;
+  availableConfirmedQuantity: number;
+  plannedQuantity: number;
+  expectedAllocationPlan: PlannedAllocation[];
+  exceptions: MatchExceptionDetail[];
+};
+
+export type MatchReceiptLine = {
+  receiptLineId: string;
+  version: number;
+  purchaseOrderLineId: string;
+  confirmedQuantity: number;
+};
+
+export type MatchReceipt = {
+  receiptId: string;
+  status: string;
+  receiptDate: string;
+  version: number;
+  lines: MatchReceiptLine[];
+};
+
+export type MatchPayload = {
+  schemaVersion: string;
+  caseId: string;
+  supplierId: string;
+  purchaseOrderId: string;
+  invoiceNumber: string;
+  normalizedInvoiceNumber: string;
+  caseVersion: number;
+  evidenceBundle: { id: string; version: number; payloadHash: string };
+  appliedMappings: Array<{ lineNumber: number; itemId: string; purchaseOrderLineId: string }>;
+  purchasingSnapshot: {
+    snapshotVersion: number;
+    purchaseOrderVersion: number;
+    payloadHash: string;
+    receipts: MatchReceipt[];
+  };
+  allocationPlan: { consuming: boolean; mode: string; fifoOrdering: string };
+  lineOutcomes: MatchLineOutcome[];
+  exceptions: MatchExceptionDetail[];
+  normal: boolean;
+};
+
+// GET /api/invoice-cases/{id}/match -> MatchResultView.
+export type MatchResultView = {
+  id: string;
+  invoiceCaseId: string;
+  evidenceBundleId: string;
+  resultNumber: number;
+  resultHash: string;
+  purchasingSnapshotVersion: number;
+  purchasingSnapshotHash: string;
+  mappingWatermark: number;
+  payload: MatchPayload;
+  createdAt: string;
+};
+
+// GET /api/invoice-cases/{id}/review-snapshots/latest -> ReviewSnapshotView.
+export type ReviewSnapshotView = {
+  id: string;
+  invoiceCaseId: string;
+  snapshotNumber: number;
+  evidenceBundleId: string;
+  evidenceBundleVersion: number;
+  matchResultId: string;
+  matchResultNumber: number | null;
+  targetCaseVersion: number;
+  purchasingSnapshotVersion: number;
+  purchasingSnapshotHash: string;
+  mappingWatermark: number;
+  payloadHash: string;
+  payload: unknown;
+  createdAt: string;
+};
+
+// GET .../review-snapshots/{number}/freshness -> ReviewFreshness.
+export type ReviewFreshness = {
+  invoiceCaseId: string;
+  reviewSnapshotId: string;
+  snapshotNumber: number;
+  current: boolean;
+  reasons: string[];
+  snapshotCaseVersion: number;
+  currentCaseVersion: number;
+  currentCaseStatus: string;
+  snapshotEvidenceBundleId: string;
+  latestEvidenceBundleId: string | null;
+  latestEvidenceBundleVersion: number | null;
+  snapshotMatchResultId: string;
+  latestMatchResultId: string | null;
+  latestMatchResultNumber: number | null;
+  snapshotMappingWatermark: number;
+  currentMappingWatermark: number;
+  snapshotPurchasingSnapshotVersion: number;
+  currentPurchasingSnapshotVersion: number | null;
+  snapshotPurchasingSnapshotHash: string;
+  currentPurchasingSnapshotHash: string | null;
+};
+
+// GET /api/invoice-cases/{id}/review-decisions -> ReviewDecisionView[].
+export type ReviewDecisionView = {
+  id: string;
+  invoiceCaseId: string;
+  reviewSnapshotId: string;
+  decisionNumber: number;
+  decision: string;
+  decidedBy: string;
+  reason: string | null;
+  payloadHash: string | null;
+  mappingBundleId: string | null;
+  mappingLineNumber: number | null;
+  mappingItemId: string | null;
+  mappingPoLineId: string | null;
+  decidedAt: string;
+};
+
+// GET /api/invoice-cases/{id}/handoff -> CaseHandoffStatus.
+export type PaymentHandoffView = {
+  invoiceCaseId: string;
+  paymentRequestId: string;
+  externalRequestKey: string;
+  amount: number;
+  currency: string;
+  exportVersion: number;
+  paymentStatus: string;
+  outboxStatus: string | null;
+  attemptCount: number;
+  lastErrorCode: string | null;
+  nextAttemptAt: string | null;
+  deliveredAt: string | null;
+  createdAt: string;
+};
+
+export type CaseHandoffStatus = {
+  invoiceCaseId: string;
+  caseStatus: InvoiceCaseStatus;
+  caseVersion: number;
+  payment: PaymentHandoffView | null;
+};
+
+// GET /api/invoice-cases/{id}/audit-entries -> AuditHistoryPage.
+export type AuditEntryView = {
+  id: string;
+  invoiceCaseId: string;
+  occurredAt: string;
+  actor: string;
+  actorRoles: string[];
+  action: string;
+  targetType: string;
+  targetId: string;
+  businessVersion: number;
+  before: unknown;
+  after: unknown;
+  requestId: string | null;
+  traceId: string | null;
+};
+
+export type AuditHistoryPage = {
+  entries: AuditEntryView[];
+  nextCursor: string | null;
+};
+
 // Shared error body for 400/401/403/404/409/503 responses.
 export type ApiErrorBody = {
   code: string;

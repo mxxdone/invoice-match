@@ -1,0 +1,222 @@
+// Pure live-detail adapters.
+//
+// Every value here comes from a server DTO field. A missing field stays missing
+// ("—" or an explicit "아직 없습니다") rather than being filled from a design
+// fixture, and no server calculation (match verdict, freshness, totals) is
+// re-derived in the browser.
+
+import type {
+  EvidenceBundleDetail,
+  EvidenceBundleSummary,
+  InvoiceCaseDetail,
+  InvoiceLineDetail,
+  MatchResultView,
+  PlannedAllocation,
+  ReviewDecisionView,
+  ReviewFreshness,
+} from '../../api/contract';
+
+const numberFormat = new Intl.NumberFormat('ko-KR');
+export const formatNumber = (value: number) => numberFormat.format(value);
+
+export type ComparisonRow = {
+  lineNumber: number;
+  rawItemName: string;
+  confirmedItemId: string | null;
+  status: string;
+  hasPurchaseOrderLine: boolean;
+  orderedQuantity: number | null;
+  availableConfirmedQuantity: number;
+  plannedQuantity: number;
+  invoiceQuantity: number;
+  invoiceUnitPrice: number;
+  poUnitPrice: number | null;
+  plannedAllocations: PlannedAllocation[];
+  issues: Array<{ type: string; label: string }>;
+};
+
+export type ClaimLineSource = 'draft' | 'evidence' | 'none';
+
+export type ClaimLines = {
+  source: ClaimLineSource;
+  lines: InvoiceLineDetail[];
+};
+
+export function latestBundle(bundles: EvidenceBundleSummary[]): EvidenceBundleSummary | null {
+  return bundles.reduce<EvidenceBundleSummary | null>(
+    (latest, bundle) => (latest === null || bundle.version > latest.version ? bundle : latest),
+    null,
+  );
+}
+
+// The stored evidence payload is a JSON string, so it is parsed defensively and
+// only lines with a numeric quantity and price are accepted. A malformed
+// payload yields null rather than a fabricated bundle.
+export function parseEvidencePayload(raw: string): { lines: InvoiceLineDetail[] } | null {
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const candidate = parsed as { lines?: unknown };
+  if (!Array.isArray(candidate.lines)) return null;
+  const lines: InvoiceLineDetail[] = [];
+  for (const entry of candidate.lines) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const line = entry as Partial<InvoiceLineDetail>;
+    if (typeof line.lineNumber !== 'number' || typeof line.quantity !== 'number') continue;
+    if (typeof line.unitPrice !== 'number') continue;
+    lines.push({
+      lineNumber: line.lineNumber,
+      rawItemName: typeof line.rawItemName === 'string' ? line.rawItemName : '',
+      quantity: line.quantity,
+      unitPrice: line.unitPrice,
+      confirmedItemId: typeof line.confirmedItemId === 'string' ? line.confirmedItemId : null,
+    });
+  }
+  return { lines };
+}
+
+// A submitted case has no OPEN draft, so its claim lines come from the latest
+// sealed evidence bundle. This chooses the authoritative source without ever
+// merging the two.
+export function claimLines(detail: InvoiceCaseDetail, sealed: EvidenceBundleDetail | null): ClaimLines {
+  if (detail.lines.length > 0) {
+    return { source: 'draft', lines: detail.lines };
+  }
+  if (sealed) {
+    const parsed = parseEvidencePayload(sealed.payload);
+    if (parsed && parsed.lines.length > 0) {
+      return { source: 'evidence', lines: parsed.lines };
+    }
+  }
+  return { source: 'none', lines: [] };
+}
+
+export function comparisonRows(match: MatchResultView): ComparisonRow[] {
+  return match.payload.lineOutcomes.map((outcome) => ({
+    lineNumber: outcome.lineNumber,
+    rawItemName: outcome.rawItemName,
+    confirmedItemId: outcome.confirmedItemId,
+    status: outcome.status,
+    hasPurchaseOrderLine: outcome.purchaseOrderLine !== null,
+    orderedQuantity: outcome.purchaseOrderLine?.orderedQuantity ?? null,
+    availableConfirmedQuantity: outcome.availableConfirmedQuantity,
+    plannedQuantity: outcome.plannedQuantity,
+    invoiceQuantity: outcome.invoiceQuantity,
+    invoiceUnitPrice: outcome.invoiceUnitPrice,
+    poUnitPrice: outcome.purchaseOrderLine?.unitPrice ?? null,
+    plannedAllocations: outcome.expectedAllocationPlan,
+    issues: outcome.exceptions.map((exception) => ({
+      type: exception.type,
+      label: presentMatchException(exception.type),
+    })),
+  }));
+}
+
+const MATCH_EXCEPTION_LABELS: Record<string, string> = {
+  ITEM_UNCONFIRMED: '품목 매핑 미확정',
+  EVIDENCE_INSUFFICIENT: '판단 근거 부족',
+  QUANTITY_EXCEEDS_RECEIPT_BALANCE: '검수 잔량 초과',
+  UNIT_PRICE_MISMATCH: '단가 불일치',
+  DUPLICATE_INVOICE_SUSPECTED: '청구번호 중복 의심',
+};
+
+export function presentMatchException(type: string): string {
+  return MATCH_EXCEPTION_LABELS[type] ?? type;
+}
+
+const MATCH_LINE_STATUS_LABELS: Record<string, string> = {
+  MATCHED: '비교됨',
+  ITEM_UNCONFIRMED: '품목 미확정',
+  EVIDENCE_INSUFFICIENT: '근거 부족',
+};
+
+export function presentLineStatus(status: string): string {
+  return MATCH_LINE_STATUS_LABELS[status] ?? status;
+}
+
+const DECISION_LABELS: Record<string, string> = {
+  MAPPING: '품목 매핑',
+  SUPPLEMENT_REQUESTED: '보완 요청',
+  REJECTED: '청구 거절',
+  APPROVED: '승인',
+};
+
+export function presentDecision(decision: string): string {
+  return DECISION_LABELS[decision] ?? decision;
+}
+
+const FRESHNESS_REASON_LABELS: Record<string, string> = {
+  CASE_STATE: '청구 상태가 변경됨',
+  CASE_VERSION: '청구 버전이 변경됨',
+  EVIDENCE_BUNDLE: '증빙 버전이 변경됨',
+  MATCH_RESULT: '대사 결과가 변경됨',
+  MAPPING: '매핑이 변경됨',
+  PURCHASING_SNAPSHOT: '구매 스냅샷이 변경됨',
+  SUPERSEDED: '더 새로운 검토 대상이 있음',
+};
+
+export function presentFreshnessReason(reason: string): string {
+  return FRESHNESS_REASON_LABELS[reason] ?? reason;
+}
+
+const PAYMENT_STATUS_LABELS: Record<string, string> = {
+  NOT_SENT: '전송 전',
+  SENDING: '전송 중',
+  ACKNOWLEDGED: '인계 완료',
+  RETRY_SCHEDULED: '재시도 예약',
+  FAILED: '인계 실패',
+  RESULT_UNKNOWN: '결과 불명',
+};
+
+export function presentPaymentStatus(status: string): string {
+  return PAYMENT_STATUS_LABELS[status] ?? status;
+}
+
+const OUTBOX_STATUS_LABELS: Record<string, string> = {
+  READY: '대기',
+  CLAIMED: '선점됨',
+  SENDING: '전송 중',
+  DELIVERED: '전달됨',
+  FAILED: '실패',
+  RESULT_UNKNOWN: '결과 불명',
+};
+
+export function presentOutboxStatus(status: string): string {
+  return OUTBOX_STATUS_LABELS[status] ?? status;
+}
+
+const AUDIT_ACTION_LABELS: Record<string, string> = {
+  CASE_CREATED: '사건 생성',
+  DRAFT_LINES_REPLACED: '초안 저장',
+  CASE_SUBMITTED: '청구 제출',
+  SUPPLEMENT_REVISION_OPENED: '보완 revision 열기',
+  MATCH_RUN: '대사 실행',
+  REVIEW_SNAPSHOT_FROZEN: '검토 대상 저장',
+  ITEM_MAPPED: '품목 매핑',
+  SUPPLEMENT_REQUESTED: '보완 요청',
+  CASE_REJECTED: '청구 거절',
+  APPROVE: '승인',
+};
+
+export function presentAuditAction(action: string): string {
+  return AUDIT_ACTION_LABELS[action] ?? action;
+}
+
+export function decisionDetail(decision: ReviewDecisionView): string {
+  if (decision.decision === 'MAPPING') {
+    const line = decision.mappingLineNumber === null ? '—' : `라인 ${decision.mappingLineNumber}`;
+    const item = decision.mappingItemId ?? '—';
+    const poLine = decision.mappingPoLineId ?? '—';
+    return `${line} · ${item} / ${poLine}`;
+  }
+  return decision.reason ?? '사유 없음';
+}
+
+export function freshnessVerdict(freshness: ReviewFreshness): string {
+  return freshness.current ? '현재 자료와 일치' : '현재 자료와 불일치';
+}

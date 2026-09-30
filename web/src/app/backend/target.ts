@@ -1,6 +1,7 @@
 // Fixed-target resolution for the same-origin Core API proxy. The host comes
 // only from the server-side CORE_API_URL environment variable and the path is a
-// small allowlist, so the route can never be turned into an open proxy.
+// small, pattern-validated allowlist, so the route can never be turned into an
+// open proxy or used to reach a write endpoint.
 
 export const DEFAULT_CORE_API_URL = 'http://localhost:8080';
 
@@ -9,7 +10,42 @@ export const DEFAULT_CORE_API_URL = 'http://localhost:8080';
 // header and must not leak it to another origin).
 export const CORE_API_TIMEOUT_MS = 10000;
 
-const ALLOWED_PATHS = new Set(['api/me', 'api/invoice-cases']);
+// Path segments that select a live case read endpoint are validated rather than
+// matched literally: a case id must be a canonical UUID and a bundle version or
+// snapshot number a small positive integer. In a route pattern '*' is one UUID
+// and '#' is one positive integer; every other token must match the literal.
+const UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const POSITIVE_INT_PATTERN = /^[1-9][0-9]{0,8}$/;
+
+const ALLOWED_ROUTES: readonly (readonly string[])[] = [
+  ['api', 'me'],
+  ['api', 'invoice-cases'],
+  ['api', 'invoice-cases', '*'],
+  ['api', 'invoice-cases', '*', 'evidence-bundles'],
+  ['api', 'invoice-cases', '*', 'evidence-bundles', '#'],
+  ['api', 'invoice-cases', '*', 'match'],
+  ['api', 'invoice-cases', '*', 'review-snapshots', 'latest'],
+  ['api', 'invoice-cases', '*', 'review-snapshots', '#', 'freshness'],
+  ['api', 'invoice-cases', '*', 'review-decisions'],
+  ['api', 'invoice-cases', '*', 'audit-entries'],
+  ['api', 'invoice-cases', '*', 'handoff'],
+];
+
+function matchesRoute(segments: readonly string[], pattern: readonly string[]): boolean {
+  if (segments.length !== pattern.length) return false;
+  for (let index = 0; index < pattern.length; index += 1) {
+    const token = pattern[index];
+    const value = segments[index];
+    if (token === '*') {
+      if (!UUID_PATTERN.test(value)) return false;
+    } else if (token === '#') {
+      if (!POSITIVE_INT_PATTERN.test(value)) return false;
+    } else if (value !== token) {
+      return false;
+    }
+  }
+  return true;
+}
 
 export function coreApiUrl(env: string | undefined): string {
   const value = env?.trim();
@@ -21,10 +57,10 @@ export function resolveBackendTarget(
   segments: string[],
   search: string,
 ): string | null {
-  const path = segments.join('/');
-  if (!ALLOWED_PATHS.has(path)) {
+  if (!ALLOWED_ROUTES.some((pattern) => matchesRoute(segments, pattern))) {
     return null;
   }
+  const path = segments.join('/');
   const base = baseUrl.replace(/\/+$/, '');
   return `${base}/${path}${search}`;
 }

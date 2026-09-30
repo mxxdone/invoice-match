@@ -3,7 +3,19 @@
 // header to the server-configured Core API. Nothing here stores or logs the
 // credentials.
 
-import type { CurrentUser, InvoiceCasePage } from './contract.ts';
+import type {
+  AuditHistoryPage,
+  CaseHandoffStatus,
+  CurrentUser,
+  EvidenceBundleDetail,
+  EvidenceBundleSummary,
+  InvoiceCaseDetail,
+  InvoiceCasePage,
+  MatchResultView,
+  ReviewDecisionView,
+  ReviewFreshness,
+  ReviewSnapshotView,
+} from './contract.ts';
 import { buildInvoiceCaseQuery, type InvoiceCaseFilters } from './query.ts';
 import {
   ApiRequestError,
@@ -71,6 +83,122 @@ export function fetchInvoiceCases(
   const query = new URLSearchParams(buildInvoiceCaseQuery(filters)).toString();
   return requestJson<InvoiceCasePage>(
     `/api/invoice-cases${query ? `?${query}` : ''}`,
+    credentials,
+    signal,
+  );
+}
+
+// The case id and numeric version are path segments, so they are encoded even
+// though the server already restricts them by their route type.
+export function fetchInvoiceCase(
+  credentials: Credentials,
+  caseId: string,
+  signal?: AbortSignal,
+): Promise<InvoiceCaseDetail> {
+  return requestJson<InvoiceCaseDetail>(
+    `/api/invoice-cases/${encodeURIComponent(caseId)}`,
+    credentials,
+    signal,
+  );
+}
+
+export function fetchEvidenceBundles(
+  credentials: Credentials,
+  caseId: string,
+  signal?: AbortSignal,
+): Promise<EvidenceBundleSummary[]> {
+  return requestJson<EvidenceBundleSummary[]>(
+    `/api/invoice-cases/${encodeURIComponent(caseId)}/evidence-bundles`,
+    credentials,
+    signal,
+  );
+}
+
+export function fetchEvidenceBundle(
+  credentials: Credentials,
+  caseId: string,
+  version: number,
+  signal?: AbortSignal,
+): Promise<EvidenceBundleDetail> {
+  return requestJson<EvidenceBundleDetail>(
+    `/api/invoice-cases/${encodeURIComponent(caseId)}/evidence-bundles/${version}`,
+    credentials,
+    signal,
+  );
+}
+
+export function fetchLatestMatch(
+  credentials: Credentials,
+  caseId: string,
+  signal?: AbortSignal,
+): Promise<MatchResultView> {
+  return requestJson<MatchResultView>(
+    `/api/invoice-cases/${encodeURIComponent(caseId)}/match`,
+    credentials,
+    signal,
+  );
+}
+
+export function fetchLatestReviewSnapshot(
+  credentials: Credentials,
+  caseId: string,
+  signal?: AbortSignal,
+): Promise<ReviewSnapshotView> {
+  return requestJson<ReviewSnapshotView>(
+    `/api/invoice-cases/${encodeURIComponent(caseId)}/review-snapshots/latest`,
+    credentials,
+    signal,
+  );
+}
+
+export function fetchReviewFreshness(
+  credentials: Credentials,
+  caseId: string,
+  snapshotNumber: number,
+  signal?: AbortSignal,
+): Promise<ReviewFreshness> {
+  return requestJson<ReviewFreshness>(
+    `/api/invoice-cases/${encodeURIComponent(caseId)}/review-snapshots/${snapshotNumber}/freshness`,
+    credentials,
+    signal,
+  );
+}
+
+export function fetchReviewDecisions(
+  credentials: Credentials,
+  caseId: string,
+  signal?: AbortSignal,
+): Promise<ReviewDecisionView[]> {
+  return requestJson<ReviewDecisionView[]>(
+    `/api/invoice-cases/${encodeURIComponent(caseId)}/review-decisions`,
+    credentials,
+    signal,
+  );
+}
+
+export function fetchCaseHandoff(
+  credentials: Credentials,
+  caseId: string,
+  signal?: AbortSignal,
+): Promise<CaseHandoffStatus> {
+  return requestJson<CaseHandoffStatus>(
+    `/api/invoice-cases/${encodeURIComponent(caseId)}/handoff`,
+    credentials,
+    signal,
+  );
+}
+
+export function fetchAuditEntries(
+  credentials: Credentials,
+  caseId: string,
+  cursor: string | null,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<AuditHistoryPage> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (cursor) query.set('cursor', cursor);
+  return requestJson<AuditHistoryPage>(
+    `/api/invoice-cases/${encodeURIComponent(caseId)}/audit-entries?${query.toString()}`,
     credentials,
     signal,
   );

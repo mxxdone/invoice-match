@@ -86,5 +86,71 @@ export async function runChecks({ request, config, guard, log }) {
   if (proxyBlocked.status !== 404) throw new VerifyError(`proxy non-allowlisted path expected 404 (status ${proxyBlocked.status})`);
   pass('proxy refuses a non-allowlisted path');
 
+  // --- live detail reads (P1-10 detail slice) ---
+
+  guard();
+  const approverDetail = await request(`${core}/api/invoice-cases/${created.id}`, { headers: approver });
+  if (approverDetail.status !== 200 || !approverDetail.body.includes(created.id)) throw sanitized('approver case detail expected 200 with the id', approverDetail);
+  pass('approver reads the case detail');
+
+  const submitterDetail = await request(`${core}/api/invoice-cases/${created.id}`, { headers: submitter });
+  if (submitterDetail.status !== 200) throw sanitized('submitter own case detail expected 200', submitterDetail);
+  pass('submitter reads their own case detail');
+
+  const otherSubmitter = await request(`${core}/api/invoice-cases/${created.id}`, { headers: { authorization: basic('submitter2', 'submitter2-pass') } });
+  if (otherSubmitter.status !== 403) throw sanitized('another submitter reading the case expected 403', otherSubmitter);
+  pass('another submitter is denied by ownership with 403');
+
+  const unknown = await request(`${core}/api/invoice-cases/00000000-0000-4000-8000-000000000000`, { headers: approver });
+  if (unknown.status !== 404) throw sanitized('unknown case detail expected 404', unknown);
+  pass('unknown case detail is 404');
+
+  const bundles = await request(`${core}/api/invoice-cases/${created.id}/evidence-bundles`, { headers: approver });
+  const bundleList = JSON.parse(bundles.body);
+  if (bundles.status !== 200 || !Array.isArray(bundleList) || bundleList.length < 1) throw new VerifyError(`evidence bundle list expected at least one version (status ${bundles.status})`);
+  pass('evidence bundle list returns the submitted version');
+
+  const bundleDetail = await request(`${core}/api/invoice-cases/${created.id}/evidence-bundles/${bundleList[0].version}`, { headers: approver });
+  if (bundleDetail.status !== 200 || !bundleDetail.body.includes('lines')) throw sanitized('sealed evidence bundle expected 200 with lines', bundleDetail);
+  pass('sealed evidence bundle payload is readable');
+
+  const noMatch = await request(`${core}/api/invoice-cases/${created.id}/match`, { headers: approver });
+  if (noMatch.status !== 404) throw sanitized('latest match before a run expected 404', noMatch);
+  pass('latest match before any run is 404');
+
+  const noSnapshot = await request(`${core}/api/invoice-cases/${created.id}/review-snapshots/latest`, { headers: approver });
+  if (noSnapshot.status !== 404) throw sanitized('latest review snapshot before a freeze expected 404', noSnapshot);
+  pass('latest review snapshot before any freeze is 404');
+
+  const submitterAudit = await request(`${core}/api/invoice-cases/${created.id}/audit-entries`, { headers: submitter });
+  if (submitterAudit.status !== 403) throw sanitized('submitter audit history expected 403', submitterAudit);
+  pass('audit history is restricted to reviewer roles');
+
+  const auditFirst = await request(`${core}/api/invoice-cases/${created.id}/audit-entries?limit=1`, { headers: approver });
+  const firstPage = JSON.parse(auditFirst.body);
+  if (auditFirst.status !== 200 || !Array.isArray(firstPage.entries) || firstPage.entries.length !== 1 || !firstPage.nextCursor) {
+    throw new VerifyError(`audit first page expected one entry and a cursor (status ${auditFirst.status})`);
+  }
+  pass('audit first page returns one entry and a cursor');
+
+  const auditNext = await request(`${core}/api/invoice-cases/${created.id}/audit-entries?limit=20&cursor=${encodeURIComponent(firstPage.nextCursor)}`, { headers: approver });
+  const nextPage = JSON.parse(auditNext.body);
+  if (auditNext.status !== 200 || !Array.isArray(nextPage.entries) || nextPage.entries.length < 1) throw sanitized('audit next page expected more entries', auditNext);
+  if (nextPage.entries.some((entry) => entry.id === firstPage.entries[0].id)) throw new VerifyError('audit cursor repeated the first page entry');
+  pass('audit cursor returns the next page without repeating');
+
+  const handoff = await request(`${core}/api/invoice-cases/${created.id}/handoff`, { headers: approver });
+  const handoffBody = handoff.status === 200 ? JSON.parse(handoff.body) : {};
+  if (handoff.status !== 200 || handoffBody.payment != null) throw sanitized('handoff before approval expected 200 with a null payment', handoff);
+  pass('handoff before approval has a null payment');
+
+  const proxyDetail = await request(`${web}/backend/api/invoice-cases/${created.id}`, { headers: approver });
+  if (proxyDetail.status !== 200 || !proxyDetail.body.includes(created.id)) throw sanitized('proxy allowlisted detail path expected 200', proxyDetail);
+  pass('proxy forwards the allowlisted detail path');
+
+  const proxyBadId = await request(`${web}/backend/api/invoice-cases/not-a-uuid/handoff`, { headers: approver });
+  if (proxyBadId.status !== 404) throw sanitized('proxy non-UUID case path expected 404', proxyBadId);
+  pass('proxy refuses a non-UUID case path');
+
   return {};
 }

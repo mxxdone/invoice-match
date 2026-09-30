@@ -1,13 +1,14 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon, PageHeader, Shell } from '../ui';
 import { useAuth } from '../auth';
 import { formatInstant, presentStatus } from '../api/contract';
 import { resolveSubmittedRange } from '../api/daterange';
 import type { InvoiceCaseFilters, SearchField } from '../api/query';
+import { filtersFromSearchParams, searchFromFilters } from './list-query';
 import { pageNumbers } from './list-preview';
 import { useInvoiceCases } from './use-invoice-cases';
 
@@ -19,41 +20,69 @@ const tabs: Array<[string, string]> = [
   ['EXPORTED', '인계 완료'],
 ];
 
-export default function Cases() {
+type Drafts = {
+  query: string;
+  searchField: SearchField;
+  supplier: string;
+  submitter: string;
+  rangeStart: string;
+  rangeEnd: string;
+};
+
+function draftsFromFilters(filters: InvoiceCaseFilters): Drafts {
+  return {
+    query: filters.searchValue ?? '',
+    searchField: filters.searchField,
+    supplier: filters.supplierId ?? '',
+    submitter: filters.submittedBy ?? '',
+    rangeStart: filters.submittedFrom ? filters.submittedFrom.slice(0, 10) : '',
+    rangeEnd: filters.submittedTo ? filters.submittedTo.slice(0, 10) : '',
+  };
+}
+
+function Cases() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { credentials, sessionId, isAuthenticated, logout } = useAuth();
 
-  const [status, setStatus] = useState('all');
-  const [draftQuery, setDraftQuery] = useState('');
-  // The field and text are drafts until the user submits the search, so
-  // switching the field never re-queries the previous value under a new field.
-  const [searchFieldDraft, setSearchFieldDraft] = useState<SearchField>('invoiceNumber');
-  const [searchField, setSearchField] = useState<SearchField>('invoiceNumber');
-  const [searchValue, setSearchValue] = useState<string | null>(null);
-  const [supplierDraft, setSupplierDraft] = useState('');
-  const [supplierId, setSupplierId] = useState<string | null>(null);
-  const [submitterDraft, setSubmitterDraft] = useState('');
-  const [submittedBy, setSubmittedBy] = useState<string | null>(null);
-  const [rangeStartDraft, setRangeStartDraft] = useState('');
-  const [rangeEndDraft, setRangeEndDraft] = useState('');
+  // The committed filters live in the URL so navigating into a case detail and
+  // back restores the same server query; only the uncommitted text inputs are
+  // component state.
+  const search = searchParams.toString();
+  const filters = useMemo(() => filtersFromSearchParams(new URLSearchParams(search)), [search]);
+  const listFrom = search;
+  const detailHref = useCallback(
+    (id: string) => (listFrom ? `/cases/${id}?from=${encodeURIComponent(listFrom)}` : `/cases/${id}`),
+    [listFrom],
+  );
+
+  // The editable inputs are seeded from the URL during render (not in an
+  // effect): when the committed filters change (a commit, or back/forward) the
+  // inputs re-derive, while typing only touches the draft state.
+  const [drafts, setDrafts] = useState<Drafts>(() => draftsFromFilters(filters));
+  const [seededFilters, setSeededFilters] = useState(filters);
   const [rangeError, setRangeError] = useState<string | null>(null);
-  const [submittedFrom, setSubmittedFrom] = useState<string | null>(null);
-  const [submittedTo, setSubmittedTo] = useState<string | null>(null);
-  const [page, setPage] = useState(0);
-  const [size, setSize] = useState(20);
   const [selected, setSelected] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  if (seededFilters !== filters) {
+    setSeededFilters(filters);
+    setDrafts(draftsFromFilters(filters));
+    setRangeError(null);
+  }
+  const patchDrafts = (patch: Partial<Drafts>) => setDrafts((previous) => ({ ...previous, ...patch }));
 
-  const filters = useMemo<InvoiceCaseFilters>(
-    () => ({ status, supplierId, submittedBy, submittedFrom, submittedTo, searchField, searchValue, page, size }),
-    [status, supplierId, submittedBy, submittedFrom, submittedTo, searchField, searchValue, page, size],
-  );
+  const updateFilters = useCallback((patch: Partial<InvoiceCaseFilters>) => {
+    const next = { ...filters, ...patch };
+    const query = searchFromFilters(next);
+    router.replace(query ? `/cases?${query}` : '/cases', { scroll: false });
+    setSelected(null);
+  }, [filters, router]);
+
   const onUnauthorized = useCallback(() => {
     logout();
     router.replace('/login');
   }, [logout, router]);
 
-  // A direct visit or reload has no in-memory session: send the user to /login.
   useEffect(() => {
     if (!isAuthenticated) router.replace('/login');
   }, [isAuthenticated, router]);
@@ -66,23 +95,18 @@ export default function Cases() {
     onUnauthorized,
   });
 
-  const resetPage = useCallback(() => { setPage(0); setSelected(null); }, []);
   function applySearch(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const value = draftQuery.trim();
-    setSearchField(searchFieldDraft);
-    setSearchValue(value ? value : null);
-    resetPage();
+    const value = drafts.query.trim();
+    updateFilters({ searchField: drafts.searchField, searchValue: value ? value : null, page: 0 });
   }
   function commitSupplier() {
-    const value = supplierDraft.trim();
-    setSupplierId(value ? value : null);
-    resetPage();
+    const value = drafts.supplier.trim();
+    updateFilters({ supplierId: value ? value : null, page: 0 });
   }
   function commitSubmitter() {
-    const value = submitterDraft.trim();
-    setSubmittedBy(value ? value : null);
-    resetPage();
+    const value = drafts.submitter.trim();
+    updateFilters({ submittedBy: value ? value : null, page: 0 });
   }
   // The two date inputs map to the KST inclusive instant range. An invalid or
   // reversed range is reported and not applied; a valid change resets page 0.
@@ -93,25 +117,22 @@ export default function Cases() {
       return;
     }
     setRangeError(null);
-    setSubmittedFrom(resolved.from);
-    setSubmittedTo(resolved.to);
-    resetPage();
+    updateFilters({ submittedFrom: resolved.from, submittedTo: resolved.to, page: 0 });
   }
   function commitOnEnter(event: React.KeyboardEvent<HTMLInputElement>, commit: () => void) {
     if (event.key === 'Enter') { event.preventDefault(); commit(); }
   }
   function resetFilters() {
-    setDraftQuery(''); setSearchValue(null); setSearchField('invoiceNumber'); setSearchFieldDraft('invoiceNumber');
-    setSupplierDraft(''); setSupplierId(null); setSubmitterDraft(''); setSubmittedBy(null);
-    setRangeStartDraft(''); setRangeEndDraft(''); setRangeError(null); setSubmittedFrom(null); setSubmittedTo(null);
-    setStatus('all'); resetPage();
+    setRangeError(null);
+    router.replace('/cases', { scroll: false });
+    setSelected(null);
   }
   function retry() { setReloadToken(value => value + 1); }
 
   const rows = pageResult?.items ?? [];
   const totalItems = pageResult?.totalItems ?? 0;
   const totalPages = Math.max(1, pageResult?.totalPages ?? 1);
-  const currentPage = Math.min(page + 1, totalPages);
+  const currentPage = Math.min(filters.page + 1, totalPages);
   const selectedRow = rows.find(row => row.id === selected);
   const selectedStatus = selectedRow ? presentStatus(selectedRow.status) : null;
 
@@ -126,7 +147,7 @@ export default function Cases() {
               const presentation = presentStatus(row.status);
               return <tr key={row.id} className={selected === row.id ? 'selected' : ''}>
                 <td><div className="vendor-cell"><span className="vendor-avatar" aria-hidden="true"><Icon name="grid" size={14} /></span><div><strong>{row.supplierId}</strong><small>제출자 {row.submittedBy}</small></div></div></td>
-                <td><strong>{row.invoiceNumber}</strong></td>
+                <td><Link href={detailHref(row.id)}>{row.invoiceNumber}</Link></td>
                 <td><span className={`case-status status-${presentation.tone}`}><span className="case-status-dot" />{presentation.label}</span></td>
                 <td className="muted-text">{row.purchaseOrderId}</td>
                 <td className="muted-text">{formatInstant(row.submittedAt)}</td>
@@ -138,12 +159,12 @@ export default function Cases() {
         </table>
       </div>
       <div className="table-summary list-pagination">
-        <span>총 {totalItems}건 · {totalItems ? page * size + 1 : 0}–{Math.min(page * size + rows.length, totalItems)}건 표시{isLoading ? ' · 불러오는 중' : ''}</span>
-        <label className="small-filter">표시 수<select aria-label="페이지당 표시 수" value={size} onChange={event => { setSize(Number(event.target.value)); resetPage(); }}>{[20, 50, 100].map(option => <option key={option} value={option}>{option}건씩</option>)}</select></label>
+        <span>총 {totalItems}건 · {totalItems ? filters.page * filters.size + 1 : 0}–{Math.min(filters.page * filters.size + rows.length, totalItems)}건 표시{isLoading ? ' · 불러오는 중' : ''}</span>
+        <label className="small-filter">표시 수<select aria-label="페이지당 표시 수" value={filters.size} onChange={event => updateFilters({ size: Number(event.target.value), page: 0 })}>{[20, 50, 100].map(option => <option key={option} value={option}>{option}건씩</option>)}</select></label>
         <nav className="pagination" aria-label="목록 페이지">
-          <button className="button" disabled={page === 0} onClick={() => { setPage(page - 1); setSelected(null); }}>이전</button>
-          {pageNumbers(currentPage, totalPages).map(item => typeof item === 'number' ? <button key={item} className={`page-number ${item === currentPage ? 'is-active' : ''}`} aria-label={`${item}페이지`} aria-current={item === currentPage ? 'page' : undefined} onClick={() => { setPage(item - 1); setSelected(null); }}>{item}</button> : <span key={item} className="page-gap" aria-hidden="true">…</span>)}
-          <button className="button" disabled={page + 1 >= totalPages} onClick={() => { setPage(page + 1); setSelected(null); }}>다음</button>
+          <button className="button" disabled={filters.page === 0} onClick={() => updateFilters({ page: filters.page - 1 })}>이전</button>
+          {pageNumbers(currentPage, totalPages).map(item => typeof item === 'number' ? <button key={item} className={`page-number ${item === currentPage ? 'is-active' : ''}`} aria-label={`${item}페이지`} aria-current={item === currentPage ? 'page' : undefined} onClick={() => updateFilters({ page: item - 1 })}>{item}</button> : <span key={item} className="page-gap" aria-hidden="true">…</span>)}
+          <button className="button" disabled={filters.page + 1 >= totalPages} onClick={() => updateFilters({ page: filters.page + 1 })}>다음</button>
         </nav>
       </div>
     </div>
@@ -157,8 +178,10 @@ export default function Cases() {
         <div><dt>상태</dt><dd>{selectedStatus?.label}</dd></div>
         <div><dt>발주번호</dt><dd>{selectedRow.purchaseOrderId}</dd></div>
         <div><dt>제출 시각 (KST)</dt><dd>{formatInstant(selectedRow.submittedAt)}</dd></div>
+        <div><dt>청구서 버전</dt><dd>v{selectedRow.version}</dd></div>
       </dl>
-      <p className="panel-footnote">서버 목록 요약입니다. 상세·비교·승인 화면은 다음 작업 범위이며 가상 시안으로만 제공됩니다.</p>
+      <div className="dialog-actions"><Link className="button primary" href={detailHref(selectedRow.id)}>상세 열기<Icon name="chevron" size={14} /></Link></div>
+      <p className="panel-footnote">서버 목록 요약입니다. 상세는 실제 조회 화면으로 이동합니다.</p>
     </aside>}
   </div>;
 
@@ -176,26 +199,34 @@ export default function Cases() {
 
   return <Shell active="cases" preview={false}>
     <PageHeader eyebrow="청구 업무" title="매입 청구서" subtitle="제출된 청구와 처리 상태를 서버에서 조회합니다." action={<Link className="button primary" href="/cases/new"><Icon name="plus" />청구 작성</Link>} />
-    <div className="tabs" role="tablist" aria-label="청구서 상태">{tabs.map(([id, label]) => <button key={id} role="tab" aria-selected={status === id} className={status === id ? 'active' : ''} onClick={() => { setStatus(id); resetPage(); }}>{label}</button>)}</div>
+    <div className="tabs" role="tablist" aria-label="청구서 상태">{tabs.map(([id, label]) => <button key={id} role="tab" aria-selected={filters.status === id} className={filters.status === id ? 'active' : ''} onClick={() => updateFilters({ status: id, page: 0 })}>{label}</button>)}</div>
     <div className="list-filter-area">
       <form className="list-search-form" onSubmit={applySearch}>
-        <select aria-label="검색 항목" value={searchFieldDraft} onChange={event => setSearchFieldDraft(event.target.value as SearchField)}><option value="invoiceNumber">청구번호</option><option value="purchaseOrderId">발주번호</option></select>
-        <label className="search"><input aria-label="청구서 검색" aria-describedby="list-search-help" placeholder={searchFieldDraft === 'invoiceNumber' ? '청구번호의 일부 입력 · 예: 0142' : '발주번호의 일부 입력 · 예: 0142'} value={draftQuery} onChange={event => setDraftQuery(event.target.value)} /></label>
+        <select aria-label="검색 항목" value={drafts.searchField} onChange={event => patchDrafts({ searchField: event.target.value as SearchField })}><option value="invoiceNumber">청구번호</option><option value="purchaseOrderId">발주번호</option></select>
+        <label className="search"><input aria-label="청구서 검색" aria-describedby="list-search-help" placeholder={drafts.searchField === 'invoiceNumber' ? '청구번호의 일부 입력 · 예: 0142' : '발주번호의 일부 입력 · 예: 0142'} value={drafts.query} onChange={event => patchDrafts({ query: event.target.value })} /></label>
         <button className="button" type="submit"><Icon name="search" />검색</button>
         <span id="list-search-help" className="list-search-help">번호의 일부 입력 · Enter 또는 검색 · 서버 부분 검색</span>
       </form>
       <div className="list-filter-row">
-        <label className="small-filter">공급사 ID<input aria-label="공급사 ID 필터" maxLength={64} placeholder="정확히 일치" value={supplierDraft} onChange={event => setSupplierDraft(event.target.value)} onBlur={commitSupplier} onKeyDown={event => commitOnEnter(event, commitSupplier)} /></label>
-        <label className="small-filter">제출자 계정<input aria-label="제출자 계정 필터" maxLength={64} placeholder="정확히 일치" value={submitterDraft} onChange={event => setSubmitterDraft(event.target.value)} onBlur={commitSubmitter} onKeyDown={event => commitOnEnter(event, commitSubmitter)} /></label>
-        <label className="small-filter">제출일 시작<input type="date" aria-label="제출일 시작" value={rangeStartDraft} onChange={event => { setRangeStartDraft(event.target.value); commitRange(event.target.value, rangeEndDraft); }} /></label>
-        <label className="small-filter">제출일 끝<input type="date" aria-label="제출일 끝" value={rangeEndDraft} onChange={event => { setRangeEndDraft(event.target.value); commitRange(rangeStartDraft, event.target.value); }} /></label>
+        <label className="small-filter">공급사 ID<input aria-label="공급사 ID 필터" maxLength={64} placeholder="정확히 일치" value={drafts.supplier} onChange={event => patchDrafts({ supplier: event.target.value })} onBlur={commitSupplier} onKeyDown={event => commitOnEnter(event, commitSupplier)} /></label>
+        <label className="small-filter">제출자 계정<input aria-label="제출자 계정 필터" maxLength={64} placeholder="정확히 일치" value={drafts.submitter} onChange={event => patchDrafts({ submitter: event.target.value })} onBlur={commitSubmitter} onKeyDown={event => commitOnEnter(event, commitSubmitter)} /></label>
+        <label className="small-filter">제출일 시작<input type="date" aria-label="제출일 시작" value={drafts.rangeStart} onChange={event => { patchDrafts({ rangeStart: event.target.value }); commitRange(event.target.value, drafts.rangeEnd); }} /></label>
+        <label className="small-filter">제출일 끝<input type="date" aria-label="제출일 끝" value={drafts.rangeEnd} onChange={event => { patchDrafts({ rangeEnd: event.target.value }); commitRange(drafts.rangeStart, event.target.value); }} /></label>
         <button className="button filter-reset" onClick={resetFilters}>필터 초기화</button>
       </div>
       {rangeError
         ? <p className="list-search-help" role="alert">{rangeError}</p>
         : <p className="list-search-help">제출일은 Asia/Seoul(KST) 일자 기준 · 시작일 00:00:00부터 종료일 다음날 시작 직전(1µs)까지 포함</p>}
-      {searchValue && <div className="applied-query" role="status">적용된 검색: {searchField === 'invoiceNumber' ? '청구번호' : '발주번호'} = {searchValue}<button className="icon-button" aria-label="검색 조건 지우기" onClick={() => { setSearchValue(null); setDraftQuery(''); resetPage(); }}><Icon name="close" size={12} /></button></div>}
+      {filters.searchValue && <div className="applied-query" role="status">적용된 검색: {filters.searchField === 'invoiceNumber' ? '청구번호' : '발주번호'} = {filters.searchValue}<button className="icon-button" aria-label="검색 조건 지우기" onClick={() => updateFilters({ searchValue: null, page: 0 })}><Icon name="close" size={12} /></button></div>}
     </div>
     {body}
   </Shell>;
+}
+
+export default function CasesPage() {
+  return (
+    <Suspense fallback={<Shell active="cases" preview={false}><section className="empty-state" role="status" aria-busy="true"><Icon name="clock" size={25} /><h1>불러오는 중</h1><p>청구 목록을 서버에서 확인하고 있습니다.</p></section></Shell>}>
+      <Cases />
+    </Suspense>
+  );
 }
