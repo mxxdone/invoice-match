@@ -23,7 +23,17 @@ export type MutationFailure = {
   message: string;
 };
 
-export type MutationOperation = 'create' | 'draft' | 'submit' | 'revision';
+export type MutationOperation =
+  | 'create'
+  | 'draft'
+  | 'submit'
+  | 'revision'
+  | 'match'
+  | 'freeze'
+  | 'mapping'
+  | 'supplement'
+  | 'reject'
+  | 'approve';
 
 export type PendingIntent = {
   operation: MutationOperation;

@@ -157,8 +157,8 @@ export async function runChecks({ request, config, guard, log }) {
   // API; no approval/payment is created and the UI has no write path.
 
   const operator = { authorization: basic('operator', 'operator-pass') };
-  const detailAs = async (headers) => {
-    const response = await request(`${core}/api/invoice-cases/${created.id}`, { headers });
+  const detailAs = async (headers, id = created.id) => {
+    const response = await request(`${core}/api/invoice-cases/${id}`, { headers });
     if (response.status !== 200) throw sanitized('detail read failed during seed', response);
     return JSON.parse(response.body);
   };
@@ -295,6 +295,190 @@ export async function runChecks({ request, config, guard, log }) {
   });
   if (proxyDraft.status !== 200) throw sanitized('proxy allowlisted draft expected 200', proxyDraft);
   pass('proxy forwards an allowlisted draft write');
+
+  // --- review decisions, mapping, rejection, approval and role boundaries ---
+  // All of this runs against the throwaway database and Mock ERP; no external
+  // system is touched.
+
+  const createCase = async (invoiceNumber) => {
+    const response = await request(`${core}/api/invoice-cases`, {
+      method: 'POST',
+      headers: { ...submitter, 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId: `verify-create-${invoiceNumber}`, supplierId: 'SUP-1', purchaseOrderId: 'PO-1001', invoiceNumber }),
+    });
+    if (response.status !== 201) throw sanitized(`create ${invoiceNumber} expected 201`, response);
+    return JSON.parse(response.body);
+  };
+  const replaceDraftAs = async (id, version, payload) => {
+    const response = await request(`${core}/api/invoice-cases/${id}/draft`, {
+      method: 'PUT',
+      headers: { ...submitter, 'content-type': 'application/json' },
+      body: JSON.stringify({ ...payload, expectedCaseVersion: version }),
+    });
+    if (response.status !== 200) throw sanitized('draft write expected 200', response);
+    return JSON.parse(response.body);
+  };
+  const submitAs = async (id, version, requestId) => {
+    const response = await request(`${core}/api/invoice-cases/${id}/submit`, {
+      method: 'POST',
+      headers: { ...submitter, 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId, expectedCaseVersion: version }),
+    });
+    if (response.status !== 200) throw sanitized('submit expected 200', response);
+    return JSON.parse(response.body);
+  };
+
+  // Role boundaries: the server, not the UI, decides.
+  const approverCreate = await request(`${core}/api/invoice-cases`, {
+    method: 'POST',
+    headers: { ...approver, 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'verify-approver-create', supplierId: 'SUP-1', purchaseOrderId: 'PO-1001', invoiceNumber: 'INV-VERIFY-NOPE' }),
+  });
+  if (approverCreate.status !== 403) throw sanitized('approver create expected 403', approverCreate);
+  pass('only a submitter can create a case');
+
+  const operatorFreeze = await request(`${core}/api/invoice-cases/${created.id}/review-snapshots`, {
+    method: 'POST',
+    headers: { ...operator, 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'verify-operator-freeze', expectedCaseVersion: 1 }),
+  });
+  if (operatorFreeze.status !== 403) throw sanitized('operator freeze expected 403', operatorFreeze);
+  pass('only an approver can freeze a review snapshot');
+
+  const submitterApprove = await request(`${core}/api/invoice-cases/${created.id}/approve`, {
+    method: 'POST',
+    headers: { ...submitter, 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'verify-submitter-approve', expectedCaseVersion: 1, reviewSnapshotId: '00000000-0000-4000-8000-000000000000', reviewPayloadHash: 'x' }),
+  });
+  if (submitterApprove.status !== 403) throw sanitized('submitter approve expected 403', submitterApprove);
+  pass('only an approver can approve');
+
+  // Mapping fixture: an unconfirmed line is confirmed by a human mapping, which
+  // re-matches and freezes a successor snapshot.
+  guard();
+  const mapCase = await createCase('INV-VERIFY-MAP');
+  const mapDraft = await replaceDraftAs(mapCase.id, mapCase.version, {
+    requestId: 'verify-map-draft',
+    lines: [{ lineNumber: 1, rawItemName: 'Copy Paper', quantity: 5, unitPrice: 2500, confirmedItemId: null }],
+  });
+  await submitAs(mapCase.id, mapDraft.version, 'verify-map-submit');
+
+  const mapMatch = await request(`${core}/api/invoice-cases/${mapCase.id}/match`, {
+    method: 'POST',
+    headers: { ...operator, 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'verify-map-match' }),
+  });
+  if (mapMatch.status !== 201) throw sanitized('mapping fixture match expected 201', mapMatch);
+  const mapMatchBody = JSON.parse(mapMatch.body);
+  if (!(mapMatchBody.payload?.exceptions ?? []).some((exception) => exception.type === 'ITEM_UNCONFIRMED')) {
+    throw new VerifyError('mapping fixture match expected an ITEM_UNCONFIRMED exception');
+  }
+  pass('an unconfirmed line produces an ITEM_UNCONFIRMED match exception');
+
+  const mapSnapshot = await request(`${core}/api/invoice-cases/${mapCase.id}/review-snapshots`, {
+    method: 'POST',
+    headers: { ...approver, 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'verify-map-freeze', expectedCaseVersion: (await detailAs(approver, mapCase.id)).version }),
+  });
+  if (mapSnapshot.status !== 200 && mapSnapshot.status !== 201) throw sanitized('mapping fixture freeze expected 200/201', mapSnapshot);
+  const mapSnapshotBody = JSON.parse(mapSnapshot.body);
+
+  const mapping = await request(`${core}/api/invoice-cases/${mapCase.id}/mapping-decisions`, {
+    method: 'POST',
+    headers: { ...approver, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      requestId: 'verify-map-decision',
+      expectedCaseVersion: mapSnapshotBody.targetCaseVersion,
+      reviewSnapshotId: mapSnapshotBody.id,
+      reviewPayloadHash: mapSnapshotBody.payloadHash,
+      lineNumber: 1,
+      itemId: 'ITEM-A4-80',
+    }),
+  });
+  if (mapping.status !== 200 && mapping.status !== 201) throw sanitized('mapping decision expected 200/201', mapping);
+  const mappingBody = JSON.parse(mapping.body);
+  if (mappingBody.decision?.decision !== 'MAPPING' || !mappingBody.successorSnapshot?.id) {
+    throw new VerifyError('mapping decision expected a MAPPING decision and a successor snapshot');
+  }
+  pass('an approver maps an unconfirmed line and the server freezes a successor snapshot');
+
+  // Acting on the superseded snapshot is a stale conflict with no side effect.
+  const afterMapping = await detailAs(approver, mapCase.id);
+  const staleApprove = await request(`${core}/api/invoice-cases/${mapCase.id}/approve`, {
+    method: 'POST',
+    headers: { ...approver, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      requestId: 'verify-stale-approve',
+      expectedCaseVersion: afterMapping.version,
+      reviewSnapshotId: mapSnapshotBody.id,
+      reviewPayloadHash: mapSnapshotBody.payloadHash,
+    }),
+  });
+  if (staleApprove.status !== 409) throw sanitized('approve of a superseded snapshot expected 409', staleApprove);
+  const staleHandoff = JSON.parse((await request(`${core}/api/invoice-cases/${mapCase.id}/handoff`, { headers: approver })).body);
+  if (staleHandoff.payment != null) throw new VerifyError('stale approval must not create a payment');
+  pass('a stale/superseded review snapshot is a 409 with no payment side effect');
+
+  const reject = await request(`${core}/api/invoice-cases/${mapCase.id}/reject`, {
+    method: 'POST',
+    headers: { ...approver, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      requestId: 'verify-reject',
+      expectedCaseVersion: afterMapping.version,
+      reviewSnapshotId: mappingBody.successorSnapshot.id,
+      reviewPayloadHash: mappingBody.successorSnapshot.payloadHash,
+      reason: 'verify: reject after mapping',
+    }),
+  });
+  if (reject.status !== 200 && reject.status !== 201) throw sanitized('reject expected 200/201', reject);
+  const rejectedDetail = await detailAs(approver, mapCase.id);
+  if (rejectedDetail.status !== 'REJECTED') throw new VerifyError(`case after reject expected REJECTED (was ${rejectedDetail.status})`);
+  pass('an approver rejects the claim and the case becomes REJECTED');
+
+  // Approval flow on the older-result fixture (already resubmitted to v2).
+  const matchV2 = await request(`${core}/api/invoice-cases/${created.id}/match`, {
+    method: 'POST',
+    headers: { ...operator, 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'verify-match-v2' }),
+  });
+  if (matchV2.status !== 201) throw sanitized('v2 match expected 201', matchV2);
+  const freezeV2 = await request(`${core}/api/invoice-cases/${created.id}/review-snapshots`, {
+    method: 'POST',
+    headers: { ...approver, 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'verify-freeze-v2', expectedCaseVersion: (await detailAs(approver, created.id)).version }),
+  });
+  if (freezeV2.status !== 200 && freezeV2.status !== 201) throw sanitized('v2 freeze expected 200/201', freezeV2);
+  const freezeV2Body = JSON.parse(freezeV2.body);
+  const beforeApprove = await detailAs(approver, created.id);
+  const approve = await request(`${core}/api/invoice-cases/${created.id}/approve`, {
+    method: 'POST',
+    headers: { ...approver, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      requestId: 'verify-approve',
+      expectedCaseVersion: beforeApprove.version,
+      reviewSnapshotId: freezeV2Body.id,
+      reviewPayloadHash: freezeV2Body.payloadHash,
+    }),
+  });
+  if (approve.status !== 200 && approve.status !== 201) throw sanitized('approve expected 200/201', approve);
+  const approveBody = JSON.parse(approve.body);
+  if (!approveBody.paymentRequestId || approveBody.reviewSnapshotId !== freezeV2Body.id) {
+    throw new VerifyError('approve expected the frozen snapshot and a payment request');
+  }
+  pass('an approver approves the frozen subject and creates one payment request');
+
+  const handoffAfter = await request(`${core}/api/invoice-cases/${created.id}/handoff`, { headers: approver });
+  const handoffAfterBody = JSON.parse(handoffAfter.body);
+  if (handoffAfter.status !== 200 || handoffAfterBody.payment == null || handoffAfterBody.payment.paymentRequestId !== approveBody.paymentRequestId) {
+    throw sanitized('handoff after approval expected the created payment', handoffAfter);
+  }
+  pass('the handoff read exposes the payment request and the ACK is not a transfer confirmation');
+
+  const auditAfter = JSON.parse((await request(`${core}/api/invoice-cases/${created.id}/audit-entries?limit=50`, { headers: approver })).body);
+  if (!(auditAfter.entries ?? []).some((entry) => entry.action === 'APPROVE')) {
+    throw new VerifyError('audit history after approval expected an APPROVE entry');
+  }
+  pass('the approval is recorded in the audit history');
 
   return {};
 }
