@@ -8,3 +8,5 @@
 !.env.*.example
 .DS_Store
 *.log
+output/
+.playwright-cli/

@@ -27,10 +27,19 @@ test('supplier and submitter are exact-match server filters, blank ones omitted'
 });
 
 test('partial search text is sent verbatim to the chosen field without client normalization', () => {
-  const invoice = buildInvoiceCaseQuery({ status: null, supplierId: null, submittedBy: null, searchField: 'invoiceNumber', searchValue: 'inv 2026 01', page: 0, size: 20 });
+  const invoice = buildInvoiceCaseQuery({ status: null, supplierId: null, submittedBy: null, submittedFrom: null, submittedTo: null, searchField: 'invoiceNumber', searchValue: 'inv 2026 01', page: 0, size: 20 });
   assert.equal(invoice.invoiceNumber, 'inv 2026 01');
   assert.equal('purchaseOrderId' in invoice, false);
-  const po = buildInvoiceCaseQuery({ status: null, supplierId: null, submittedBy: null, searchField: 'purchaseOrderId', searchValue: 'po-1001', page: 0, size: 20 });
+  const po = buildInvoiceCaseQuery({ status: null, supplierId: null, submittedBy: null, submittedFrom: null, submittedTo: null, searchField: 'purchaseOrderId', searchValue: 'po-1001', page: 0, size: 20 });
   assert.equal(po.purchaseOrderId, 'po-1001');
   assert.equal('invoiceNumber' in po, false);
+});
+
+test('a resolved KST instant range is forwarded as inclusive server bounds', () => {
+  const query = buildInvoiceCaseQuery({ status: null, supplierId: null, submittedBy: null, submittedFrom: '2026-09-30T00:00:00.000000+09:00', submittedTo: '2026-09-30T23:59:59.999999+09:00', searchField: 'invoiceNumber', searchValue: null, page: 0, size: 20 });
+  assert.equal(query.submittedFrom, '2026-09-30T00:00:00.000000+09:00');
+  assert.equal(query.submittedTo, '2026-09-30T23:59:59.999999+09:00');
+  const none = buildInvoiceCaseQuery({ status: null, supplierId: null, submittedBy: null, submittedFrom: null, submittedTo: null, searchField: 'invoiceNumber', searchValue: null, page: 0, size: 20 });
+  assert.equal('submittedFrom' in none, false);
+  assert.equal('submittedTo' in none, false);
 });

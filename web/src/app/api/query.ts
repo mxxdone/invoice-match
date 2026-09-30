@@ -8,6 +8,8 @@ export type InvoiceCaseFilters = {
   status: string | null;
   supplierId: string | null;
   submittedBy: string | null;
+  submittedFrom: string | null;
+  submittedTo: string | null;
   searchField: SearchField;
   searchValue: string | null;
   page: number;
@@ -29,6 +31,14 @@ export function buildInvoiceCaseQuery(filters: InvoiceCaseFilters): Record<strin
   const submittedBy = filters.submittedBy?.trim();
   if (submittedBy) {
     query.submittedBy = submittedBy;
+  }
+  // The inclusive instant range is resolved from the user's KST dates by
+  // `resolveSubmittedRange`; here only a present value is forwarded.
+  if (filters.submittedFrom) {
+    query.submittedFrom = filters.submittedFrom;
+  }
+  if (filters.submittedTo) {
+    query.submittedTo = filters.submittedTo;
   }
   const searchValue = filters.searchValue?.trim();
   if (searchValue) {

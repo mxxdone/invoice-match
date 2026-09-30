@@ -2,12 +2,14 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon, PageHeader, Shell } from '../ui';
 import { useAuth } from '../auth';
 import { fetchInvoiceCases } from '../api/client';
 import { ApiRequestError } from '../api/transport';
 import { formatInstant, presentStatus, type InvoiceCasePage } from '../api/contract';
+import { resolveSubmittedRange } from '../api/daterange';
+import { Generation } from '../api/generation';
 import type { InvoiceCaseFilters, SearchField } from '../api/query';
 import { pageNumbers } from './list-preview';
 
@@ -34,15 +36,23 @@ export default function Cases() {
   const [supplierId, setSupplierId] = useState<string | null>(null);
   const [submitterDraft, setSubmitterDraft] = useState('');
   const [submittedBy, setSubmittedBy] = useState<string | null>(null);
+  const [rangeStartDraft, setRangeStartDraft] = useState('');
+  const [rangeEndDraft, setRangeEndDraft] = useState('');
+  const [rangeError, setRangeError] = useState<string | null>(null);
+  const [submittedFrom, setSubmittedFrom] = useState<string | null>(null);
+  const [submittedTo, setSubmittedTo] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const [size, setSize] = useState(20);
   const [selected, setSelected] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   const [loaded, setLoaded] = useState<LoadResult | null>(null);
+  // Invalidates an in-flight query when filters change, so an outdated response
+  // can never overwrite a newer one even if its abort is delayed.
+  const requests = useRef(new Generation());
 
   const filters = useMemo<InvoiceCaseFilters>(
-    () => ({ status, supplierId, submittedBy, searchField, searchValue, page, size }),
-    [status, supplierId, submittedBy, searchField, searchValue, page, size],
+    () => ({ status, supplierId, submittedBy, submittedFrom, submittedTo, searchField, searchValue, page, size }),
+    [status, supplierId, submittedBy, submittedFrom, submittedTo, searchField, searchValue, page, size],
   );
   const requestKey = useMemo(() => `${JSON.stringify(filters)}#${reloadToken}`, [filters, reloadToken]);
   const isLoading = !loaded || loaded.key !== requestKey;
@@ -56,11 +66,14 @@ export default function Cases() {
   useEffect(() => {
     if (!credentials) return;
     const controller = new AbortController();
+    const token = requests.current.next();
     fetchInvoiceCases(credentials, filters, controller.signal)
       .then(pageResult => {
+        if (!requests.current.isCurrent(token)) return;
         setLoaded({ key: requestKey, state: pageResult.items.length ? 'ready' : 'empty', result: pageResult, error: '' });
       })
       .catch((caught: unknown) => {
+        if (!requests.current.isCurrent(token)) return;
         if (caught instanceof Error && caught.name === 'AbortError') return;
         if (caught instanceof ApiRequestError && caught.status === 401) {
           logout();
@@ -93,12 +106,26 @@ export default function Cases() {
     setSubmittedBy(value ? value : null);
     resetPage();
   }
+  // The two date inputs map to the KST inclusive instant range. An invalid or
+  // reversed range is reported and not applied; a valid change resets page 0.
+  function commitRange(nextStart: string, nextEnd: string) {
+    const resolved = resolveSubmittedRange(nextStart, nextEnd);
+    if (resolved.error) {
+      setRangeError(resolved.error);
+      return;
+    }
+    setRangeError(null);
+    setSubmittedFrom(resolved.from);
+    setSubmittedTo(resolved.to);
+    resetPage();
+  }
   function commitOnEnter(event: React.KeyboardEvent<HTMLInputElement>, commit: () => void) {
     if (event.key === 'Enter') { event.preventDefault(); commit(); }
   }
   function resetFilters() {
     setDraftQuery(''); setSearchValue(null); setSearchField('invoiceNumber');
     setSupplierDraft(''); setSupplierId(null); setSubmitterDraft(''); setSubmittedBy(null);
+    setRangeStartDraft(''); setRangeEndDraft(''); setRangeError(null); setSubmittedFrom(null); setSubmittedTo(null);
     setStatus('all'); resetPage();
   }
   function retry() { setReloadToken(value => value + 1); }
@@ -183,8 +210,13 @@ export default function Cases() {
       <div className="list-filter-row">
         <label className="small-filter">공급사 ID<input aria-label="공급사 ID 필터" maxLength={64} placeholder="정확히 일치" value={supplierDraft} onChange={event => setSupplierDraft(event.target.value)} onBlur={commitSupplier} onKeyDown={event => commitOnEnter(event, commitSupplier)} /></label>
         <label className="small-filter">제출자 계정<input aria-label="제출자 계정 필터" maxLength={64} placeholder="정확히 일치" value={submitterDraft} onChange={event => setSubmitterDraft(event.target.value)} onBlur={commitSubmitter} onKeyDown={event => commitOnEnter(event, commitSubmitter)} /></label>
+        <label className="small-filter">제출일 시작<input type="date" aria-label="제출일 시작" value={rangeStartDraft} onChange={event => { setRangeStartDraft(event.target.value); commitRange(event.target.value, rangeEndDraft); }} /></label>
+        <label className="small-filter">제출일 끝<input type="date" aria-label="제출일 끝" value={rangeEndDraft} onChange={event => { setRangeEndDraft(event.target.value); commitRange(rangeStartDraft, event.target.value); }} /></label>
         <button className="button filter-reset" onClick={resetFilters}>필터 초기화</button>
       </div>
+      {rangeError
+        ? <p className="list-search-help" role="alert">{rangeError}</p>
+        : <p className="list-search-help">제출일은 Asia/Seoul(KST) 일자 기준 · 시작일 00:00:00부터 종료일 다음날 시작 직전(1µs)까지 포함</p>}
       {searchValue && <div className="applied-query" role="status">적용된 검색: {searchField === 'invoiceNumber' ? '청구번호' : '발주번호'} = {searchValue}<button className="icon-button" aria-label="검색 조건 지우기" onClick={() => { setSearchValue(null); setDraftQuery(''); resetPage(); }}><Icon name="close" size={12} /></button></div>}
     </div>
     {body}

@@ -28,7 +28,7 @@ test('me and list call the fixed same-origin proxy with a per-request Basic head
     });
   }, async () => {
     const me = await fetchCurrentUser(credentials);
-    const page = await fetchInvoiceCases(credentials, { status: 'REVIEW_PENDING', supplierId: 'SUP-1', submittedBy: null, searchField: 'invoiceNumber', searchValue: 'inv 01', page: 2, size: 50 });
+    const page = await fetchInvoiceCases(credentials, { status: 'REVIEW_PENDING', supplierId: 'SUP-1', submittedBy: null, submittedFrom: '2026-09-30T00:00:00.000000+09:00', submittedTo: '2026-09-30T23:59:59.999999+09:00', searchField: 'invoiceNumber', searchValue: 'inv 01', page: 2, size: 50 });
     assert.equal(me.username, 'approver');
     assert.equal(page.totalItems, 0);
   });
@@ -44,6 +44,8 @@ test('me and list call the fixed same-origin proxy with a per-request Basic head
   assert.equal(listUrl.searchParams.get('status'), 'REVIEW_PENDING');
   assert.equal(listUrl.searchParams.get('supplierId'), 'SUP-1');
   assert.equal(listUrl.searchParams.get('invoiceNumber'), 'inv 01');
+  assert.equal(listUrl.searchParams.get('submittedFrom'), '2026-09-30T00:00:00.000000+09:00');
+  assert.equal(listUrl.searchParams.get('submittedTo'), '2026-09-30T23:59:59.999999+09:00');
   assert.equal(listUrl.searchParams.has('submittedBy'), false);
 });
 

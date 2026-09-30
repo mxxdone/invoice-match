@@ -4,6 +4,11 @@
 
 export const DEFAULT_CORE_API_URL = 'http://localhost:8080';
 
+// Bounded upstream deadline so a hung Core API cannot hold the proxy request
+// open forever. A redirect is never followed (the request carries the Basic
+// header and must not leak it to another origin).
+export const CORE_API_TIMEOUT_MS = 10000;
+
 const ALLOWED_PATHS = new Set(['api/me', 'api/invoice-cases']);
 
 export function coreApiUrl(env: string | undefined): string {

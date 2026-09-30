@@ -5,11 +5,13 @@ import {
   useCallback,
   useContext,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
 import { fetchCurrentUser } from './api/client';
 import { ApiRequestError, type Credentials } from './api/transport';
+import { Generation } from './api/generation';
 import type { CurrentUser } from './api/contract';
 
 // Phase 1 local/demo authentication state. Credentials live only in this React
@@ -34,17 +36,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A logout (or a newer login attempt) invalidates an in-flight login, so a
+  // late success never signs the user back in after they signed out.
+  const sessions = useRef(new Generation());
 
   const login = useCallback(async (next: Credentials) => {
+    const token = sessions.current.next();
     setIsSubmitting(true);
     setError(null);
     try {
       const me = await fetchCurrentUser(next);
+      if (!sessions.current.isCurrent(token)) return false;
       setCredentials(next);
       setUser(me);
       setIsSubmitting(false);
       return true;
     } catch (caught) {
+      if (!sessions.current.isCurrent(token)) return false;
       setCredentials(null);
       setUser(null);
       setIsSubmitting(false);
@@ -60,9 +68,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
+    sessions.current.next();
     setCredentials(null);
     setUser(null);
     setError(null);
+    setIsSubmitting(false);
   }, []);
 
   const value = useMemo<AuthContextValue>(
