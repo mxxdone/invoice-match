@@ -43,7 +43,10 @@ function draftsFromFilters(filters: InvoiceCaseFilters): Drafts {
 function Cases() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { credentials, sessionId, isAuthenticated, logout } = useAuth();
+  const { credentials, user, sessionId, isAuthenticated, logout } = useAuth();
+  // A submitter-only account is already row-scoped to its own cases by the
+  // server, so the 제출자 filter is meaningless for it and is hidden.
+  const canSeeAllSubmitters = (user?.roles ?? []).some((role) => role === 'APPROVER' || role === 'OPERATOR');
 
   // The committed filters live in the URL so navigating into a case detail and
   // back restores the same server query; only the uncommitted text inputs are
@@ -160,7 +163,7 @@ function Cases() {
       </div>
       <div className="table-summary list-pagination">
         <span>총 {totalItems}건 · {totalItems ? filters.page * filters.size + 1 : 0}–{Math.min(filters.page * filters.size + rows.length, totalItems)}건 표시{isLoading ? ' · 불러오는 중' : ''}</span>
-        <label className="small-filter">표시 수<select aria-label="페이지당 표시 수" value={filters.size} onChange={event => updateFilters({ size: Number(event.target.value), page: 0 })}>{[20, 50, 100].map(option => <option key={option} value={option}>{option}건씩</option>)}</select></label>
+        <label className="small-filter">페이지당 표시 수<select aria-label="페이지당 표시 수" value={filters.size} onChange={event => updateFilters({ size: Number(event.target.value), page: 0 })}>{[20, 50, 100].map(option => <option key={option} value={option}>{option}</option>)}</select></label>
         <nav className="pagination" aria-label="목록 페이지">
           <button className="button" disabled={filters.page === 0} onClick={() => updateFilters({ page: filters.page - 1 })}>이전</button>
           {pageNumbers(currentPage, totalPages).map(item => typeof item === 'number' ? <button key={item} className={`page-number ${item === currentPage ? 'is-active' : ''}`} aria-label={`${item}페이지`} aria-current={item === currentPage ? 'page' : undefined} onClick={() => updateFilters({ page: item - 1 })}>{item}</button> : <span key={item} className="page-gap" aria-hidden="true">…</span>)}
@@ -203,20 +206,26 @@ function Cases() {
     <div className="list-filter-area">
       <form className="list-search-form" onSubmit={applySearch}>
         <select aria-label="검색 항목" value={drafts.searchField} onChange={event => patchDrafts({ searchField: event.target.value as SearchField })}><option value="invoiceNumber">청구번호</option><option value="purchaseOrderId">발주번호</option></select>
-        <label className="search"><input aria-label="청구서 검색" aria-describedby="list-search-help" placeholder={drafts.searchField === 'invoiceNumber' ? '청구번호의 일부 입력 · 예: 0142' : '발주번호의 일부 입력 · 예: 0142'} value={drafts.query} onChange={event => patchDrafts({ query: event.target.value })} /></label>
+        <label className="search"><input aria-label="청구서 검색" placeholder={drafts.searchField === 'invoiceNumber' ? '청구번호 검색' : '발주번호 검색'} value={drafts.query} onChange={event => patchDrafts({ query: event.target.value })} /></label>
         <button className="button" type="submit"><Icon name="search" />검색</button>
-        <span id="list-search-help" className="list-search-help">번호의 일부 입력 · Enter 또는 검색 · 서버 부분 검색</span>
       </form>
       <div className="list-filter-row">
         <label className="small-filter">공급사 ID<input aria-label="공급사 ID 필터" maxLength={64} placeholder="정확히 일치" value={drafts.supplier} onChange={event => patchDrafts({ supplier: event.target.value })} onBlur={commitSupplier} onKeyDown={event => commitOnEnter(event, commitSupplier)} /></label>
-        <label className="small-filter">제출자 계정<input aria-label="제출자 계정 필터" maxLength={64} placeholder="정확히 일치" value={drafts.submitter} onChange={event => patchDrafts({ submitter: event.target.value })} onBlur={commitSubmitter} onKeyDown={event => commitOnEnter(event, commitSubmitter)} /></label>
-        <label className="small-filter">제출일 시작<input type="date" aria-label="제출일 시작" value={drafts.rangeStart} onChange={event => { patchDrafts({ rangeStart: event.target.value }); commitRange(event.target.value, drafts.rangeEnd); }} /></label>
-        <label className="small-filter">제출일 끝<input type="date" aria-label="제출일 끝" value={drafts.rangeEnd} onChange={event => { patchDrafts({ rangeEnd: event.target.value }); commitRange(drafts.rangeStart, event.target.value); }} /></label>
+        {canSeeAllSubmitters ? (
+          <label className="small-filter">제출자 계정<input aria-label="제출자 계정 필터" maxLength={64} placeholder="정확히 일치" value={drafts.submitter} onChange={event => patchDrafts({ submitter: event.target.value })} onBlur={commitSubmitter} onKeyDown={event => commitOnEnter(event, commitSubmitter)} /></label>
+        ) : (
+          <span className="list-scope-note" role="status">내가 제출한 청구서</span>
+        )}
+        <label className="small-filter date-range">제출일
+          <input type="date" aria-label="제출일 시작" value={drafts.rangeStart} onChange={event => { patchDrafts({ rangeStart: event.target.value }); commitRange(event.target.value, drafts.rangeEnd); }} />
+          <span aria-hidden="true">~</span>
+          <input type="date" aria-label="제출일 끝" value={drafts.rangeEnd} onChange={event => { patchDrafts({ rangeEnd: event.target.value }); commitRange(drafts.rangeStart, event.target.value); }} />
+        </label>
         <button className="button filter-reset" onClick={resetFilters}>필터 초기화</button>
       </div>
       {rangeError
         ? <p className="list-search-help" role="alert">{rangeError}</p>
-        : <p className="list-search-help">제출일은 Asia/Seoul(KST) 일자 기준 · 시작일 00:00:00부터 종료일 다음날 시작 직전(1µs)까지 포함</p>}
+        : <p className="list-search-help">선택한 날짜를 모두 포함합니다. (한국 시간)</p>}
       {filters.searchValue && <div className="applied-query" role="status">적용된 검색: {filters.searchField === 'invoiceNumber' ? '청구번호' : '발주번호'} = {filters.searchValue}<button className="icon-button" aria-label="검색 조건 지우기" onClick={() => updateFilters({ searchValue: null, page: 0 })}><Icon name="close" size={12} /></button></div>}
     </div>
     {body}

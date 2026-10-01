@@ -7,7 +7,7 @@ import { Icon, Shell } from '../../ui';
 import { useAuth } from '../../auth';
 import { formatInstant, presentStatus } from '../../api/contract';
 import type { EvidenceBundleSummary } from '../../api/contract';
-import { comparisonRows, decisionSubjectPayload, latestBundle, reviewSubjectBinding } from './detail-model';
+import { canReadReview, comparisonRows, decisionSubjectPayload, detailTabs, latestBundle, resolveDetailTab, reviewSubjectBinding } from './detail-model';
 import {
   AuditPanel,
   ComparePanel,
@@ -21,12 +21,6 @@ import { useCaseDetail } from './use-case-detail';
 import { useCaseActions } from './use-case-actions';
 import { MutationFailureNotice } from '../mutation-failure-notice';
 
-const REVIEW_ROLES = ['APPROVER', 'OPERATOR'];
-
-function canReadReview(roles: string[]): boolean {
-  return roles.some((role) => REVIEW_ROLES.includes(role));
-}
-
 function Detail() {
   const params = useParams<{ id: string }>();
   const caseId = params?.id ?? '';
@@ -36,7 +30,26 @@ function Detail() {
   const reviewReader = canReadReview(user?.roles ?? []);
   const isOperator = (user?.roles ?? []).includes('OPERATOR');
   const isApprover = (user?.roles ?? []).includes('APPROVER');
-  const [tab, setTab] = useState('compare');
+  // The allowed tabs and the default depend on the account roles. A role/session
+  // switch resets to the default allowed tab, so a tab the previous account could
+  // see is never inherited. An explicit `?tab=` that is not allowed shows a
+  // permission notice instead of the (still server-blocked) restricted content.
+  const roles = user?.roles ?? [];
+  const tabs = detailTabs(roles);
+  const allowedTabIds: string[] = tabs.map(([id]) => id);
+  const defaultTab = tabs[0][0];
+  const requestedTab = searchParams.get('tab');
+  const resolvedTab = resolveDetailTab(roles, requestedTab);
+  const unsupportedTab = resolvedTab.unsupported;
+  const tabScope = `${sessionId}#${reviewReader ? 'review' : 'basic'}`;
+  const [tabState, setTabState] = useState(() => ({ key: tabScope, value: resolvedTab.tab as string }));
+  if (tabState.key !== tabScope) {
+    setTabState({ key: tabScope, value: defaultTab });
+  }
+  const tab = tabState.key === tabScope ? tabState.value : defaultTab;
+  const selectTab = (id: string) => {
+    if (allowedTabIds.includes(id)) setTabState({ key: tabScope, value: id });
+  };
   const [reloadToken, setReloadToken] = useState(0);
   const [reasonPanel, setReasonPanel] = useState<'supplement' | 'reject' | null>(null);
   const [reason, setReason] = useState('');
@@ -162,13 +175,6 @@ function Detail() {
     await actions.approve(decisionSubjectPayload(data.detail.version, snapshot));
   }
 
-  const tabs: Array<[string, string]> = [
-    ['compare', '발주·검수·청구 비교'],
-    ['evidence', '제출 근거'],
-    ['decisions', '검토 결정'],
-    ['audit', '감사 이력'],
-  ];
-
   return (
     <Shell active="cases" preview={false}>
       <header className="page-header">
@@ -192,7 +198,7 @@ function Detail() {
           <div><dt>발주번호</dt><dd>{data.detail.purchaseOrderId}</dd></div>
           <div><dt>제출자</dt><dd>{data.detail.submittedBy}</dd></div>
           <div><dt>청구서 변경 버전</dt><dd>v{data.detail.version}</dd></div>
-          <div><dt>현재 revision</dt><dd>{data.detail.currentRevision ? `${data.detail.currentRevision.revisionNumber} · ${data.detail.currentRevision.status}` : '—'}</dd></div>
+          <div><dt>작성 차수</dt><dd>{data.detail.currentRevision ? `#${data.detail.currentRevision.revisionNumber}` : '—'}</dd></div>
           <div><dt>증빙 버전</dt><dd>{newest ? `v${newest.version}` : '—'}</dd></div>
           <div><dt>제출 시각 (KST)</dt><dd>{formatInstant(newest?.submittedAt ?? null)}</dd></div>
         </dl>
@@ -218,7 +224,7 @@ function Detail() {
 
       <div className="tabs" role="tablist" aria-label="청구서 상세">
         {tabs.map(([id, label]) => (
-          <button key={id} role="tab" id={`tab-${id}`} aria-controls={`panel-${id}`} aria-selected={tab === id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}</button>
+          <button key={id} role="tab" id={`tab-${id}`} aria-controls={`panel-${id}`} aria-selected={tab === id} className={tab === id ? 'active' : ''} onClick={() => selectTab(id)}>{label}</button>
         ))}
       </div>
 
@@ -274,8 +280,13 @@ function Detail() {
               <div className="review-warning" role="status">
                 <div>
                   <strong>승인 대상 확인</strong>
-                  <p>검토 #{snapshot.snapshotNumber} · 검토 지문 {snapshot.payloadHash.slice(0, 8)} · 청구서 v{data.detail.version} · 현재 자료와 일치함</p>
-                  <p>서버가 표시된 검토 대상·지문과 최신성을 재검증합니다. 화면에 보이는 값으로만 결정합니다.</p>
+                  <p>검토 #{snapshot.snapshotNumber} · 청구서 v{data.detail.version} · 현재 자료와 일치함</p>
+                  <p>서버가 표시된 검토 대상과 최신성을 재검증합니다. 화면에 보이는 값으로만 결정합니다.</p>
+                  <details className="snapshot-technical">
+                    <summary>기술 정보 보기</summary>
+                    <p>검토 지문(해시): {snapshot.payloadHash}</p>
+                    <p>검토 대상 snapshot #{snapshot.snapshotNumber} · 증빙 v{snapshot.evidenceBundleVersion} · 비교 결과 #{snapshot.matchResultNumber ?? '—'}</p>
+                  </details>
                 </div>
               </div>
 
@@ -308,7 +319,9 @@ function Detail() {
       </div>
 
       <section className="tab-content" role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
-        {tab === 'compare' ? <ComparePanel data={data} />
+        {unsupportedTab ? (
+          <SectionMessage tone="forbidden">이 탭은 현재 계정 역할에서 허용되지 않습니다. 서버도 이 계정의 해당 자료 조회를 허용하지 않습니다.</SectionMessage>
+        ) : tab === 'compare' ? <ComparePanel data={data} />
           : tab === 'evidence' ? <EvidencePanel data={data} />
             : tab === 'decisions' ? <DecisionsPanel data={data} />
               : <AuditPanel data={data} entries={auditEntries} nextCursor={auditNextCursor} loadingMore={auditLoadingMore} error={auditError} onMore={loadMoreAudit} />}

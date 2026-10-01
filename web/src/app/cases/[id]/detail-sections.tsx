@@ -114,7 +114,7 @@ export function ComparePanel({ data }: { data: CaseDetailData }) {
   const currentHash = newest?.payloadHash ?? null;
 
   if (!data.canReadReview) {
-    return <SectionMessage tone="forbidden">비교 결과는 승인자·운영자만 조회할 수 있습니다. 제출한 청구 라인은 &lsquo;제출 근거&rsquo; 탭에서 확인할 수 있습니다.</SectionMessage>;
+    return <SectionMessage tone="forbidden">비교 결과는 승인자·운영자만 조회할 수 있습니다. 제출한 청구 라인은 &lsquo;제출 이력&rsquo; 탭에서 확인할 수 있습니다.</SectionMessage>;
   }
   if (match.status === 'forbidden') {
     return <><FreshnessNotice data={data} /><SectionMessage tone="forbidden">서버가 이 계정의 비교 결과 조회를 허용하지 않았습니다.</SectionMessage></>;
@@ -146,9 +146,14 @@ export function ComparePanel({ data }: { data: CaseDetailData }) {
           {match.data.payload.normal ? <><Icon name="check" size={12} />당시 자료 서버판정: 정상</> : <><span className="exception-dot" />당시 자료 서버판정: 확인 필요</>}
         </span>
         <span className="demo-description">
-          비교 결과 #{match.data.resultNumber} · 증빙 v{bundleVersion} 기준{stale ? ' · 오래된 결과' : ''} · 판정 {issues}개 라인 · 비교 해시 {shortId(match.data.resultHash)}
+          비교 결과 #{match.data.resultNumber} · 증빙 v{bundleVersion} 기준{stale ? ' · 오래된 결과' : ''} · 판정 {issues}개 라인
         </span>
       </div>
+      <details className="snapshot-technical">
+        <summary>기술 정보 보기</summary>
+        <p>비교 해시: {match.data.resultHash}</p>
+        <p>증빙 v{bundleVersion} 지문: {match.data.payload.evidenceBundle.payloadHash}</p>
+      </details>
       {caseExceptions.length > 0 && (
         <SectionMessage tone="notice">
           <strong>확인 필요 항목 (청구서 전체)</strong>
@@ -218,19 +223,24 @@ export function EvidencePanel({ data }: { data: CaseDetailData }) {
     bundleBody = <SectionMessage tone="error">증빙 목록을 불러오지 못했습니다. {data.bundles.message}</SectionMessage>;
   } else if (bundles.length > 0) {
     bundleBody = (
-      <table className="history-table">
-        <caption className="sr-only">동결된 증빙 버전 목록</caption>
-        <thead><tr><th>버전</th><th>제출 시각 (KST)</th><th>지문(해시)</th></tr></thead>
-        <tbody>
-          {bundles.map((bundle) => (
-            <tr key={bundle.version}>
-              <td>v{bundle.version}{newest?.version === bundle.version ? ' · 최신' : ''}</td>
-              <td>{formatInstant(bundle.submittedAt)}</td>
-              <td className="muted-text">{shortId(bundle.payloadHash)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <>
+        <table className="history-table">
+          <caption className="sr-only">제출 이력 목록</caption>
+          <thead><tr><th>제출 차수</th><th>제출 시각 (KST)</th></tr></thead>
+          <tbody>
+            {bundles.map((bundle) => (
+              <tr key={bundle.version}>
+                <td>#{bundle.version}{newest?.version === bundle.version ? ' · 최신' : ''}</td>
+                <td>{formatInstant(bundle.submittedAt)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <details className="snapshot-technical">
+          <summary>기술 정보 보기</summary>
+          {bundles.map((bundle) => <p key={bundle.version}>제출 차수 #{bundle.version} 지문(해시): {bundle.payloadHash}</p>)}
+        </details>
+      </>
     );
   } else {
     bundleBody = <SectionMessage tone="notice">{data.detail.status === 'DRAFT' ? '작성 중이라 아직 동결된 증빙이 없습니다.' : '동결된 증빙 버전이 없습니다.'}</SectionMessage>;
@@ -250,15 +260,15 @@ export function EvidencePanel({ data }: { data: CaseDetailData }) {
   return (
     <div className="history-content">
       <div className="section-heading">
-        <h2>제출 근거</h2>
+        <h2>제출 이력</h2>
         <span>
           {data.bundles.status === 'forbidden'
-            ? '증빙 목록 권한 없음'
+            ? '제출 이력 권한 없음'
             : data.bundles.status === 'error'
-              ? '증빙 목록 조회 실패'
+              ? '제출 이력 조회 실패'
               : bundles.length > 0
-                ? `증빙 ${bundles.length}개 버전`
-                : '제출된 증빙 없음'}
+                ? `제출 ${bundles.length}건`
+                : '제출된 이력 없음'}
         </span>
       </div>
       {bundleBody}
@@ -324,9 +334,12 @@ export function DecisionsPanel({ data }: { data: CaseDetailData }) {
                   <div><dt>대상 청구서 변경 버전</dt><dd>v{snapshot.data.targetCaseVersion}</dd></div>
                   <div><dt>증빙 버전</dt><dd>v{snapshot.data.evidenceBundleVersion}</dd></div>
                   <div><dt>비교 결과 번호</dt><dd>{snapshot.data.matchResultNumber === null ? '—' : `#${snapshot.data.matchResultNumber}`}</dd></div>
-                  <div><dt>검토 지문(해시)</dt><dd>{shortId(snapshot.data.payloadHash)}</dd></div>
                   <div><dt>생성 시각 (KST)</dt><dd>{formatInstant(snapshot.data.createdAt)}</dd></div>
                 </dl>
+                <details className="snapshot-technical">
+                  <summary>기술 정보 보기</summary>
+                  <p>검토 지문(해시): {snapshot.data.payloadHash}</p>
+                </details>
                 <FreshnessBlock freshness={data.freshness} />
               </>}
       <div className="section-heading"><h3>결정 이력</h3></div>

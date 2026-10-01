@@ -101,8 +101,8 @@ test('a hand-off 403 is shown as a permission result, not empty', () => {
 
   const evidence = renderText(createElement(EvidencePanel, { data: baseData({ bundles: { status: 'forbidden' } }) }));
   assert.match(evidence, /증빙 목록을 조회할 권한이 없습니다/);
-  assert.match(evidence, /증빙 목록 권한 없음/);
-  assert.equal(evidence.includes('제출된 증빙 없음'), false);
+  assert.match(evidence, /제출 이력 권한 없음/);
+  assert.equal(evidence.includes('제출된 이력 없음'), false);
 });
 
 test('a failed audit page keeps the records and shows a scoped retry', () => {

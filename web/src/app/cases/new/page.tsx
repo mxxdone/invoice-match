@@ -151,7 +151,9 @@ function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supple
   // hook's own state avoids a stale-render case id.
   useEffect(() => {
     if (composer.status === 'submitted' && composer.submittedBundleVersion !== null && composer.caseId) {
-      router.push(`/cases/${composer.caseId}`);
+      // Land on the case detail with the submission history tab selected; the
+      // detail defaults back to an allowed tab if the role cannot see it.
+      router.push(`/cases/${composer.caseId}?tab=evidence`);
     }
   }, [composer.status, composer.submittedBundleVersion, composer.caseId, router]);
 
@@ -244,7 +246,7 @@ function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supple
         eyebrow="청구 업무 / 수동 입력"
         title={supplementId ? '보완 청구 수정' : draftId ? '초안 편집' : '청구 작성'}
         subtitle={supplementId
-          ? '서버의 최신 버전으로 보완 revision을 열고 내용을 저장한 뒤 다시 제출합니다.'
+          ? '서버의 최신 버전으로 보완 작성을 시작하고 내용을 저장한 뒤 다시 제출합니다.'
           : draftId
             ? '작성 중 청구서를 서버에서 불러와 내용을 수정하고 저장하거나 제출합니다.'
             : '청구 정보를 입력하고 품목별 수량과 단가를 확인합니다. 생성 → 초안 저장 → 제출은 서버의 별도 작업입니다.'}

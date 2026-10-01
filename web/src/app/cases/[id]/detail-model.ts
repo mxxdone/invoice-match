@@ -59,6 +59,34 @@ export type ClaimLines = {
   lines: InvoiceLineDetail[];
 };
 
+// Role-aware detail tabs (pure). A reviewer (APPROVER and/or OPERATOR) may see
+// the comparison, submission history, decisions and audit; a submitter-only
+// account only has the submission history. A multi-role account gets the union.
+// The server still authorizes every read; this only decides what the UI offers.
+export type DetailTab = 'compare' | 'evidence' | 'decisions' | 'audit';
+export const REVIEW_ROLES = ['APPROVER', 'OPERATOR'];
+
+export function canReadReview(roles: string[]): boolean {
+  return roles.some((role) => REVIEW_ROLES.includes(role));
+}
+
+export function detailTabs(roles: string[]): Array<[DetailTab, string]> {
+  return canReadReview(roles)
+    ? [['compare', '발주·검수·청구 비교'], ['evidence', '제출 이력'], ['decisions', '검토 결정'], ['audit', '감사 이력']]
+    : [['evidence', '제출 이력']];
+}
+
+// Resolves the tab to show from an explicit `?tab=` value. A tab the roles do
+// not allow is not shown; the caller displays a permission notice instead.
+export function resolveDetailTab(roles: string[], requested: string | null): { tab: DetailTab; unsupported: boolean } {
+  const allowed = detailTabs(roles).map(([id]) => id);
+  const defaultTab = allowed[0];
+  if (requested !== null && (allowed as string[]).includes(requested)) {
+    return { tab: requested as DetailTab, unsupported: false };
+  }
+  return { tab: defaultTab, unsupported: requested !== null && !(allowed as string[]).includes(requested) };
+}
+
 export function latestBundle(bundles: EvidenceBundleSummary[]): EvidenceBundleSummary | null {
   return bundles.reduce<EvidenceBundleSummary | null>(
     (latest, bundle) => (latest === null || bundle.version > latest.version ? bundle : latest),
