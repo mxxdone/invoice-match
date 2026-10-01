@@ -573,11 +573,11 @@ focused JUnit 2건과 Node fixture 단위 3건이 통과한다. 이 JUnit은 `Pa
 
 ### 문제
 
-`main`(`766889c`)의 CI 명령 `./gradlew --no-daemon clean test bootJar`에서 `PaymentResultWebhookIntegrationTest` 12건 중 10건이 실패했다. 서명된 webhook을 보내는 테스트가 모두 실제 401을 받아 `expected 200/409/404 but was 401`로 끝났고, 서명 실패를 기대하는 위조/만료/단독 insert 2건만 통과했다. Windows 로컬 전체 suite에서는 재현되지 않았다.
+사용자 제공 CI 로그에서 `PaymentResultWebhookIntegrationTest` 10건의 실패를 확인했다. 로컬 `main`(`766889c`)에 CI 환경변수를 적용해 재현하니 12건 중 동일한 10건이 실패했다. 서명된 webhook 요청은 모두 401을 받았고, 잘못된 서명 거부와 직접 DB 삽입 방어를 검사하는 나머지 2건은 통과했다. CI 환경변수를 적용하지 않은 이전 Windows 전체 suite는 통과했었다. 실패 run의 SHA는 미확인이다.
 
 ### 원인
 
-테스트는 하드코딩 상수 `SECRET = "test-webhook-secret"`으로 HMAC을 계산하지만, `application-test.yml`의 `mock-erp.webhook.secret=test-webhook-secret`보다 OS 환경변수 `MOCK_ERP_WEBHOOK_SECRET=ci-only-webhook-secret`이 우선한다. `application.yml`이 `secret: ${MOCK_ERP_WEBHOOK_SECRET:}`로 바인딩하므로 CI 컨테이너에서 애플리케이션 검증 secret과 테스트 서명 secret이 달라져 서명 검증이 항상 실패했다. 즉 제품 코드가 아니라 테스트가 주변 환경에 암묵적으로 의존한 문제다.
+테스트는 상수 `SECRET = "test-webhook-secret"`으로 HMAC을 계산하지만, `application-test.yml`의 `mock-erp.webhook.secret=test-webhook-secret`보다 OS 환경변수 `MOCK_ERP_WEBHOOK_SECRET=ci-only-webhook-secret`이 우선한다. CI 환경변수를 적용하면 애플리케이션 검증 secret과 테스트 서명 secret이 달라져 서명 검증이 실패했다. 테스트가 주변 환경에 암묵적으로 의존한 문제다.
 
 ### 해결
 
