@@ -569,6 +569,26 @@ focused JUnit 2건과 Node fixture 단위 3건이 통과한다. 이 JUnit은 `Pa
 
 관련 커밋: `fe97247`, `3a1285c`
 
+## R1-02 — CI 환경변수가 테스트 서명 secret을 덮어써 webhook 통합 테스트가 실패한 문제
+
+### 문제
+
+사용자 제공 CI 로그에서 `PaymentResultWebhookIntegrationTest` 10건의 실패를 확인했다. 로컬 `main`(`766889c`)에 CI 환경변수를 적용해 재현하니 12건 중 동일한 10건이 실패했다. 서명된 webhook 요청은 모두 401을 받았고, 잘못된 서명 거부와 직접 DB 삽입 방어를 검사하는 나머지 2건은 통과했다. CI 환경변수를 적용하지 않은 이전 Windows 전체 suite는 통과했었다. 실패 run의 SHA는 미확인이다.
+
+### 원인
+
+테스트는 상수 `SECRET = "test-webhook-secret"`으로 HMAC을 계산하지만, `application-test.yml`의 `mock-erp.webhook.secret=test-webhook-secret`보다 OS 환경변수 `MOCK_ERP_WEBHOOK_SECRET=ci-only-webhook-secret`이 우선한다. CI 환경변수를 적용하면 애플리케이션 검증 secret과 테스트 서명 secret이 달라져 서명 검증이 실패했다. 테스트가 주변 환경에 암묵적으로 의존한 문제다.
+
+### 해결
+
+`PaymentResultWebhookIntegrationTest`의 `@DynamicPropertySource`에서 서명 상수와 동일한 값으로 `mock-erp.webhook.secret`을 등록했다. 테스트 전용 dynamic property는 OS 환경변수와 profile 속성보다 우선하므로 주변 CI env와 무관하게 테스트가 자기 서명 secret을 고정한다. 제품 HMAC 검증, 커밋된 CI env, `application-test.yml`은 바꾸지 않았고 기존 위조·만료·누락 서명 거부 검증도 유지했다.
+
+### 검증과 교훈
+
+커밋된 CI env를 그대로 둔 focused 재현에서 수정 전 12 tests/10 failures(모두 401), 수정 후 12 tests/0 failures였고, 같은 env의 whole backend `clean test bootJar`는 516 tests/0 failures/0 errors/0 skipped로 성공했다. web 208, mock-erp 7, mock-purchasing 6와 Compose config/build/격리 smoke도 통과했다. 테스트는 주변 환경변수에 의존하지 않고 자기가 검증할 secret을 명시적으로 고정해야 하며, 같은 suite가 로컬에서 통과해도 CI 환경변수 우선순위로 실패할 수 있음을 보여준다. 원격 실패 run URL·SHA는 확보하지 못해 Windows 로컬 재현이며 Ubuntu CI 복구를 직접 주장하지 않는다.
+
+관련 커밋: `96a4b5b`
+
 ## 앞으로 추가할 때의 형식
 
 새 사례는 아래 항목을 중심으로 짧게 추가한다.
