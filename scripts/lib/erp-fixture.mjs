@@ -30,20 +30,36 @@ export async function startErpFixture({
   autoWebhook = false,
 }) {
   const erp = createMockErp({ webhookUrl, webhookSecret, dropResponse, autoWebhook });
-  const state = { delayMs: 0 };
+  const state = { delayMs: 0, exportRequests: 0, lastExportAt: null };
   // Test-only response delay: lets a scenario deterministically observe the
   // committed SENDING window (the relay flips to SENDING, then blocks on HTTP)
   // before a signed webhook resolves the same export. It is never used by
   // Compose or by the committed mock-erp HTTP contract.
   const handler = (request, response) => {
     const pathname = new URL(request.url, 'http://localhost').pathname;
+    if (request.method === 'POST' && pathname === '/api/payment-exports') {
+      state.exportRequests += 1;
+    }
     if (state.delayMs > 0 && request.method === 'POST' && pathname === '/api/payment-exports') {
-      setTimeout(() => erp.handler(request, response), state.delayMs);
+      // Record completion time when the delayed response is actually produced,
+      // so a scenario can prove a late HTTP success arrived after the webhook
+      // had already terminalized the outbox.
+      setTimeout(() => {
+        state.lastExportAt = Date.now();
+        erp.handler(request, response);
+      }, state.delayMs);
       return;
     }
     erp.handler(request, response);
   };
   const server = createServer(handler);
+  // Track this fixture's own sockets so a delayed/pending response cannot keep
+  // the process alive during a bounded shutdown.
+  const sockets = new Set();
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+  });
   let closed = false;
 
   await new Promise((resolve, reject) => {
@@ -58,6 +74,8 @@ export async function startErpFixture({
     sign: (timestamp, rawBody) => signWebhook(webhookSecret, timestamp, rawBody),
     setDelayMs: (value) => { state.delayMs = Number(value) || 0; },
     setDropResponse: (value) => erp.setDropResponse(value),
+    exportRequestCount: () => state.exportRequests,
+    lastExportAt: () => state.lastExportAt,
     alive() {
       return !closed && server.listening;
     },
@@ -66,8 +84,19 @@ export async function startErpFixture({
         return { ok: true };
       }
       closed = true;
-      await new Promise((resolve) => server.close(() => resolve()));
-      return { ok: true };
+      const closedPromise = new Promise((resolve) => server.close(() => resolve()));
+      // Release only the connections this fixture owns so shutdown cannot hang
+      // on a delayed export response.
+      for (const socket of sockets) {
+        try { socket.destroy(); } catch { /* best effort */ }
+      }
+      const outcome = await Promise.race([
+        closedPromise.then(() => 'closed'),
+        new Promise((resolve) => setTimeout(() => resolve('timeout'), 3000)),
+      ]);
+      return outcome === 'closed'
+        ? { ok: true }
+        : { ok: false, error: 'mock-erp fixture server did not close within 3000ms' };
     },
   };
 }

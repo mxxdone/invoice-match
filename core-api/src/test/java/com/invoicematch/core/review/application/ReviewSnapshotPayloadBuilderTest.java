@@ -41,7 +41,7 @@ class ReviewSnapshotPayloadBuilderTest {
         ReviewSnapshotPayloadBuilder.CanonicalPayload canonical = builder.canonicalize(input);
         JsonNode payload = MAPPER.readTree(canonical.json());
 
-        assertThat(payload.get("schemaVersion").asText()).isEqualTo("review-snapshot-v1");
+        assertThat(payload.get("schemaVersion").asText()).isEqualTo("review-snapshot-v2");
         assertThat(payload.get("caseId").asText()).isEqualTo(CASE_ID.toString());
         assertThat(payload.get("caseVersion").asLong()).isEqualTo(7L);
         assertThat(payload.get("evidenceBundle").get("id").asText()).isEqualTo(BUNDLE_ID.toString());
@@ -89,6 +89,46 @@ class ReviewSnapshotPayloadBuilderTest {
     }
 
     @Test
+    void v2CanonicalHashIgnoresNestedObjectKeyOrder() {
+        ReviewSnapshotPayloadInput first = inputWithMatchPayload(
+                "{\"lineOutcomes\":[{\"a\":1,\"b\":2}],\"schemaVersion\":\"match-result-v3\"}");
+        ReviewSnapshotPayloadInput second = inputWithMatchPayload(
+                "{\"schemaVersion\":\"match-result-v3\",\"lineOutcomes\":[{\"b\":2,\"a\":1}]}");
+
+        ReviewSnapshotPayloadBuilder.CanonicalPayload firstV2 = builder.canonicalize(first);
+        ReviewSnapshotPayloadBuilder.CanonicalPayload secondV2 = builder.canonicalize(second);
+
+        // v2 recursively sorts object keys, so the same semantics hash equally
+        // whether the match payload was held in memory or reloaded from jsonb.
+        assertThat(secondV2.json()).isEqualTo(firstV2.json());
+        assertThat(secondV2.hash()).isEqualTo(firstV2.hash());
+
+        // The legacy v1 algorithm serializes the payload as received, so the same
+        // semantic input hashes differently there; a v1 snapshot is never
+        // verified with the v2 rule and vice versa.
+        assertThat(builder.canonicalize(second, ReviewSnapshotPayloadBuilder.LEGACY_SCHEMA_VERSION).hash())
+                .isNotEqualTo(builder.canonicalize(first, ReviewSnapshotPayloadBuilder.LEGACY_SCHEMA_VERSION).hash());
+    }
+
+    @Test
+    void v2CanonicalHashPreservesArrayOrder() {
+        ReviewSnapshotPayloadInput ordered = inputWithMatchPayload(
+                "{\"schemaVersion\":\"match-result-v3\",\"lineOutcomes\":[{\"lineNumber\":1},{\"lineNumber\":2}]}");
+        ReviewSnapshotPayloadInput reversed = inputWithMatchPayload(
+                "{\"schemaVersion\":\"match-result-v3\",\"lineOutcomes\":[{\"lineNumber\":2},{\"lineNumber\":1}]}");
+
+        assertThat(builder.canonicalize(reversed).hash()).isNotEqualTo(builder.canonicalize(ordered).hash());
+    }
+
+    @Test
+    void unknownSchemaVersionIsRejected() {
+        ReviewSnapshotPayloadInput input = input(List.of(), List.of(line(1, "A4 Paper", 5, 2500)));
+
+        assertThatThrownBy(() -> builder.canonicalize(input, "review-snapshot-v9"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void overflowingTotalIsRejectedAndNeverWrapped() {
         ReviewSnapshotPayloadInput input = input(
                 List.of(),
@@ -102,6 +142,16 @@ class ReviewSnapshotPayloadBuilderTest {
 
     private static ReviewSnapshotPayloadInput input(
             List<AppliedMapping> mappings, List<EvidenceBundlePayload.EvidenceLine> lines) {
+        return inputWithMatchPayload(
+                "{\"schemaVersion\":\"match-result-v3\",\"lineOutcomes\":[],\"appliedMappings\":[]}", mappings, lines);
+    }
+
+    private static ReviewSnapshotPayloadInput inputWithMatchPayload(String matchPayload) {
+        return inputWithMatchPayload(matchPayload, List.of(), List.of());
+    }
+
+    private static ReviewSnapshotPayloadInput inputWithMatchPayload(
+            String matchPayload, List<AppliedMapping> mappings, List<EvidenceBundlePayload.EvidenceLine> lines) {
         return new ReviewSnapshotPayloadInput(
                 CASE_ID,
                 7L,
@@ -112,7 +162,7 @@ class ReviewSnapshotPayloadBuilderTest {
                 4,
                 "result-hash",
                 2,
-                "{\"schemaVersion\":\"match-result-v3\",\"lineOutcomes\":[],\"appliedMappings\":[]}",
+                matchPayload,
                 mappings,
                 lines,
                 5L,

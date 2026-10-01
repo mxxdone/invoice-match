@@ -25,7 +25,7 @@ import { runVerification } from './lib/verify-core.mjs';
 import { runEntry } from './lib/entry.mjs';
 import { buildConfig, createDocker, createPortProbe, createRequest, startChild } from './lib/adapters.mjs';
 import { startErpFixture } from './lib/erp-fixture.mjs';
-import { runP111Scenarios } from './lib/p1-11-scenarios.mjs';
+import { runP111Scenarios, assertBrowserFixtureTuples } from './lib/p1-11-scenarios.mjs';
 import { runBrowserChecks } from './browser/p1-11-browser.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -80,6 +80,12 @@ const verify = async (context) => {
   const { evidence } = await runP111Scenarios(context);
   if (withBrowser) {
     await runBrowserChecks({ ...context, fixtures: evidence.fixtures });
+    await assertBrowserFixtureTuples({
+      containers: context.containers,
+      docker: context.docker,
+      fixtures: evidence.fixtures,
+      log: context.log,
+    });
   }
   const summary = {
     generatedAt: new Date().toISOString(),

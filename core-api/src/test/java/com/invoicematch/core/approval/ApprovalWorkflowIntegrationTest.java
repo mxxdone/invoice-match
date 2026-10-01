@@ -12,11 +12,16 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.invoicematch.core.invoicecase.application.EvidenceBundlePayload;
+import com.invoicematch.core.matching.application.AppliedMapping;
+import com.invoicematch.core.review.application.ReviewSnapshotPayloadBuilder;
+import com.invoicematch.core.review.application.ReviewSnapshotPayloadInput;
 import com.invoicematch.core.support.AbstractPostgresIntegrationTest;
 import com.invoicematch.core.support.PurchasingPayloads;
 import com.invoicematch.core.support.StubPurchasingServer;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -76,6 +81,9 @@ class ApprovalWorkflowIntegrationTest extends AbstractPostgresIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private ReviewSnapshotPayloadBuilder payloadBuilder;
 
     @Autowired
     private JdbcTemplate jdbc;
@@ -141,6 +149,120 @@ class ApprovalWorkflowIntegrationTest extends AbstractPostgresIntegrationTest {
                 UUID.fromString(caseId));
         assertThat(audit).containsEntry("action", "APPROVE").containsEntry("actor", "approver")
                 .containsEntry("target_type", "REVIEW_DECISION");
+    }
+
+    @Test
+    void mappingSuccessorSnapshotIsDirectlyApprovable() throws Exception {
+        // Regression for the P1-11 integration gap: a mapping freezes its
+        // successor snapshot in the same transaction as the re-match, so its
+        // canonical payload must hash identically to the approval verifier's
+        // reconstruction (which reads the persisted jsonb match payload). Direct
+        // approval, with no intervening re-freeze, must succeed.
+        String caseId = submittedCase(1, "A4 Paper", 5, 2500, null);
+        runMatch(caseId, "match-map");
+        JsonNode snapshot = freeze(caseId, "snap-map");
+
+        ObjectNode mappingBody = objectMapper.createObjectNode();
+        mappingBody.put("requestId", "map-1");
+        mappingBody.put("expectedCaseVersion", currentCaseVersion(caseId));
+        mappingBody.put("reviewSnapshotId", snapshot.get("id").asText());
+        mappingBody.put("reviewPayloadHash", snapshot.get("payloadHash").asText());
+        mappingBody.put("lineNumber", 1);
+        mappingBody.put("itemId", ITEM_A);
+        JsonNode mapping = read(mockMvc.perform(post("/api/invoice-cases/{id}/mapping-decisions", caseId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(mappingBody)))
+                .andExpect(status().isOk())
+                .andReturn());
+        JsonNode successor = mapping.get("successorSnapshot");
+
+        JsonNode approval = approve(caseId, "approve-map", currentCaseVersion(caseId),
+                successor.get("id").asText(), successor.get("payloadHash").asText(), 200);
+
+        assertThat(approval.get("status").asText()).isEqualTo("EXPORT_PENDING");
+        assertThat(jdbc.queryForObject(
+                        "select count(*) from receipt_allocation where invoice_case_id = ?",
+                        Integer.class,
+                        UUID.fromString(caseId)))
+                .isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                        "select count(*) from payment_request where invoice_case_id = ?",
+                        Integer.class,
+                        UUID.fromString(caseId)))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void legacyV1SnapshotStillApproves() throws Exception {
+        // A snapshot frozen before the v2 canonicalization was verified with the
+        // legacy insertion-order algorithm. Rebuild that exact v1 payload/hash
+        // from the same authoritative sources, store it, and prove the verifier
+        // still accepts it (existing valid v1 snapshots are not broken).
+        String caseId = submittedCase(1, "A4 Paper", 5, 2500, ITEM_A);
+        runMatch(caseId, "match-v1");
+        JsonNode snapshot = freeze(caseId, "snap-v1");
+        JsonNode payload = snapshot.get("payload");
+        JsonNode matchResult = payload.get("matchResult");
+        String persistedMatchPayload = jdbc.queryForObject(
+                "select payload::text from match_result where id = ?",
+                String.class,
+                UUID.fromString(matchResult.get("id").asText()));
+
+        List<EvidenceBundlePayload.EvidenceLine> lines = new ArrayList<>();
+        for (JsonNode line : payload.get("invoiceLines")) {
+            lines.add(new EvidenceBundlePayload.EvidenceLine(
+                    line.get("lineNumber").asInt(),
+                    line.get("rawItemName").asText(),
+                    line.get("quantity").asInt(),
+                    line.get("unitPrice").asLong(),
+                    null));
+        }
+        ReviewSnapshotPayloadInput v1Input = new ReviewSnapshotPayloadInput(
+                UUID.fromString(caseId),
+                payload.get("caseVersion").asLong(),
+                UUID.fromString(payload.get("evidenceBundle").get("id").asText()),
+                payload.get("evidenceBundle").get("version").asInt(),
+                payload.get("evidenceBundle").get("payloadHash").asText(),
+                UUID.fromString(matchResult.get("id").asText()),
+                matchResult.get("resultNumber").asInt(),
+                matchResult.get("resultHash").asText(),
+                matchResult.get("mappingWatermark").asInt(),
+                persistedMatchPayload,
+                List.<AppliedMapping>of(),
+                lines,
+                payload.get("purchasingSnapshot").get("snapshotVersion").asLong(),
+                payload.get("purchasingSnapshot").get("purchaseOrderVersion").asLong(),
+                payload.get("purchasingSnapshot").get("payloadHash").asText());
+        ReviewSnapshotPayloadBuilder.CanonicalPayload legacy =
+                payloadBuilder.canonicalize(v1Input, ReviewSnapshotPayloadBuilder.LEGACY_SCHEMA_VERSION);
+        assertThat(legacy.json()).contains("\"schemaVersion\":\"review-snapshot-v1\"");
+
+        // review_snapshot is append-only, so store the legacy snapshot as a new
+        // row (native inserts are how the adversarial tests stage a row too).
+        UUID legacyId = UUID.randomUUID();
+        jdbc.update(
+                "insert into review_snapshot (id, invoice_case_id, evidence_bundle_id, match_result_id,"
+                        + " match_result_number, snapshot_number, target_case_version,"
+                        + " target_evidence_bundle_version, purchasing_snapshot_version, purchasing_snapshot_hash,"
+                        + " mapping_watermark, payload_hash, payload, created_at)"
+                        + " select ?, invoice_case_id, evidence_bundle_id, match_result_id, match_result_number, 2,"
+                        + " target_case_version, target_evidence_bundle_version, purchasing_snapshot_version,"
+                        + " purchasing_snapshot_hash, mapping_watermark, ?, cast(? as jsonb), now()"
+                        + " from review_snapshot where id = ?",
+                legacyId,
+                legacy.hash(),
+                legacy.json(),
+                UUID.fromString(snapshot.get("id").asText()));
+
+        JsonNode approval = approve(caseId, "approve-v1", currentCaseVersion(caseId),
+                legacyId.toString(), legacy.hash(), 200);
+
+        assertThat(approval.get("status").asText()).isEqualTo("EXPORT_PENDING");
+        assertThat(jdbc.queryForObject(
+                        "select count(*) from receipt_allocation where invoice_case_id = ?",
+                        Integer.class,
+                        UUID.fromString(caseId)))
+                .isEqualTo(1);
     }
 
     @Test

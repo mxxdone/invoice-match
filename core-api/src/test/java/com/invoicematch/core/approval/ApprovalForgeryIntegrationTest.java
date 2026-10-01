@@ -2,6 +2,8 @@ package com.invoicematch.core.approval;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.invoicematch.core.approval.application.ApprovalApplicationService;
 import com.invoicematch.core.approval.application.ApprovalResult;
 import com.invoicematch.core.approval.application.ApproveInvoiceCaseCommand;
@@ -86,6 +88,9 @@ class ApprovalForgeryIntegrationTest extends AbstractPostgresIntegrationTest {
     @Autowired
     private JdbcTemplate jdbc;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
     @BeforeEach
     void setUp() {
         jdbc.execute("truncate table invoice_case cascade");
@@ -165,6 +170,57 @@ class ApprovalForgeryIntegrationTest extends AbstractPostgresIntegrationTest {
 
         assertThat(result).isInstanceOf(RuntimeException.class);
         assertNoApprovalEffects(caseId);
+    }
+
+    @Test
+    void forgedV2SnapshotPayloadContentIsRejected() throws Exception {
+        UUID caseId = submittedCase();
+        runMatch(caseId);
+        ReviewSnapshot real = freeze(caseId);
+        String storedPayload = jdbc.queryForObject(
+                "select payload::text from review_snapshot where id = ?", String.class, real.id());
+        ObjectNode tampered = (ObjectNode) objectMapper.readTree(storedPayload);
+        tampered.put("totalAmount", 1L);
+        insertSnapshotCopy(caseId, real.id(), tampered.toString(), real.payloadHash());
+        ReviewSnapshot forged = latestSnapshot(caseId);
+
+        Object result = attempt(caseId, forged);
+
+        assertThat(result).isInstanceOf(RuntimeException.class);
+        assertNoApprovalEffects(caseId);
+    }
+
+    @Test
+    void unknownSnapshotSchemaVersionFailsClosed() {
+        UUID caseId = submittedCase();
+        runMatch(caseId);
+        ReviewSnapshot real = freeze(caseId);
+        String storedPayload = jdbc.queryForObject(
+                "select payload::text from review_snapshot where id = ?", String.class, real.id());
+        String unknown = storedPayload.replace("\"review-snapshot-v2\"", "\"review-snapshot-v9\"");
+        insertSnapshotCopy(caseId, real.id(), unknown, real.payloadHash());
+        ReviewSnapshot forged = latestSnapshot(caseId);
+
+        Object result = attempt(caseId, forged);
+
+        assertThat(result).isInstanceOf(RuntimeException.class);
+        assertNoApprovalEffects(caseId);
+    }
+
+    private void insertSnapshotCopy(UUID caseId, UUID sourceId, String payload, String payloadHash) {
+        jdbc.update(
+                "insert into review_snapshot (id, invoice_case_id, evidence_bundle_id, match_result_id,"
+                        + " match_result_number, snapshot_number, target_case_version,"
+                        + " target_evidence_bundle_version, purchasing_snapshot_version, purchasing_snapshot_hash,"
+                        + " mapping_watermark, payload_hash, payload, created_at)"
+                        + " select ?, invoice_case_id, evidence_bundle_id, match_result_id, match_result_number, 2,"
+                        + " target_case_version, target_evidence_bundle_version, purchasing_snapshot_version,"
+                        + " purchasing_snapshot_hash, mapping_watermark, ?, cast(? as jsonb), now()"
+                        + " from review_snapshot where id = ?",
+                UUID.randomUUID(),
+                payloadHash,
+                payload,
+                sourceId);
     }
 
     @Test

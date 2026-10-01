@@ -238,7 +238,12 @@ public class ApprovalSubjectVerifier {
                 purchasingSnapshotVersion,
                 purchasing.purchaseOrder().version(),
                 purchasingSnapshotHash);
-        ReviewSnapshotPayloadBuilder.CanonicalPayload canonical = snapshotPayloadBuilder.canonicalize(input);
+        // Verify with the canonical algorithm of the schema the snapshot was
+        // frozen under. A v2 snapshot must never be re-verified with the legacy
+        // algorithm (or vice versa), and an unknown/missing version fails closed.
+        String schemaVersion = storedSchemaVersion(snapshot);
+        ReviewSnapshotPayloadBuilder.CanonicalPayload canonical =
+                snapshotPayloadBuilder.canonicalize(input, schemaVersion);
         if (!canonical.hash().equals(snapshot.payloadHash())
                 || !canonicalEquals(canonical.json(), snapshot.payload())) {
             throw conflict(caseId, "the review snapshot payload does not match its authoritative sources");
@@ -247,6 +252,30 @@ public class ApprovalSubjectVerifier {
                 || !snapshot.purchasingSnapshotHash().equals(purchasingSnapshotHash)) {
             throw conflict(caseId, "the review snapshot purchasing source does not match the verified sources");
         }
+    }
+
+    /**
+     * The explicit canonical schema of the stored snapshot. A snapshot without a
+     * readable, supported {@code schemaVersion} is rejected, and a v2 snapshot is
+     * never silently re-verified with the legacy v1 algorithm.
+     */
+    private String storedSchemaVersion(ReviewSnapshot snapshot) {
+        JsonNode root;
+        try {
+            root = mapper.readTree(snapshot.payload());
+        } catch (JsonProcessingException e) {
+            throw conflict(snapshot.invoiceCaseId(), "the review snapshot payload is not readable");
+        }
+        JsonNode version = root == null ? null : root.get("schemaVersion");
+        if (version == null || !version.isTextual() || version.asText().isBlank()) {
+            throw conflict(snapshot.invoiceCaseId(), "the review snapshot payload has no schemaVersion");
+        }
+        String value = version.asText();
+        if (!ReviewSnapshotPayloadBuilder.SCHEMA_VERSION.equals(value)
+                && !ReviewSnapshotPayloadBuilder.LEGACY_SCHEMA_VERSION.equals(value)) {
+            throw conflict(snapshot.invoiceCaseId(), "unsupported review snapshot schemaVersion " + value);
+        }
+        return value;
     }
 
     /**

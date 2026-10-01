@@ -1,6 +1,7 @@
 package com.invoicematch.core.review.application;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
@@ -12,7 +13,10 @@ import com.invoicematch.core.shared.domain.Quantity;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HexFormat;
+import java.util.List;
 import org.springframework.stereotype.Component;
 
 /**
@@ -27,17 +31,49 @@ import org.springframework.stereotype.Component;
  * fields of the snapshot and of its decisions are excluded, so the same
  * semantic inputs hash equally regardless of repository or list ordering.
  * Amounts use checked arithmetic and never wrap silently.
+ *
+ * <p><b>Canonical form.</b> {@code review-snapshot-v2} recursively sorts every
+ * JSON object's keys and preserves array order before hashing, so an embedded
+ * match payload hashes equally whether it is read from the in-memory
+ * computation or reloaded from PostgreSQL {@code jsonb} (which does not preserve
+ * key order). {@code review-snapshot-v1} predates this and is retained only to
+ * verify snapshots that were already frozen: it serializes the old insertion
+ * order. New snapshots are always v2 and existing v1 hashes are never rewritten.
  */
 @Component
 public class ReviewSnapshotPayloadBuilder {
 
-    public static final String SCHEMA_VERSION = "review-snapshot-v1";
+    /** Canonical form used for every newly frozen snapshot. */
+    public static final String SCHEMA_VERSION = "review-snapshot-v2";
+
+    /** Legacy canonical form, retained only to verify already-frozen snapshots. */
+    public static final String LEGACY_SCHEMA_VERSION = "review-snapshot-v1";
 
     private final ObjectMapper mapper = new ObjectMapper();
 
     public CanonicalPayload canonicalize(ReviewSnapshotPayloadInput input) {
+        return canonicalize(input, SCHEMA_VERSION);
+    }
+
+    /**
+     * Rebuilds the canonical JSON and hash for an explicit schema version. A v2
+     * payload recursively sorts object keys; a v1 payload reproduces the legacy
+     * insertion-order serialization so an already-frozen v1 snapshot still
+     * verifies. Any other version is rejected rather than guessed.
+     */
+    public CanonicalPayload canonicalize(ReviewSnapshotPayloadInput input, String schemaVersion) {
+        if (!SCHEMA_VERSION.equals(schemaVersion) && !LEGACY_SCHEMA_VERSION.equals(schemaVersion)) {
+            throw new IllegalArgumentException("Unsupported review snapshot schemaVersion: " + schemaVersion);
+        }
+        ObjectNode root = buildPayload(input, schemaVersion);
+        JsonNode canonical = SCHEMA_VERSION.equals(schemaVersion) ? sortKeys(root) : root;
+        String json = write(canonical);
+        return new CanonicalPayload(json, sha256Hex(json));
+    }
+
+    private ObjectNode buildPayload(ReviewSnapshotPayloadInput input, String schemaVersion) {
         ObjectNode root = JsonNodeFactory.instance.objectNode();
-        root.put("schemaVersion", SCHEMA_VERSION);
+        root.put("schemaVersion", schemaVersion);
         root.put("caseId", input.caseId().toString());
         root.put("caseVersion", input.caseVersion());
 
@@ -80,11 +116,10 @@ public class ReviewSnapshotPayloadBuilder {
         purchasing.put("purchaseOrderVersion", input.purchaseOrderVersion());
         purchasing.put("payloadHash", input.purchasingSnapshotHash());
 
-        String json = write(root);
-        return new CanonicalPayload(json, sha256Hex(json));
+        return root;
     }
 
-    private com.fasterxml.jackson.databind.JsonNode parse(String matchPayload) {
+    private JsonNode parse(String matchPayload) {
         try {
             return mapper.readTree(matchPayload);
         } catch (JsonProcessingException e) {
@@ -92,7 +127,34 @@ public class ReviewSnapshotPayloadBuilder {
         }
     }
 
-    private String write(ObjectNode node) {
+    /**
+     * Recursively rewrites every JSON object with its keys in ascending order
+     * while preserving array element order. Applied to v2 payloads so embedded
+     * objects (for example the stored match payload) hash equally regardless of
+     * whether they came from memory or a PostgreSQL {@code jsonb} round-trip.
+     */
+    private static JsonNode sortKeys(JsonNode node) {
+        if (node.isObject()) {
+            List<String> names = new ArrayList<>();
+            node.fieldNames().forEachRemaining(names::add);
+            Collections.sort(names);
+            ObjectNode sorted = JsonNodeFactory.instance.objectNode();
+            for (String name : names) {
+                sorted.set(name, sortKeys(node.get(name)));
+            }
+            return sorted;
+        }
+        if (node.isArray()) {
+            ArrayNode ordered = JsonNodeFactory.instance.arrayNode();
+            for (JsonNode element : node) {
+                ordered.add(sortKeys(element));
+            }
+            return ordered;
+        }
+        return node.deepCopy();
+    }
+
+    private String write(JsonNode node) {
         try {
             return mapper.writeValueAsString(node);
         } catch (JsonProcessingException e) {

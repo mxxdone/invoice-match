@@ -171,6 +171,11 @@ export function buildConfig({
     coreEnv.ERP_BASE_URL = loopbackUrl(ports.erp);
     coreEnv.PAYMENT_EXPORT_RELAY_ENABLED = 'true';
     coreEnv.PAYMENT_EXPORT_INTERVAL = relayInterval;
+    // The fault scenario delays the ERP response to observe the committed
+    // SENDING window; the request deadline must stay comfortably above that
+    // delay so a late 2xx (not a timeout) is what races the webhook.
+    coreEnv.PAYMENT_EXPORT_CONNECT_TIMEOUT = '2s';
+    coreEnv.PAYMENT_EXPORT_REQUEST_TIMEOUT = '10s';
     coreEnv.MOCK_ERP_WEBHOOK_SECRET = webhookSecret;
   }
 

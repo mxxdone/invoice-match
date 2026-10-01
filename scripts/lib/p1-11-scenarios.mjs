@@ -249,7 +249,13 @@ export async function runP111Scenarios({ request, config, guard, log = () => {},
   expect(normalTuple.payment.paymentRequestId === normalPaymentId, 'normal handoff must expose the created payment request');
   expect(normalTuple.payment.externalRequestKey === normalApproved.json.externalRequestKey, 'normal handoff must expose the deterministic payment key');
   expect(normalTuple.payment.exportVersion === 1, 'normal handoff must expose export version 1');
+  // Independent expected money: 5 units * 2500 KRW, not the server's own total.
+  const NORMAL_EXPECTED_AMOUNT = 5 * 2500;
+  expect(normalApproved.json.amount === NORMAL_EXPECTED_AMOUNT, `normal approval amount must be ${NORMAL_EXPECTED_AMOUNT} (was ${normalApproved.json.amount})`);
+  expect(normalTuple.payment.amount === NORMAL_EXPECTED_AMOUNT, `normal handoff amount must be ${NORMAL_EXPECTED_AMOUNT} (was ${normalTuple.payment.amount})`);
   evidence.counts.normal = {
+    expectedAmount: NORMAL_EXPECTED_AMOUNT,
+    paymentAmount: await scalar(`select amount from payment_request where invoice_case_id = '${normal}'`),
     paymentRequests: await scalar(`select count(*) from payment_request where invoice_case_id = '${normal}'`),
     outboxEvents: await scalar(`select count(*) from outbox_event where invoice_case_id = '${normal}'`),
     approvedDecisions: await scalar(`select count(*) from review_decision where invoice_case_id = '${normal}' and decision = 'APPROVED'`),
@@ -257,6 +263,7 @@ export async function runP111Scenarios({ request, config, guard, log = () => {},
     allocatedQuantity: await scalar(`select coalesce(sum(allocated_quantity),0) from receipt_allocation where invoice_case_id = '${normal}'`),
     approveAudit: await scalar(`select count(*) from audit_entry where invoice_case_id = '${normal}' and action = 'APPROVE'`),
   };
+  expect(evidence.counts.normal.paymentAmount === NORMAL_EXPECTED_AMOUNT, 'the persisted payment amount must equal the independent expected money');
   expect(evidence.counts.normal.paymentRequests === 1, 'normal approval must persist exactly one payment request');
   expect(evidence.counts.normal.outboxEvents === 1, 'normal approval must persist exactly one outbox event');
   expect(evidence.counts.normal.approvedDecisions === 1, 'normal approval must persist one APPROVED decision');
@@ -375,21 +382,18 @@ export async function runP111Scenarios({ request, config, guard, log = () => {},
     mapped.successorSnapshot.targetCaseVersion === mappingVersion,
     `mapping successor targetCaseVersion ${mapped.successorSnapshot.targetCaseVersion} must equal the current case version ${mappingVersion}`,
   );
-  const mappingApprove = await approve(mappingCase, mapped.successorSnapshot);
-  if (mappingApprove.status !== 200 && mappingApprove.status !== 201) {
-    const refrozen = await freeze(mappingCase);
-    record('ac-item-mapping-direct-approve-conflict', {
-      api: 'POST /approve with the mapping successor snapshot',
-      status: mappingApprove.status,
-      code: mappingApprove.json?.code ?? null,
-      message: mappingApprove.json?.message ?? null,
-    });
-    expectStatus(await approve(mappingCase, refrozen), [200, 201], 'approve after mapping (refrozen subject)');
-  }
+  // The mapping successor is approved directly, with no intervening re-freeze.
+  // A failure here must fail the run (the harness does not swallow it): that
+  // was the P1-05/07 blocker the backend canonicalization fix resolves.
+  expectStatus(await approve(mappingCase, mapped.successorSnapshot), [200, 201], 'approve directly on the mapping successor snapshot');
   await waitFor('mapping export convergence', async () => (await handoff(mappingCase)).caseStatus === 'EXPORTED');
   const mappingAllocated = await scalar(`select coalesce(sum(allocated_quantity),0) from receipt_allocation where invoice_case_id = '${mappingCase}'`);
   expect(mappingAllocated === 5, 'approval after mapping must allocate the mapped line');
-  record('ac-item-mapping', { api: 'mapping-decisions + successor snapshot + approve', caseId: mappingCase });
+  record('ac-item-mapping', {
+    api: 'mapping-decisions + direct approve of the successor snapshot (no re-freeze)',
+    caseId: mappingCase,
+    allocatedQuantity: mappingAllocated,
+  });
 
   // --- AC: insufficient evidence (ambiguous item) -------------------------
 
@@ -415,6 +419,45 @@ export async function runP111Scenarios({ request, config, guard, log = () => {},
   const duplicateMatch = await runMatch(duplicateSecond);
   expect(exceptionTypes(duplicateMatch).includes('DUPLICATE_INVOICE_SUSPECTED'), 'the same normalized invoice number must raise DUPLICATE_INVOICE_SUSPECTED');
   record('ac-duplicate-invoice-number', { api: 'second case match', caseId: duplicateSecond, invoiceNumber: duplicateNumber });
+
+  // --- terminal rejection has no approval side effects ---------------------
+
+  guard();
+  const rejectedCase = await createSubmittedCase('AC-REJECT-' + Date.now(), line(5, 2500, 'ITEM-A4-80'));
+  await runMatch(rejectedCase);
+  const rejectedSnapshot = await freeze(rejectedCase);
+  expectStatus(await call('POST', `/api/invoice-cases/${rejectedCase}/reject`, {
+    actor: APPROVER,
+    headers: { 'content-type': 'application/json' },
+    body: {
+      requestId: nextId('reject'),
+      expectedCaseVersion: (await detailAs(rejectedCase)).version,
+      reviewSnapshotId: rejectedSnapshot.id,
+      reviewPayloadHash: rejectedSnapshot.payloadHash,
+      reason: 'P1-11: terminal rejection',
+    },
+  }), [200, 201], 'reject');
+  expect((await detailAs(rejectedCase)).status === 'REJECTED', 'a rejected case must be REJECTED');
+  const rejectedCounts = {
+    payments: await scalar(`select count(*) from payment_request where invoice_case_id = '${rejectedCase}'`),
+    allocations: await scalar(`select count(*) from receipt_allocation where invoice_case_id = '${rejectedCase}'`),
+    approvedDecisions: await scalar(`select count(*) from review_decision where invoice_case_id = '${rejectedCase}' and decision = 'APPROVED'`),
+    approveAudit: await scalar(`select count(*) from audit_entry where invoice_case_id = '${rejectedCase}' and action = 'APPROVE'`),
+    rejectedAudit: await scalar(`select count(*) from audit_entry where invoice_case_id = '${rejectedCase}' and action = 'CASE_REJECTED'`),
+  };
+  expect(rejectedCounts.payments === 0, 'a REJECTED case must create no payment request');
+  expect(rejectedCounts.allocations === 0, 'a REJECTED case must create no allocation');
+  expect(rejectedCounts.approvedDecisions === 0, 'a REJECTED case must create no APPROVED decision');
+  expect(rejectedCounts.approveAudit === 0, 'a REJECTED case must create no APPROVE audit');
+  expect(rejectedCounts.rejectedAudit === 1, 'the rejection itself must be audited exactly once');
+  // revision opening is only legal in SUPPLEMENT_REQUIRED, never in REJECTED.
+  const reopenAfterReject = await call('POST', `/api/invoice-cases/${rejectedCase}/revisions`, {
+    actor: SUBMITTER,
+    headers: { 'content-type': 'application/json' },
+    body: { requestId: nextId('reopen'), expectedCaseVersion: (await detailAs(rejectedCase)).version },
+  });
+  expectStatus(reopenAfterReject, 409, 'opening a revision after REJECTED');
+  record('ac-rejected-zero-effects', { api: 'reject + DB counts + /revisions -> 409', caseId: rejectedCase, counts: rejectedCounts });
 
   // --- AC: a signed result that disagrees with the export is rejected ------
   // The payment-request-id mismatch guard is status independent, so this is a
@@ -462,12 +505,16 @@ export async function runP111Scenarios({ request, config, guard, log = () => {},
   const inFlight = await createSubmittedCase('AC-INFLIGHT-' + Date.now(), line(5, 2500, 'ITEM-A4-80'));
   await runMatch(inFlight);
   const inFlightSnapshot = await freeze(inFlight);
-  erpChild.setDelayMs(3000);
+  // Delay comfortably below the ERP request deadline (10s) so the relay's call
+  // really gets a late 2xx rather than timing out.
+  const INFLIGHT_DELAY_MS = 4000;
+  const exportRequestsBefore = erpChild.exportRequestCount();
+  erpChild.setDelayMs(INFLIGHT_DELAY_MS);
   const inFlightApproved = expectStatus(await approve(inFlight, inFlightSnapshot), [200, 201], 'in-flight approve');
   const inFlightKey = `${inFlightApproved.json.paymentRequestId}:1`;
   const sending = await waitFor('committed SENDING window', async () => {
     const view = await handoff(inFlight);
-    return view.payment?.paymentStatus === 'SENDING' ? view : null;
+    return view.payment?.paymentStatus === 'SENDING' && view.payment?.outboxStatus === 'SENDING' ? view : null;
   });
   expect(sending.payment.outboxStatus === 'SENDING', 'the relay must commit the outbox and payment to SENDING before HTTP');
   const inFlightRecord = erp.record(inFlightKey);
@@ -498,19 +545,35 @@ export async function runP111Scenarios({ request, config, guard, log = () => {},
     const view = await handoff(inFlight);
     return view.caseStatus === 'EXPORTED' ? view : null;
   });
-  // Let the delayed ERP response return; the relay must become a no-op and must
-  // not create a second payment or result event.
-  await new Promise((resolve) => setTimeout(resolve, 3500));
-  expect((await handoff(inFlight)).caseStatus === 'EXPORTED', 'the delayed relay finalization must not change the converged state');
+  const convergedAt = Date.now();
+  // Wait past the delay plus a margin so the late ERP 2xx has definitely
+  // returned; the relay's finalization must be a stale no-op over the whole
+  // tuple (case/payment/outbox) and must add no second payment or result event.
+  await new Promise((resolve) => setTimeout(resolve, INFLIGHT_DELAY_MS + 2500));
+  const late = await handoff(inFlight);
+  expect(late.caseStatus === 'EXPORTED', 'the delayed relay finalization must not change the converged case state');
+  expect(late.payment?.paymentStatus === 'ACKNOWLEDGED', 'the delayed relay finalization must not change the payment');
+  expect(late.payment?.outboxStatus === 'DELIVERED', 'the delayed relay finalization must not change the outbox');
+  const lateSuccessAt = erpChild.lastExportAt();
+  expect(lateSuccessAt !== null && lateSuccessAt >= convergedAt, 'the late ERP 2xx must have completed after the webhook terminalized the outbox');
   const inFlightCounts = {
+    delayMs: INFLIGHT_DELAY_MS,
+    exportRequestsBefore,
+    exportRequestsAfter: erpChild.exportRequestCount(),
+    lateSuccessAfterConvergenceMs: lateSuccessAt - convergedAt,
     payments: await scalar(`select count(*) from payment_request where invoice_case_id = '${inFlight}'`),
     resultEvents: await scalar(`select count(*) from payment_result_event where external_payment_key = '${inFlightKey}'`),
+    relayAcknowledgedAttempts: await scalar(
+      `select count(*) from outbox_delivery_attempt a join outbox_event o on o.id = a.outbox_event_id`
+      + ` where o.invoice_case_id = '${inFlight}' and a.outcome = 'ACKNOWLEDGED'`),
   };
+  expect(inFlightCounts.exportRequestsAfter === exportRequestsBefore + 1, 'the relay must have sent exactly once');
   expect(inFlightCounts.payments === 1, 'the SENDING webhook race must keep one logical payment');
   expect(inFlightCounts.resultEvents === 1, 'the SENDING webhook race must persist one result event');
+  expect(inFlightCounts.relayAcknowledgedAttempts === 0, 'the stale relay finalization must not write an ACKNOWLEDGED attempt');
   erpChild.setDelayMs(0);
   record('ac-signed-result-during-sending', {
-    api: 'signed result while outbox/payment SENDING, then delayed relay response',
+    api: 'signed result while outbox/payment SENDING, then a late ERP 2xx that races the webhook',
     caseId: inFlight,
     status: inFlightWebhook.status,
     converged: inFlightCounts,
@@ -537,10 +600,25 @@ export async function runP111Scenarios({ request, config, guard, log = () => {},
   expect((await lossUnknown.payment).paymentStatus !== 'ACKNOWLEDGED', 'UNKNOWN must be persisted before any result');
   const lossPaymentCountBefore = await scalar(`select count(*) from payment_request where invoice_case_id = '${loss}'`);
   expect(lossPaymentCountBefore === 1, 'UNKNOWN must keep exactly one logical payment request');
+
+  // Hold for more than one relay tick: an UNKNOWN event must never be resent
+  // automatically, so the ERP export request count, attempt count, outbox
+  // status and outbox count must all be unchanged.
+  const unknownExportRequests = erpChild.exportRequestCount();
+  const unknownAttempts = lossUnknown.payment.attemptCount;
+  await new Promise((resolve) => setTimeout(resolve, 3500));
+  const lossStillUnknown = await handoff(loss);
+  expect(lossStillUnknown.payment?.paymentStatus === 'RESULT_UNKNOWN', 'no automatic resend may resolve UNKNOWN');
+  expect(lossStillUnknown.payment?.outboxStatus === 'RESULT_UNKNOWN', 'the outbox must stay RESULT_UNKNOWN');
+  expect(lossStillUnknown.payment?.attemptCount === unknownAttempts, 'attemptCount must not increase while UNKNOWN');
+  expect(erpChild.exportRequestCount() === unknownExportRequests, 'no new ERP export request may occur while UNKNOWN');
+  expect((await scalar(`select count(*) from outbox_event where invoice_case_id = '${loss}'`)) === 1, 'UNKNOWN must keep exactly one outbox event');
   evidence.counts.lossUnknown = {
-    paymentStatus: lossUnknown.payment.paymentStatus,
-    outboxStatus: lossUnknown.payment.outboxStatus,
-    caseStatus: lossUnknown.caseStatus,
+    paymentStatus: lossStillUnknown.payment.paymentStatus,
+    outboxStatus: lossStillUnknown.payment.outboxStatus,
+    caseStatus: lossStillUnknown.caseStatus,
+    attemptCount: lossStillUnknown.payment.attemptCount,
+    exportRequests: unknownExportRequests,
   };
 
   // Explicit external status inquiry by the same idempotency key: one record.
@@ -568,10 +646,13 @@ export async function runP111Scenarios({ request, config, guard, log = () => {},
     paymentRequests: await scalar(`select count(*) from payment_request where invoice_case_id = '${loss}'`),
     outboxEvents: await scalar(`select count(*) from outbox_event where invoice_case_id = '${loss}'`),
     resultEvents: await scalar(`select count(*) from payment_result_event where external_payment_key = '${lossKey}'`),
+    persistedEventId: await psql(`select external_event_id from payment_result_event where external_payment_key = '${lossKey}'`),
+    erpEventId: inquiryBody.externalEventId,
     delivered: lossConverged.payment.outboxStatus,
   };
   expect(lossCounts.paymentRequests === 1, 'convergence must not create a second payment request');
   expect(lossCounts.resultEvents === 1, 'convergence must persist exactly one external result event');
+  expect(lossCounts.persistedEventId === lossCounts.erpEventId, 'convergence must use the actual ERP record externalEventId');
   await erp.deliverWebhook(lossRecord);
   expect((await scalar(`select count(*) from payment_result_event where external_payment_key = '${lossKey}'`)) === 1, 'a duplicate signed result must be a replay with one event');
   record('ac-erp-response-loss', {
@@ -625,28 +706,81 @@ export async function runP111Scenarios({ request, config, guard, log = () => {},
     await runMatch(second);
     const firstSnapshot = await freeze(first);
     const secondSnapshot = await freeze(second);
-    const outcomes = await Promise.all([approve(first, firstSnapshot), approve(second, secondSnapshot)]);
-    const statuses = outcomes.map((result) => result.status).sort((a, b) => a - b);
-    const winners = outcomes.filter((result) => result.status === 200 || result.status === 201);
-    const losers = outcomes.filter((result) => result.status === 409);
-    expect(winners.length === 1, `contention run ${run}: exactly one approval must win (statuses ${outcomes.map((o) => o.status).join(',')})`);
+    // Build both exact-subject bodies first, then fire the two approvals with a
+    // real client barrier (one Promise.all) and measure their HTTP spans so the
+    // overlap is concrete evidence, not an assumption.
+    const bodyFor = async (id, snapshot) => {
+      const version = (await detailAs(id)).version;
+      return { requestId: nextId('approve'), expectedCaseVersion: version, reviewSnapshotId: snapshot.id, reviewPayloadHash: snapshot.payloadHash };
+    };
+    const firstBody = await bodyFor(first, firstSnapshot);
+    const secondBody = await bodyFor(second, secondSnapshot);
+    const fire = async (id, body) => {
+      const startedAt = Date.now();
+      const response = await call('POST', `/api/invoice-cases/${id}/approve`, {
+        actor: APPROVER,
+        headers: { 'content-type': 'application/json' },
+        body,
+      });
+      return { response, startedAt, finishedAt: Date.now() };
+    };
+    const [firstOutcome, secondOutcome] = await Promise.all([fire(first, firstBody), fire(second, secondBody)]);
+    const overlapped = Math.max(firstOutcome.startedAt, secondOutcome.startedAt)
+      < Math.min(firstOutcome.finishedAt, secondOutcome.finishedAt);
+    expect(overlapped, `contention run ${run}: the two approval HTTP calls must overlap in time`);
+    const outcomeList = [
+      { caseId: first, ...firstOutcome },
+      { caseId: second, ...secondOutcome },
+    ];
+    const statuses = outcomeList.map((entry) => entry.response.status).sort((a, b) => a - b);
+    const winners = outcomeList.filter((entry) => entry.response.status === 200 || entry.response.status === 201);
+    const losers = outcomeList.filter((entry) => entry.response.status === 409);
+    expect(winners.length === 1, `contention run ${run}: exactly one approval must win (statuses ${statuses.join(',')})`);
     expect(losers.length === 1, `contention run ${run}: exactly one approval must lose`);
-    expect(losers[0].json?.code === 'INSUFFICIENT_RECEIPT_BALANCE', `contention run ${run}: the loser must report INSUFFICIENT_RECEIPT_BALANCE (was ${losers[0].json?.code})`);
+    const loser = losers[0];
+    const winner = winners[0];
+    expect(loser.response.json?.code === 'INSUFFICIENT_RECEIPT_BALANCE', `contention run ${run}: the loser must report INSUFFICIENT_RECEIPT_BALANCE (was ${loser.response.json?.code})`);
+    const shortfall = (loser.response.json?.shortfalls ?? [])[0];
+    expect(shortfall, `contention run ${run}: the loser must carry the current receipt shortfall`);
+    expect(Number(shortfall.confirmedQuantity) === 60, `contention run ${run}: shortfall confirmed must be 60 (was ${shortfall.confirmedQuantity})`);
+    expect(Number(shortfall.allocatedQuantity) === 40, `contention run ${run}: shortfall allocated must be 40 (was ${shortfall.allocatedQuantity})`);
+    expect(Number(shortfall.remainingQuantity) === 20, `contention run ${run}: shortfall remaining must be 20 (was ${shortfall.remainingQuantity})`);
+    expect(Number(shortfall.requestedQuantity) === 40, `contention run ${run}: shortfall requested must be 40 (was ${shortfall.requestedQuantity})`);
     const total = await scalar('select coalesce(sum(allocated_quantity),0) from receipt_allocation');
     expect(total === 40, `contention run ${run}: committed allocation must stay at 40 (was ${total})`);
-    const payments = await scalar("select count(*) from payment_request");
+    const payments = await scalar(`select count(*) from payment_request where invoice_case_id = '${winner.caseId}'`);
     expect(payments === 1, `contention run ${run}: one winning approval must create one payment (was ${payments})`);
-    const winnerCaseId = winners[0].json?.invoiceCaseId;
-    expect(winnerCaseId, `contention run ${run}: the winning response must identify its case`);
-    const winnerHandoff = await handoff(winnerCaseId);
+    const remaining = 60 - total;
+    expect(remaining === 20, `contention run ${run}: remaining confirmed quantity must be 20 (was ${remaining})`);
+    // The loser must have no allocation, payment, APPROVED decision or APPROVE audit.
+    const loserEffects = {
+      allocations: await scalar(`select count(*) from receipt_allocation where invoice_case_id = '${loser.caseId}'`),
+      payments: await scalar(`select count(*) from payment_request where invoice_case_id = '${loser.caseId}'`),
+      approvedDecisions: await scalar(`select count(*) from review_decision where invoice_case_id = '${loser.caseId}' and decision = 'APPROVED'`),
+      approveAudit: await scalar(`select count(*) from audit_entry where invoice_case_id = '${loser.caseId}' and action = 'APPROVE'`),
+    };
+    expect(loserEffects.allocations === 0, `contention run ${run}: the loser must have no allocation`);
+    expect(loserEffects.payments === 0, `contention run ${run}: the loser must have no payment`);
+    expect(loserEffects.approvedDecisions === 0, `contention run ${run}: the loser must have no APPROVED decision`);
+    expect(loserEffects.approveAudit === 0, `contention run ${run}: the loser must have no APPROVE audit`);
+    const winnerHandoff = await handoff(winner.caseId);
     expect(winnerHandoff.caseStatus === 'EXPORT_PENDING', `contention run ${run}: the winner must be EXPORT_PENDING`);
+    expect(winnerHandoff.payment?.amount === 40 * 2500, `contention run ${run}: the winner amount must be 40*2500`);
     contentionRuns.push({
       run,
+      barrier: 'Promise.all concurrent HTTP approvals',
+      overlapped,
+      firstSpanMs: firstOutcome.finishedAt - firstOutcome.startedAt,
+      secondSpanMs: secondOutcome.finishedAt - secondOutcome.startedAt,
       statuses,
-      loserCode: losers[0].json?.code,
+      loserCode: loser.response.json?.code,
+      shortfall,
       allocated: total,
+      remaining,
       payments,
-      winnerCaseId,
+      winnerCaseId: winner.caseId,
+      loserCaseId: loser.caseId,
+      loserEffects,
     });
   }
   await resetDatabase();
@@ -690,4 +824,39 @@ export async function runP111Scenarios({ request, config, guard, log = () => {},
   record('browser-fixtures-prepared', evidence.fixtures);
 
   return { evidence };
+}
+
+/**
+ * After the browser pass, re-read the three hand-off fixture tuples from the
+ * throwaway database and compare them to what the browser was told to expect.
+ * The browser assertions alone are not enough; the persisted state must agree.
+ */
+export async function assertBrowserFixtureTuples({ containers, docker, fixtures, log = () => {} }) {
+  const pgId = containers && containers[0];
+  if (!pgId || !docker) {
+    fail('browser fixture tuple check requires the throwaway database context');
+  }
+  const query = async (sql) => {
+    const result = await docker.exec(pgId, [
+      'psql', '-U', 'invoice_match', '-d', 'invoice_match', '-v', 'ON_ERROR_STOP=1', '-tA', '-F', '|', '-c', sql,
+    ]);
+    if (result.code !== 0) {
+      fail(`psql failed: ${(result.stderr || '').trim() || 'no stderr'}`);
+    }
+    return (result.stdout || '').trim();
+  };
+  for (const [name, fixture] of Object.entries(fixtures)) {
+    const row = await query(
+      'select p.status, o.status, c.status from invoice_case c'
+      + ' join payment_request p on p.invoice_case_id = c.id'
+      + ' join outbox_event o on o.payment_request_id = p.id'
+      + ` where c.id = '${fixture.caseId}'`);
+    const [payment, outbox, caseStatus] = row.split('|');
+    if (payment !== fixture.expectedPaymentStatus
+      || outbox !== fixture.expectedOutboxStatus
+      || caseStatus !== fixture.expectedCaseStatus) {
+      fail(`browser fixture ${name} DB tuple mismatch: got ${payment}/${outbox}/${caseStatus}`);
+    }
+    log(`PASS browser-fixture-db-tuple ${name} ${payment}/${outbox}/${caseStatus}`);
+  }
 }

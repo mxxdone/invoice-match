@@ -79,13 +79,15 @@ export async function runBrowserChecks({ config, guard, log = () => {}, fixtures
   writeFileSync(generatedPath, generated, 'utf8');
 
   const session = `p111-${process.pid}`;
+  let flowError = null;
+  let summary = null;
   try {
     guard();
     const opened = await runCli(['-s', session, 'open', `${webUrl}/login`, '--idle-timeout', '180000'], { timeoutMs: 120000 });
     if (opened.code !== 0) throw new VerifyError('playwright-cli could not open the browser session');
 
     const run = await runCli(['-s', session, 'run-code', '--filename', generatedPath], { timeoutMs: 300000 });
-    const summary = parseRunCode(run.stdout);
+    summary = parseRunCode(run.stdout);
     if (run.code !== 0 || !summary) {
       const detail = run.stdout.split(/\r?\n/).filter((line) => /Error|ASSERT/.test(line)).join(' ').trim();
       throw new VerifyError(`browser flow failed${detail ? `: ${detail}` : ''}`);
@@ -115,12 +117,26 @@ export async function runBrowserChecks({ config, guard, log = () => {}, fixtures
       if (value) log(`PASS browser ${name}`);
     }
     log(`PASS browser flow (${(summary.steps ?? []).length} steps, ${outDir})`);
-    return summary;
-  } finally {
-    try {
-      await runCli(['-s', session, 'close'], { timeoutMs: 30000 });
-    } catch (error) {
-      log(`WARN browser session close: ${error instanceof Error ? error.message : String(error)}`);
-    }
+  } catch (error) {
+    flowError = error instanceof Error ? error : new VerifyError(String(error));
   }
+
+  // A close failure is a cleanup failure: never report a green acceptance while
+  // the browser session may still be running.
+  let closeError = null;
+  try {
+    const closed = await runCli(['-s', session, 'close'], { timeoutMs: 30000 });
+    if (closed.code !== 0) {
+      closeError = new VerifyError(`playwright-cli session close exited ${closed.code}`);
+    }
+  } catch (error) {
+    closeError = error instanceof Error ? error : new VerifyError(String(error));
+  }
+
+  if (flowError && closeError) {
+    throw new VerifyError(`${flowError.message}; browser session close also failed: ${closeError.message}`);
+  }
+  if (flowError) throw flowError;
+  if (closeError) throw closeError;
+  return summary;
 }

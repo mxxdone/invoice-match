@@ -105,7 +105,7 @@ class ReviewWorkflowApiIntegrationTest extends AbstractPostgresIntegrationTest {
         assertThat(snapshot.get("matchResultId").asText()).isEqualTo(match.get("id").asText());
         assertThat(snapshot.get("payloadHash").asText()).isNotBlank();
         JsonNode payload = snapshot.get("payload");
-        assertThat(payload.get("schemaVersion").asText()).isEqualTo("review-snapshot-v1");
+        assertThat(payload.get("schemaVersion").asText()).isEqualTo("review-snapshot-v2");
         assertThat(payload.get("evidenceBundle").get("version").asInt()).isEqualTo(1);
         assertThat(payload.get("matchResult").get("resultHash").asText())
                 .isEqualTo(match.get("resultHash").asText());
