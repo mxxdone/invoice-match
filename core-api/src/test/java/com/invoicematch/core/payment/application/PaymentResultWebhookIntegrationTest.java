@@ -5,6 +5,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.invoicematch.core.payment.persistence.ClaimedEvent;
+import com.invoicematch.core.payment.persistence.OutboxStore;
 import com.invoicematch.core.payment.webhook.MockErpSignatureVerifier;
 import com.invoicematch.core.payment.webhook.PaymentResultWebhookController;
 import com.invoicematch.core.support.StubErpServer;

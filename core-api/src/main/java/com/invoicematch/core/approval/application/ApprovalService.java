@@ -1,9 +1,5 @@
 package com.invoicematch.core.approval.application;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.invoicematch.core.approval.domain.ApprovalNotPermittedException;
 import com.invoicematch.core.approval.domain.InsufficientReceiptBalanceException;
 import com.invoicematch.core.approval.domain.PaymentRequest;
@@ -107,7 +103,6 @@ public class ApprovalService {
     private final AuthorizationService authorization;
     private final AuditRecorder audit;
     private final ApprovalInterceptor interceptor;
-    private final ObjectMapper mapper = new ObjectMapper();
     private final Clock clock;
 
     public ApprovalService(
@@ -233,7 +228,7 @@ public class ApprovalService {
                 decisionNumber,
                 actor.username(),
                 null,
-                decisionPayload(plan, plannedQuantityTotal),
+                ApprovalDecisionPayload.canonicalJson(plan, plannedQuantityTotal, CURRENCY),
                 snapshot.payloadHash(),
                 now,
                 plan.totalAmount(),
@@ -328,25 +323,6 @@ public class ApprovalService {
                         .toList(),
                 now);
 
-        Map<String, Object> before = new LinkedHashMap<>();
-        before.put("status", InvoiceCaseStatus.REVIEW_PENDING.name());
-        before.put("caseVersion", caseVersionBefore);
-        before.put("reviewSnapshotId", snapshot.id().toString());
-        before.put("reviewPayloadHash", snapshot.payloadHash());
-        Map<String, Object> after = new LinkedHashMap<>();
-        after.put("status", invoiceCase.status().name());
-        after.put("caseVersion", invoiceCase.version());
-        after.put("decisionId", decision.id().toString());
-        after.put("decisionNumber", decision.decisionNumber());
-        after.put("reviewSnapshotId", snapshot.id().toString());
-        after.put("reviewPayloadHash", snapshot.payloadHash());
-        after.put("paymentRequestId", paymentRequest.id().toString());
-        after.put("externalRequestKey", externalRequestKey);
-        after.put("amount", plan.totalAmount().amount());
-        after.put("currency", CURRENCY);
-        after.put("allocationCount", (long) orderedAllocations.size());
-        after.put("allocatedQuantity", allocatedQuantityTotal);
-        after.put("allocations", orderedAllocations.stream().map(this::allocationSummary).toList());
         audit.record(new AuditEvent(
                 command.caseId(),
                 actor,
@@ -354,8 +330,8 @@ public class ApprovalService {
                 AuditTargetType.REVIEW_DECISION,
                 decision.id().toString(),
                 invoiceCase.version(),
-                before,
-                after,
+                ApprovalAuditPayloads.before(caseVersionBefore, snapshot),
+                ApprovalAuditPayloads.after(result, allocatedQuantityTotal),
                 approvalRequestId,
                 now,
                 approvalTraceId));
@@ -506,36 +482,6 @@ public class ApprovalService {
             throw new ApprovalNotPermittedException(
                     caseId, snapshotId, List.of("the committed allocation quantity total overflows"));
         }
-    }
-
-    private String decisionPayload(ApprovedAllocationPlan plan, long plannedQuantityTotal) {
-        ObjectNode node = mapper.createObjectNode();
-        node.put("amount", plan.totalAmount().amount());
-        node.put("currency", CURRENCY);
-        node.put("allocationCount", (long) plan.allocations().size());
-        node.put("allocatedQuantity", plannedQuantityTotal);
-        ArrayNode allocations = node.putArray("allocations");
-        for (PlannedReceiptAllocation allocation : plan.allocations()) {
-            ObjectNode item = allocations.addObject();
-            item.put("invoiceLineNumber", allocation.invoiceLineNumber());
-            item.put("receiptId", allocation.receiptId());
-            item.put("receiptLineId", allocation.receiptLineId());
-            item.put("quantity", allocation.plannedQuantity());
-        }
-        try {
-            return mapper.writeValueAsString(node);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Approval decision payload serialization failed", e);
-        }
-    }
-
-    private Map<String, Object> allocationSummary(ReceiptAllocation allocation) {
-        Map<String, Object> summary = new LinkedHashMap<>();
-        summary.put("invoiceLineNumber", allocation.invoiceLineNumber());
-        summary.put("receiptId", allocation.receiptId());
-        summary.put("receiptLineId", allocation.receiptLineId());
-        summary.put("quantity", allocation.allocatedQuantity());
-        return summary;
     }
 
     private InvoiceCase loadForUpdate(UUID caseId) {

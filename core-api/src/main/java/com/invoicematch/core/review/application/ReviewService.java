@@ -284,45 +284,19 @@ public class ReviewService {
 
         String resourceKey = command.caseId().toString();
         String requestHash = fingerprint.requestSupplement(command);
+        SimpleDecisionOperation operation = SimpleDecisionOperation.SUPPLEMENT;
         RequestIdempotencyStore.BeginResult begin = idempotency.begin(
-                SCOPE_SUPPLEMENT, resourceKey, actor.username(), command.requestId(), requestHash);
+                operation.scope(), resourceKey, actor.username(), command.requestId(), requestHash);
         if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
             return replay(replay.response(), ReviewDecisionView.class);
         }
 
-        requireReviewPending(invoiceCase);
-        beginWrite(invoiceCase, command.expectedCaseVersion());
-
-        ReviewSnapshot target = requireTarget(invoiceCase, command.reviewSnapshotId(), command.reviewPayloadHash());
-        currentness.requireCurrent(invoiceCase, target);
+        ReviewSnapshot target = prepareSimpleDecision(invoiceCase, command.expectedCaseVersion(),
+                command.reviewSnapshotId(), command.reviewPayloadHash());
         String reason = requireReason(command.reason());
 
-        Instant now = clock.instant();
-        ReviewDecision decision = recordSimpleDecision(
-                command.caseId(), target, ReviewDecisionType.SUPPLEMENT_REQUESTED, actor.username(), reason, now);
-        decisions.saveAndFlush(decision);
-
-        invoiceCase.transitionTo(InvoiceCaseStatus.SUPPLEMENT_REQUIRED, now);
-        invoiceCases.saveAndFlush(invoiceCase);
-
-        ReviewDecisionView view = ReviewDecisionView.from(decision);
-        audit.record(new AuditEvent(
-                command.caseId(),
-                actor,
-                AuditAction.SUPPLEMENT_REQUESTED,
-                AuditTargetType.REVIEW_DECISION,
-                decision.id().toString(),
-                invoiceCase.version(),
-                java.util.Map.of("status", "REVIEW_PENDING"),
-                java.util.Map.of(
-                        "status", invoiceCase.status().name(),
-                        "decisionNumber", decision.decisionNumber(),
-                        "reason", reason,
-                        "reviewSnapshotId", target.id().toString()),
-                command.requestId(),
-                now));
-        idempotency.recordResponse(SCOPE_SUPPLEMENT, resourceKey, actor.username(), command.requestId(), 200, view);
-        return CommandResult.ok(view);
+        return completeSimpleDecision(
+                invoiceCase, actor, target, reason, resourceKey, command.requestId(), operation);
     }
 
     @Transactional
@@ -333,45 +307,19 @@ public class ReviewService {
 
         String resourceKey = command.caseId().toString();
         String requestHash = fingerprint.reject(command);
+        SimpleDecisionOperation operation = SimpleDecisionOperation.REJECT;
         RequestIdempotencyStore.BeginResult begin = idempotency.begin(
-                SCOPE_REJECT, resourceKey, actor.username(), command.requestId(), requestHash);
+                operation.scope(), resourceKey, actor.username(), command.requestId(), requestHash);
         if (begin instanceof RequestIdempotencyStore.BeginResult.Replay replay) {
             return replay(replay.response(), ReviewDecisionView.class);
         }
 
-        requireReviewPending(invoiceCase);
-        beginWrite(invoiceCase, command.expectedCaseVersion());
-
-        ReviewSnapshot target = requireTarget(invoiceCase, command.reviewSnapshotId(), command.reviewPayloadHash());
-        currentness.requireCurrent(invoiceCase, target);
+        ReviewSnapshot target = prepareSimpleDecision(invoiceCase, command.expectedCaseVersion(),
+                command.reviewSnapshotId(), command.reviewPayloadHash());
         String reason = requireReason(command.reason());
 
-        Instant now = clock.instant();
-        ReviewDecision decision = recordSimpleDecision(
-                command.caseId(), target, ReviewDecisionType.REJECTED, actor.username(), reason, now);
-        decisions.saveAndFlush(decision);
-
-        invoiceCase.transitionTo(InvoiceCaseStatus.REJECTED, now);
-        invoiceCases.saveAndFlush(invoiceCase);
-
-        ReviewDecisionView view = ReviewDecisionView.from(decision);
-        audit.record(new AuditEvent(
-                command.caseId(),
-                actor,
-                AuditAction.CASE_REJECTED,
-                AuditTargetType.REVIEW_DECISION,
-                decision.id().toString(),
-                invoiceCase.version(),
-                java.util.Map.of("status", "REVIEW_PENDING"),
-                java.util.Map.of(
-                        "status", invoiceCase.status().name(),
-                        "decisionNumber", decision.decisionNumber(),
-                        "reason", reason,
-                        "reviewSnapshotId", target.id().toString()),
-                command.requestId(),
-                now));
-        idempotency.recordResponse(SCOPE_REJECT, resourceKey, actor.username(), command.requestId(), 200, view);
-        return CommandResult.ok(view);
+        return completeSimpleDecision(
+                invoiceCase, actor, target, reason, resourceKey, command.requestId(), operation);
     }
 
     private Object previousMappingForLine(UUID caseId, UUID evidenceBundleId, int lineNumber) {
@@ -386,6 +334,102 @@ public class ReviewService {
                     return node;
                 })
                 .orElse(null);
+    }
+
+    /**
+     * Shared validation and preparation of a simple terminal decision: the case
+     * must be editable in REVIEW_PENDING at the expected version, and the target
+     * snapshot must match the displayed hash and still be current. Both
+     * {@code requestSupplement} and {@code reject} call this before persisting.
+     */
+    private ReviewSnapshot prepareSimpleDecision(
+            InvoiceCase invoiceCase, long expectedVersion, UUID reviewSnapshotId, String reviewPayloadHash) {
+        requireReviewPending(invoiceCase);
+        beginWrite(invoiceCase, expectedVersion);
+        ReviewSnapshot target = requireTarget(invoiceCase, reviewSnapshotId, reviewPayloadHash);
+        currentness.requireCurrent(invoiceCase, target);
+        return target;
+    }
+
+    /**
+     * The fixed attributes of one simple terminal decision. The same descriptor
+     * is used at the idempotency reservation and at completion, so the scope can
+     * never drift between the two. It is an explicit enum of two operations, not
+     * a boolean-controlled generic flow.
+     */
+    private enum SimpleDecisionOperation {
+        SUPPLEMENT(
+                SCOPE_SUPPLEMENT,
+                AuditAction.SUPPLEMENT_REQUESTED,
+                ReviewDecisionType.SUPPLEMENT_REQUESTED,
+                InvoiceCaseStatus.SUPPLEMENT_REQUIRED),
+        REJECT(
+                SCOPE_REJECT,
+                AuditAction.CASE_REJECTED,
+                ReviewDecisionType.REJECTED,
+                InvoiceCaseStatus.REJECTED);
+
+        private final String scope;
+        private final AuditAction auditAction;
+        private final ReviewDecisionType decisionType;
+        private final InvoiceCaseStatus targetStatus;
+
+        SimpleDecisionOperation(
+                String scope,
+                AuditAction auditAction,
+                ReviewDecisionType decisionType,
+                InvoiceCaseStatus targetStatus) {
+            this.scope = scope;
+            this.auditAction = auditAction;
+            this.decisionType = decisionType;
+            this.targetStatus = targetStatus;
+        }
+
+        String scope() {
+            return scope;
+        }
+    }
+
+    /**
+     * Shared persistence and audit of one simple terminal decision. The
+     * operation descriptor carries the decision type, target case status, audit
+     * action and idempotency scope, so each public method stays a readable,
+     * explicit flow with no boolean flag.
+     */
+    private CommandResult<ReviewDecisionView> completeSimpleDecision(
+            InvoiceCase invoiceCase,
+            Actor actor,
+            ReviewSnapshot target,
+            String reason,
+            String resourceKey,
+            String requestId,
+            SimpleDecisionOperation operation) {
+        Instant now = clock.instant();
+        ReviewDecision decision = recordSimpleDecision(
+                invoiceCase.id().value(), target, operation.decisionType, actor.username(), reason, now);
+        decisions.saveAndFlush(decision);
+
+        invoiceCase.transitionTo(operation.targetStatus, now);
+        invoiceCases.saveAndFlush(invoiceCase);
+
+        ReviewDecisionView view = ReviewDecisionView.from(decision);
+        audit.record(new AuditEvent(
+                invoiceCase.id().value(),
+                actor,
+                operation.auditAction,
+                AuditTargetType.REVIEW_DECISION,
+                decision.id().toString(),
+                invoiceCase.version(),
+                java.util.Map.of("status", "REVIEW_PENDING"),
+                java.util.Map.of(
+                        "status", invoiceCase.status().name(),
+                        "decisionNumber", decision.decisionNumber(),
+                        "reason", reason,
+                        "reviewSnapshotId", target.id().toString()),
+                requestId,
+                now));
+        idempotency.recordResponse(operation.scope(), resourceKey, actor.username(), requestId, 200, view);
+        return CommandResult.ok(view);
     }
 
     private ReviewDecision recordSimpleDecision(

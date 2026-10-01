@@ -1,4 +1,4 @@
-package com.invoicematch.core.payment.application;
+package com.invoicematch.core.payment.persistence;
 
 import com.invoicematch.core.payment.domain.DeliveryAttemptOutcome;
 import com.invoicematch.core.payment.domain.PaymentExportPayload;

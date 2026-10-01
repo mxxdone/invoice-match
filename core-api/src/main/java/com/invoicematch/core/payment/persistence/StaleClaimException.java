@@ -1,4 +1,4 @@
-package com.invoicematch.core.payment.application;
+package com.invoicematch.core.payment.persistence;
 
 import java.util.UUID;
 

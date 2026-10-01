@@ -258,6 +258,47 @@ class InvoiceCaseReadApiIntegrationTest extends AbstractPostgresIntegrationTest 
         assertThat(clamped.get("size").asInt()).isEqualTo(100);
     }
 
+    @Test
+    void oversizedPageRequestsAreRejectedAndNormalEmptyPagesStaySafe() throws Exception {
+        // The default size (20) with the largest int page overflows the JDBC
+        // offset, so it must be rejected as a validation error rather than
+        // silently wrapping or throwing a raw error.
+        MvcResult hugeDefault = performAs("submitter", get("/api/invoice-cases").param("page", "2147483647"));
+        assertThat(hugeDefault.getResponse().getStatus()).isEqualTo(400);
+        JsonNode hugeDefaultError = read(hugeDefault);
+        assertThat(hugeDefaultError.get("code").asText()).isEqualTo("VALIDATION_ERROR");
+
+        MvcResult hugeSize100 = performAs("submitter", get("/api/invoice-cases")
+                .param("page", "2147483647")
+                .param("size", "100"));
+        assertThat(hugeSize100.getResponse().getStatus()).isEqualTo(400);
+        assertThat(read(hugeSize100).get("code").asText()).isEqualTo("VALIDATION_ERROR");
+
+        createCase("submitter", "INV-EMPTY");
+
+        // A page far past the end is an ordinary empty page, not an error.
+        JsonNode outOfRange = list("submitter", List.of("size=20", "page=10"));
+        assertThat(outOfRange.get("items")).isEmpty();
+        assertThat(outOfRange.get("totalItems").asLong()).isEqualTo(1);
+        assertThat(outOfRange.get("hasNext").asBoolean()).isFalse();
+
+        // The largest in-range page with size 1 makes the offset exactly
+        // Integer.MAX_VALUE: hasNext must stay false instead of overflowing to
+        // a negative value.
+        JsonNode maxPage = list("submitter", List.of("size=1", "page=2147483647"));
+        assertThat(maxPage.get("page").asInt()).isEqualTo(Integer.MAX_VALUE);
+        assertThat(maxPage.get("items")).isEmpty();
+        assertThat(maxPage.get("hasNext").asBoolean()).isFalse();
+
+        // A genuinely empty list reports zero pages and no next page.
+        jdbc.execute("truncate table invoice_case cascade");
+        JsonNode empty = list("submitter", List.of("size=20", "page=0"));
+        assertThat(empty.get("items")).isEmpty();
+        assertThat(empty.get("totalItems").asLong()).isZero();
+        assertThat(empty.get("totalPages").asInt()).isZero();
+        assertThat(empty.get("hasNext").asBoolean()).isFalse();
+    }
+
     private static void assertDescendingByCreatedAtThenId(JsonNode items) {
         for (int i = 1; i < items.size(); i++) {
             JsonNode previous = items.get(i - 1);

@@ -1,10 +1,5 @@
 package com.invoicematch.core.matching.application;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.invoicematch.core.invoicecase.application.EvidenceBundlePayload;
 import com.invoicematch.core.matching.domain.MatchException;
 import com.invoicematch.core.matching.domain.MatchExceptionType;
@@ -16,14 +11,10 @@ import com.invoicematch.core.purchasingreference.domain.PurchaseOrderLineFacts;
 import com.invoicematch.core.purchasingreference.domain.ReceiptFacts;
 import com.invoicematch.core.purchasingreference.domain.ReceiptLineFacts;
 import com.invoicematch.core.purchasingreference.domain.ReceiptStatus;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -46,7 +37,7 @@ import org.springframework.stereotype.Component;
 public class MatchEngine {
 
     /** Stable identifier of the canonical payload shape, bumped on any change. */
-    public static final String SCHEMA_VERSION = "match-result-v3";
+    public static final String SCHEMA_VERSION = MatchResultPayloadEncoder.SCHEMA_VERSION;
 
     private static final Comparator<EvidenceBundlePayload.EvidenceLine> INVOICE_LINE_ORDER =
             Comparator.comparingInt(EvidenceBundlePayload.EvidenceLine::lineNumber);
@@ -56,15 +47,10 @@ public class MatchEngine {
             .comparing(ReceiptLineCandidate::receiptDate)
             .thenComparing(ReceiptLineCandidate::receiptLineId)
             .thenComparing(ReceiptLineCandidate::receiptId);
-    private static final Comparator<ReceiptFacts> RECEIPT_ORDER = Comparator.comparing(ReceiptFacts::receiptId);
-    private static final Comparator<ReceiptLineFacts> RECEIPT_FACT_LINE_ORDER =
-            Comparator.comparing(ReceiptLineFacts::receiptLineId);
     private static final Comparator<MatchException> EXCEPTION_ORDER = Comparator
             .comparingInt((MatchException e) -> e.lineNumber() == null ? Integer.MAX_VALUE : e.lineNumber())
             .thenComparing(e -> e.type().name())
             .thenComparing(e -> detailsSortKey(e.details()));
-
-    private final ObjectMapper mapper = new ObjectMapper();
 
     public MatchComputation compute(MatchInput input) {
         List<EvidenceBundlePayload.EvidenceLine> invoiceLines = input.invoiceLines().stream()
@@ -106,9 +92,9 @@ public class MatchEngine {
                 && outcomes.stream().allMatch(outcome ->
                         outcome.status() == MatchLineStatus.MATCHED && outcome.hasCompleteExpectedPlan());
 
-        ObjectNode payload = buildPayload(input, invoiceLines, mappingsByLine, outcomes, orderedExceptions, normal);
-        String json = write(payload);
-        return new MatchComputation(json, sha256Hex(json), normal, List.copyOf(outcomes));
+        MatchResultPayloadEncoder.Encoded encoded =
+                MatchResultPayloadEncoder.encode(input, invoiceLines, mappingsByLine, outcomes, orderedExceptions, normal);
+        return new MatchComputation(encoded.json(), encoded.hash(), normal, List.copyOf(outcomes));
     }
 
     /**
@@ -392,142 +378,6 @@ public class MatchEngine {
         exceptions.add(MatchException.caseLevel(MatchExceptionType.DUPLICATE_INVOICE_SUSPECTED, details));
     }
 
-    private ObjectNode buildPayload(
-            MatchInput input,
-            List<EvidenceBundlePayload.EvidenceLine> invoiceLines,
-            Map<Integer, AppliedMapping> mappingsByLine,
-            List<MatchLineOutcome> outcomes,
-            List<MatchException> exceptions,
-            boolean normal) {
-        ObjectNode root = mapper.createObjectNode();
-        root.put("schemaVersion", SCHEMA_VERSION);
-        root.put("caseId", input.caseId().toString());
-        root.put("supplierId", input.supplierId());
-        root.put("purchaseOrderId", input.purchaseOrderId());
-        root.put("invoiceNumber", input.invoiceNumber());
-        root.put("normalizedInvoiceNumber", input.normalizedInvoiceNumber());
-        root.put("caseVersion", input.caseVersion());
-
-        ObjectNode bundle = root.putObject("evidenceBundle");
-        bundle.put("id", input.evidenceBundleId().toString());
-        bundle.put("version", input.evidenceBundleVersion());
-        bundle.put("payloadHash", input.evidenceBundleHash());
-
-        // Effective case-local mappings actually applied to a line present in
-        // this bundle, sorted by line number. Each carries the exact purchase
-        // order line the human chose, so re-matches cannot silently retarget.
-        ArrayNode appliedMappings = root.putArray("appliedMappings");
-        for (EvidenceBundlePayload.EvidenceLine line : invoiceLines) {
-            AppliedMapping mapping = mappingsByLine.get(line.lineNumber());
-            if (mapping != null) {
-                ObjectNode node = appliedMappings.addObject();
-                node.put("lineNumber", line.lineNumber());
-                node.put("itemId", mapping.itemId());
-                node.put("purchaseOrderLineId", mapping.purchaseOrderLineId());
-            }
-        }
-
-        ObjectNode purchasing = root.putObject("purchasingSnapshot");
-        purchasing.put("snapshotVersion", input.purchasing().snapshotVersion());
-        purchasing.put("purchaseOrderVersion", input.purchasing().purchaseOrder().version());
-        purchasing.put("payloadHash", input.purchasingSnapshotHash());
-        ArrayNode receipts = purchasing.putArray("receipts");
-        input.purchasing().receipts().stream()
-                .filter(receipt -> receipt.status() == ReceiptStatus.CONFIRMED)
-                .sorted(RECEIPT_ORDER)
-                .forEach(receipt -> writeReceipt(receipts, receipt));
-
-        ObjectNode allocationPlan = root.putObject("allocationPlan");
-        allocationPlan.put("consuming", false);
-        allocationPlan.put("mode", "NON_CONSUMING_EXPECTED_PLAN_V1");
-        allocationPlan.put("fifoOrdering", "receiptDate,receiptLineId,receiptId");
-
-        ArrayNode lineOutcomes = root.putArray("lineOutcomes");
-        outcomes.forEach(outcome -> writeLineOutcome(lineOutcomes, outcome));
-
-        ArrayNode exceptionsNode = root.putArray("exceptions");
-        exceptions.forEach(exception -> writeException(exceptionsNode, exception));
-
-        root.put("normal", normal);
-        return root;
-    }
-
-    private void writeReceipt(ArrayNode receipts, ReceiptFacts receipt) {
-        ObjectNode node = receipts.addObject();
-        node.put("receiptId", receipt.receiptId());
-        node.put("status", receipt.status().name());
-        node.put("receiptDate", receipt.receiptDate().toString());
-        node.put("version", receipt.version());
-        ArrayNode lines = node.putArray("lines");
-        receipt.lines().stream().sorted(RECEIPT_FACT_LINE_ORDER).forEach(line -> {
-            ObjectNode lineNode = lines.addObject();
-            lineNode.put("receiptLineId", line.receiptLineId());
-            lineNode.put("version", line.version());
-            lineNode.put("purchaseOrderLineId", line.purchaseOrderLineId());
-            lineNode.put("confirmedQuantity", line.confirmedQuantity().value());
-        });
-    }
-
-    private void writeLineOutcome(ArrayNode lineOutcomes, MatchLineOutcome outcome) {
-        ObjectNode node = lineOutcomes.addObject();
-        node.put("lineNumber", outcome.lineNumber());
-        node.put("rawItemName", outcome.rawItemName());
-        node.put("confirmedItemId", outcome.confirmedItemId());
-        node.put("status", outcome.status().name());
-
-        ArrayNode candidateIds = node.putArray("candidatePoLineIds");
-        outcome.candidatePoLineIds().forEach(candidateIds::add);
-
-        if (outcome.purchaseOrderLine() == null) {
-            node.putNull("purchaseOrderLine");
-        } else {
-            MatchPoLine poLine = outcome.purchaseOrderLine();
-            ObjectNode poLineNode = node.putObject("purchaseOrderLine");
-            poLineNode.put("purchaseOrderLineId", poLine.purchaseOrderLineId());
-            poLineNode.put("itemId", poLine.itemId());
-            poLineNode.put("orderedQuantity", poLine.orderedQuantity());
-            poLineNode.put("unitPrice", poLine.unitPrice());
-        }
-
-        node.put("invoiceQuantity", outcome.invoiceQuantity());
-        node.put("invoiceUnitPrice", outcome.invoiceUnitPrice());
-        node.put("availableConfirmedQuantity", outcome.availableConfirmedQuantity());
-        node.put("plannedQuantity", outcome.plannedQuantity());
-
-        ArrayNode plan = node.putArray("expectedAllocationPlan");
-        outcome.expectedAllocationPlan().forEach(allocation -> {
-            ObjectNode allocationNode = plan.addObject();
-            allocationNode.put("receiptId", allocation.receiptId());
-            allocationNode.put("receiptLineId", allocation.receiptLineId());
-            allocationNode.put("receiptDate", allocation.receiptDate().toString());
-            allocationNode.put("receiptLineVersion", allocation.receiptLineVersion());
-            allocationNode.put("confirmedQuantity", allocation.confirmedQuantity());
-            allocationNode.put("plannedQuantity", allocation.plannedQuantity());
-        });
-
-        ArrayNode lineExceptions = node.putArray("exceptions");
-        outcome.exceptions().forEach(exception -> writeException(lineExceptions, exception));
-    }
-
-    private void writeException(ArrayNode target, MatchException exception) {
-        ObjectNode node = target.addObject();
-        node.put("type", exception.type().name());
-        if (exception.lineNumber() == null) {
-            node.putNull("lineNumber");
-        } else {
-            node.put("lineNumber", exception.lineNumber());
-        }
-        node.set("details", mapper.valueToTree(exception.details()));
-    }
-
-    private String write(ObjectNode node) {
-        try {
-            return mapper.writeValueAsString(node);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Canonical match payload serialization failed", e);
-        }
-    }
-
     private static Map<String, Object> orderedDetails() {
         return new LinkedHashMap<>();
     }
@@ -536,15 +386,6 @@ public class MatchEngine {
         StringBuilder key = new StringBuilder();
         details.forEach((name, value) -> key.append(name).append('=').append(String.valueOf(value)).append(';'));
         return key.toString();
-    }
-
-    private static String sha256Hex(String value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 is unavailable", e);
-        }
     }
 
     private static String blankToNull(String value) {

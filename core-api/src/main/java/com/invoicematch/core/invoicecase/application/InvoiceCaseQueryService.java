@@ -11,18 +11,13 @@ import com.invoicematch.core.invoicecase.domain.InvoiceCaseStatus;
 import com.invoicematch.core.invoicecase.domain.InvoiceLine;
 import com.invoicematch.core.invoicecase.persistence.DraftRevisionRepository;
 import com.invoicematch.core.invoicecase.persistence.EvidenceBundleRepository;
+import com.invoicematch.core.invoicecase.persistence.InvoiceCaseListQuery;
+import com.invoicematch.core.invoicecase.persistence.InvoiceCaseListQueryStore;
 import com.invoicematch.core.invoicecase.persistence.InvoiceCaseRepository;
 import com.invoicematch.core.invoicecase.persistence.InvoiceLineRepository;
 import com.invoicematch.core.security.Actor;
 import com.invoicematch.core.security.Role;
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.criteria.CriteriaBuilder;
-import jakarta.persistence.criteria.CriteriaQuery;
-import jakarta.persistence.criteria.Predicate;
-import jakarta.persistence.criteria.Root;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,25 +33,23 @@ public class InvoiceCaseQueryService {
     public static final int DEFAULT_PAGE_SIZE = 20;
     public static final int MAX_PAGE_SIZE = 100;
 
-    private static final char LIKE_ESCAPE = '\\';
-
     private final InvoiceCaseRepository invoiceCases;
     private final DraftRevisionRepository draftRevisions;
     private final InvoiceLineRepository invoiceLines;
     private final EvidenceBundleRepository evidenceBundles;
-    private final EntityManager entityManager;
+    private final InvoiceCaseListQueryStore listQueryStore;
 
     public InvoiceCaseQueryService(
             InvoiceCaseRepository invoiceCases,
             DraftRevisionRepository draftRevisions,
             InvoiceLineRepository invoiceLines,
             EvidenceBundleRepository evidenceBundles,
-            EntityManager entityManager) {
+            InvoiceCaseListQueryStore listQueryStore) {
         this.invoiceCases = invoiceCases;
         this.draftRevisions = draftRevisions;
         this.invoiceLines = invoiceLines;
         this.evidenceBundles = evidenceBundles;
-        this.entityManager = entityManager;
+        this.listQueryStore = listQueryStore;
     }
 
     /**
@@ -78,7 +71,7 @@ public class InvoiceCaseQueryService {
      */
     public InvoiceCasePage list(InvoiceCaseSearchCriteria criteria, Actor actor) {
         int size = Math.min(Math.max(criteria.size(), 1), MAX_PAGE_SIZE);
-        int page = Math.max(criteria.page(), 0);
+        long page = Math.max((long) criteria.page(), 0L);
         boolean crossCaseReader = actor.hasRole(Role.APPROVER) || actor.hasRole(Role.OPERATOR);
         String submitterScope = crossCaseReader ? blankToNull(criteria.submittedBy()) : actor.username();
         String normalizedInvoiceNumber = blankToNull(InvoiceNumberNormalizer.normalize(criteria.invoiceNumber()));
@@ -86,103 +79,27 @@ public class InvoiceCaseQueryService {
                 ? List.of(InvoiceCaseStatus.values())
                 : List.of(criteria.status());
 
-        CriteriaBuilder cb = entityManager.getCriteriaBuilder();
+        InvoiceCaseListQuery query = new InvoiceCaseListQuery(
+                statuses,
+                submitterScope,
+                criteria.supplierId(),
+                criteria.purchaseOrderId(),
+                normalizedInvoiceNumber,
+                criteria.submittedFrom(),
+                criteria.submittedTo(),
+                page,
+                size);
+        InvoiceCaseListQueryStore.InvoiceCaseListSlice slice = listQueryStore.query(query);
 
-        CriteriaQuery<InvoiceCaseSummary> query = cb.createQuery(InvoiceCaseSummary.class);
-        Root<InvoiceCase> root = query.from(InvoiceCase.class);
-        query.select(cb.construct(
-                InvoiceCaseSummary.class,
-                root.get("id"),
-                root.get("supplierId"),
-                root.get("purchaseOrderId"),
-                root.get("invoiceNumber"),
-                root.get("submittedBy"),
-                root.get("status"),
-                root.get("version"),
-                root.get("createdAt"),
-                root.get("updatedAt"),
-                root.get("submittedAt")));
-        query.where(predicates(cb, root, statuses, criteria, submitterScope, normalizedInvoiceNumber)
-                .toArray(Predicate[]::new));
-        query.orderBy(cb.desc(root.get("createdAt")), cb.desc(root.get("id")));
-        List<InvoiceCaseSummary> items = entityManager
-                .createQuery(query)
-                .setFirstResult(page * size)
-                .setMaxResults(size)
-                .getResultList();
-
-        CriteriaQuery<Long> countQuery = cb.createQuery(Long.class);
-        Root<InvoiceCase> countRoot = countQuery.from(InvoiceCase.class);
-        countQuery.select(cb.count(countRoot));
-        countQuery.where(predicates(cb, countRoot, statuses, criteria, submitterScope, normalizedInvoiceNumber)
-                .toArray(Predicate[]::new));
-        long totalItems = entityManager.createQuery(countQuery).getSingleResult();
-
-        int totalPages = (int) ((totalItems + size - 1) / size);
-        return new InvoiceCasePage(items, page, size, totalItems, totalPages, page + 1 < totalPages);
-    }
-
-    private static List<Predicate> predicates(
-            CriteriaBuilder cb,
-            Root<InvoiceCase> root,
-            List<InvoiceCaseStatus> statuses,
-            InvoiceCaseSearchCriteria criteria,
-            String submitterScope,
-            String normalizedInvoiceNumber) {
-        List<Predicate> predicates = new ArrayList<>();
-        predicates.add(root.get("status").in(statuses));
-        if (submitterScope != null) {
-            predicates.add(cb.equal(root.get("submittedBy"), submitterScope));
-        }
-        if (criteria.supplierId() != null && !criteria.supplierId().isBlank()) {
-            predicates.add(cb.equal(root.get("supplierId"), criteria.supplierId()));
-        }
-        String purchaseOrderFragment = criteria.purchaseOrderId() == null
-                ? null
-                : criteria.purchaseOrderId().trim();
-        if (purchaseOrderFragment != null && !purchaseOrderFragment.isEmpty()) {
-            predicates.add(cb.like(
-                    cb.lower(root.get("purchaseOrderId")),
-                    containsPattern(purchaseOrderFragment.toLowerCase(Locale.ROOT)),
-                    LIKE_ESCAPE));
-        }
-        if (normalizedInvoiceNumber != null) {
-            predicates.add(cb.like(
-                    root.get("normalizedInvoiceNumber"), containsPattern(normalizedInvoiceNumber), LIKE_ESCAPE));
-        }
-        if (criteria.submittedFrom() != null) {
-            predicates.add(cb.greaterThanOrEqualTo(root.get("submittedAt"), criteria.submittedFrom()));
-        }
-        if (criteria.submittedTo() != null) {
-            predicates.add(cb.lessThanOrEqualTo(root.get("submittedAt"), criteria.submittedTo()));
-        }
-        return predicates;
+        long totalPagesLong = slice.totalItems() == 0 ? 0L : ((slice.totalItems() - 1L) / size) + 1L;
+        int totalPages = totalPagesLong > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) totalPagesLong;
+        boolean hasNext = page + 1L < totalPages;
+        List<InvoiceCaseSummary> items = slice.rows().stream().map(InvoiceCaseSummary::from).toList();
+        return new InvoiceCasePage(items, (int) page, size, slice.totalItems(), totalPages, hasNext);
     }
 
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value;
-    }
-
-    /**
-     * Builds a bound {@code LIKE} pattern for a contains match. The literal is
-     * escaped first so the caller's {@code %}, {@code _} and {@code \} are
-     * matched as ordinary characters instead of turning into wildcards or
-     * escape sequences.
-     */
-    private static String containsPattern(String literal) {
-        return "%" + escapeLike(literal) + "%";
-    }
-
-    private static String escapeLike(String literal) {
-        StringBuilder escaped = new StringBuilder(literal.length() + 8);
-        for (int i = 0; i < literal.length(); i++) {
-            char c = literal.charAt(i);
-            if (c == LIKE_ESCAPE || c == '%' || c == '_') {
-                escaped.append(LIKE_ESCAPE);
-            }
-            escaped.append(c);
-        }
-        return escaped.toString();
     }
 
     public InvoiceCaseDetail get(UUID caseId) {

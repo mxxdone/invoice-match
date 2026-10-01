@@ -1,6 +1,7 @@
 package com.invoicematch.core.invoicecase.application;
 
 import com.invoicematch.core.invoicecase.domain.InvoiceCaseStatus;
+import com.invoicematch.core.invoicecase.persistence.InvoiceCaseListRow;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -21,4 +22,18 @@ public record InvoiceCaseSummary(
         Instant createdAt,
         Instant updatedAt,
         Instant submittedAt) {
+
+    public static InvoiceCaseSummary from(InvoiceCaseListRow row) {
+        return new InvoiceCaseSummary(
+                row.id(),
+                row.supplierId(),
+                row.purchaseOrderId(),
+                row.invoiceNumber(),
+                row.submittedBy(),
+                row.status(),
+                row.version(),
+                row.createdAt(),
+                row.updatedAt(),
+                row.submittedAt());
+    }
 }

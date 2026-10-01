@@ -243,3 +243,37 @@ flowchart TD
     P109 --> P110
     P110 --> P111[P1-11 통합 인수]
 ```
+
+## 4. 유지보수 Ticket
+
+### R1-01 — 백엔드 3계층/클린코드 정리
+
+**진행 상태:** 완료(2026-10-02, 브랜치 `refactor/three-layer-cleanup`). Phase 1 인수 후 백엔드 리뷰 finding 7건과 Webhook 저장 모듈 분리 보완을 계약 변경 없이 bounded 범위로 반영했다. 상세 근거·결과는 `ThreeLayerRefactoring.md`에 기록했다.
+
+**목적과 범위:** `core-api` main/test만 수정한다. 공개 API JSON/status/error schema, actor-scoped 멱등 replay, 승인 단일 트랜잭션과 write 순서, lock 순서·전파, canonical JSON byte/hash(legacy review 포함)를 보존한다. 프런트엔드·DB migration·신규 의존성·무관 기능은 포함하지 않는다.
+
+**관련 규칙/불변식:** 승인은 allocation·decision·PaymentRequest·Outbox·case·audit을 한 트랜잭션으로 쓰고, 외부 HTTP는 lock/트랜잭션 밖에서 수행한다. Webhook ACK는 `invoice_case -> payment_request -> outbox_event -> event insert`, 실패는 `payment_request -> outbox_event -> event insert` 순서와 실패 시 rollback을 유지한다. 영속 계층은 application 업무 타입에 역의존하지 않는다.
+
+**Acceptance Criteria:** (1) oversized page 요청이 `400 VALIDATION_ERROR`이고 정상 empty/out-of-range page와 `hasNext` 산술이 안전하다. (2) 목록 Criteria/EntityManager/predicate/LIKE escaping이 persistence query 모듈로 이동하고 actor scope·normalization은 application에 남는다. (3) Webhook SQL이 persistence 모듈로 추출되고 application이 `@Transactional`·replay/conflict 정책을 소유하며 저장 모듈은 `MANDATORY`로 참여한다. (4) `OutboxStore`가 `payment.persistence`로 이동한다. (5) 승인 decision payload·audit summary가 순수 helper로 추출된다. (6) `MatchEngine`이 계산과 canonical serialization/hash를 분리하고 golden byte/hash가 불변이다. (7) `ReviewService`의 보완/거절 중복이 공유 helper로 정리된다. (8) `CommandResult` HTTP 결합은 replay 호환 때문에 의도적으로 유지됨을 문서화한다.
+
+**테스트/검증:** `core-api`에서 Java 21 + Testcontainers PostgreSQL로 focused unit/integration 후 whole suite와 bootJar를 실행했다. whole backend `.\gradlew.bat test --console=plain` = 521 tests, 0 failures/errors/skipped; `bootJar` BUILD SUCCESSFUL. golden canonical/hash와 Webhook/승인/검토/매칭/조회 focused 통합 테스트 PASS. 상세 명령·수치는 `ThreeLayerRefactoring.md`에 기록했다. 실패를 skip이나 flaky retry로 숨기지 않았다.
+
+**의존성:** P1-01~P1-11(인수 완료).
+
+**사람 확인:** 공개 API 응답 schema와 승인·webhook replay 동작이 이전과 동일한지, oversized page만 새 400이 되는지 확인한다.
+
+### R1-02 — main CI IntegrationTest 실패 조사·복구 (미착수)
+
+**진행 상태:** 미착수(보고만 접수). 사용자 보고: main 원본의 CI 검증에서 IntegrationTest가 통과하지 못한다. 아직 실패 로그·run URL·실패 테스트명이 없으므로 원인을 추정하지 않는다. 이 Ticket은 R1-01과 독립이며 `refactor/three-layer-cleanup` 브랜치에서 CI 구현을 섞지 않는다.
+
+**목적과 범위:** 실패 CI 로그를 수집하고 원본 `main`에서 재현한 뒤, 테스트 코드/제품 코드/CI runner·환경 중 원인을 구분해 최소 수정한다. 수정 후 해당 IntegrationTest와 CI 전체를 재검증한다.
+
+**관련 규칙/불변식:** 로그·run URL·실패 테스트명 없이 원인을 단정하거나 코드를 바꾸지 않는다. flaky retry나 skip으로 실패를 숨기지 않는다.
+
+**Acceptance Criteria:** 실패 로그와 run URL, 실패 테스트명, 재현 절차, 원인 분류(테스트/코드/환경), 최소 수정 diff, 재검증 결과가 증거로 남는다.
+
+**테스트/검증:** 수집한 실패 로그 기준으로 재현 명령을 고정하고, 수정 범위의 IntegrationTest와 CI 전체 파이프라인을 다시 실행해 결과를 기록한다.
+
+**의존성:** 없음(신규 조사 Ticket). R1-01과 독립.
+
+**사람 확인:** CI run URL과 실패 테스트명, 재현·수정·재검증 증거를 확인한다.
