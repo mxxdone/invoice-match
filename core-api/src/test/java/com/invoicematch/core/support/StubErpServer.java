@@ -34,6 +34,7 @@ public final class StubErpServer implements AutoCloseable {
     private volatile Duration delay = Duration.ZERO;
     private volatile Duration trickleChunkDelay = Duration.ZERO;
     private volatile int trickleChunks = 0;
+    private volatile boolean drop = false;
 
     public StubErpServer() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -49,6 +50,12 @@ public final class StubErpServer implements AutoCloseable {
                 exchange.getRequestHeaders().getFirst("Idempotency-Key"),
                 exchange.getRequestHeaders().getFirst("X-Payment-Request-Id"),
                 requestBody));
+        if (drop) {
+            // Accepted the request, then closed without a response status: the
+            // client sees a transport failure / no completed 2xx.
+            exchange.close();
+            return;
+        }
         Duration currentDelay = delay;
         if (!currentDelay.isZero()) {
             try {
@@ -85,8 +92,18 @@ public final class StubErpServer implements AutoCloseable {
     public void respond(int status, String body) {
         this.delay = Duration.ZERO;
         this.trickleChunks = 0;
+        this.drop = false;
         this.status = status;
         this.body = body;
+    }
+
+    /** Accepts the request and closes without any response status. */
+    public void respondDrop() {
+        this.delay = Duration.ZERO;
+        this.trickleChunks = 0;
+        this.status = 200;
+        this.body = "{\"accepted\":true}";
+        this.drop = true;
     }
 
     /** Clears captured requests and the counter between tests. */
@@ -98,6 +115,7 @@ public final class StubErpServer implements AutoCloseable {
 
     public void respondAfter(int status, String body, Duration delay) {
         this.trickleChunks = 0;
+        this.drop = false;
         this.status = status;
         this.body = body;
         this.delay = delay;
@@ -106,6 +124,7 @@ public final class StubErpServer implements AutoCloseable {
     /** Sends 200 headers at once and then trickles {@code chunks} body writes. */
     public void respondTrickle(int chunks, Duration chunkDelay) {
         this.delay = Duration.ZERO;
+        this.drop = false;
         this.status = 200;
         this.trickleChunks = chunks;
         this.trickleChunkDelay = chunkDelay;

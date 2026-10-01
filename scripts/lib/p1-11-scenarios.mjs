@@ -509,6 +509,7 @@ export async function runP111Scenarios({ request, config, guard, log = () => {},
   // really gets a late 2xx rather than timing out.
   const INFLIGHT_DELAY_MS = 4000;
   const exportRequestsBefore = erpChild.exportRequestCount();
+  const completionsBefore = erpChild.exportCompletions().length;
   erpChild.setDelayMs(INFLIGHT_DELAY_MS);
   const inFlightApproved = expectStatus(await approve(inFlight, inFlightSnapshot), [200, 201], 'in-flight approve');
   const inFlightKey = `${inFlightApproved.json.paymentRequestId}:1`;
@@ -517,11 +518,12 @@ export async function runP111Scenarios({ request, config, guard, log = () => {},
     return view.payment?.paymentStatus === 'SENDING' && view.payment?.outboxStatus === 'SENDING' ? view : null;
   });
   expect(sending.payment.outboxStatus === 'SENDING', 'the relay must commit the outbox and payment to SENDING before HTTP');
-  const inFlightRecord = erp.record(inFlightKey);
-  // The Mock ERP has not answered yet, so no record exists; deliver the signed
-  // result from a synthetic event with the same agreed key and outcome. This is
-  // the exact "signed webhook arrives during SENDING" ordering the relay must
-  // tolerate.
+  const openExport = erpChild.exportCompletions()[completionsBefore];
+  expect(openExport, 'the relay must have opened one ERP export request');
+  expect(!openExport.finished && !openExport.closedWithoutFinish, 'the ERP request must still be open (no completed response) while SENDING');
+  // The Mock ERP has not answered yet, so deliver the signed result from a
+  // synthetic event with the same agreed key and outcome. This is the exact
+  // "signed webhook arrives during SENDING" ordering the relay must tolerate.
   const inFlightBody = compact({
     provider: 'mock-erp',
     externalEventId: `evt-inflight-${Date.now()}`,
@@ -546,21 +548,27 @@ export async function runP111Scenarios({ request, config, guard, log = () => {},
     return view.caseStatus === 'EXPORTED' ? view : null;
   });
   const convergedAt = Date.now();
-  // Wait past the delay plus a margin so the late ERP 2xx has definitely
-  // returned; the relay's finalization must be a stale no-op over the whole
-  // tuple (case/payment/outbox) and must add no second payment or result event.
+  // The webhook converged while the ERP request was still open: no completed
+  // response existed at convergence time.
+  expect(!erpChild.exportCompletions()[completionsBefore].finished, 'the webhook must converge while the ERP request is still open');
+  // Wait past the delay plus a margin so the late ERP response has definitely
+  // FINISHED with a real status; the relay's finalization must then be a stale
+  // no-op over the whole tuple (case/payment/outbox).
   await new Promise((resolve) => setTimeout(resolve, INFLIGHT_DELAY_MS + 2500));
   const late = await handoff(inFlight);
   expect(late.caseStatus === 'EXPORTED', 'the delayed relay finalization must not change the converged case state');
   expect(late.payment?.paymentStatus === 'ACKNOWLEDGED', 'the delayed relay finalization must not change the payment');
   expect(late.payment?.outboxStatus === 'DELIVERED', 'the delayed relay finalization must not change the outbox');
-  const lateSuccessAt = erpChild.lastExportAt();
-  expect(lateSuccessAt !== null && lateSuccessAt >= convergedAt, 'the late ERP 2xx must have completed after the webhook terminalized the outbox');
+  const completedExport = erpChild.exportCompletions()[completionsBefore];
+  expect(completedExport.finished === true, 'the delayed ERP request must have actually finished a response');
+  expect(completedExport.status === 200, `the late ERP response must be a real 2xx (was ${completedExport.status})`);
+  expect(completedExport.completedAt >= convergedAt, 'the real 2xx must have completed after the webhook terminalized the outbox');
   const inFlightCounts = {
     delayMs: INFLIGHT_DELAY_MS,
     exportRequestsBefore,
     exportRequestsAfter: erpChild.exportRequestCount(),
-    lateSuccessAfterConvergenceMs: lateSuccessAt - convergedAt,
+    lateStatus: completedExport.status,
+    lateSuccessAfterConvergenceMs: completedExport.completedAt - convergedAt,
     payments: await scalar(`select count(*) from payment_request where invoice_case_id = '${inFlight}'`),
     resultEvents: await scalar(`select count(*) from payment_result_event where external_payment_key = '${inFlightKey}'`),
     relayAcknowledgedAttempts: await scalar(
@@ -586,6 +594,7 @@ export async function runP111Scenarios({ request, config, guard, log = () => {},
   const loss = await createSubmittedCase('AC-LOSS-' + Date.now(), line(5, 2500, 'ITEM-A4-80'));
   await runMatch(loss);
   const lossSnapshot = await freeze(loss);
+  const lossCompletionsBefore = erpChild.exportCompletions().length;
   erp.setDropResponse(true);
   const lossApproved = expectStatus(await approve(loss, lossSnapshot), [200, 201], 'loss approve');
   const lossKey = `${lossApproved.json.paymentRequestId}:1`;
@@ -596,6 +605,12 @@ export async function runP111Scenarios({ request, config, guard, log = () => {},
     }
     return null;
   });
+  // The dropped export must be recorded as closed-without-finish, never as a
+  // completed 2xx.
+  const droppedExport = erpChild.exportCompletions()[lossCompletionsBefore];
+  expect(droppedExport && droppedExport.closedWithoutFinish && !droppedExport.finished,
+    'a dropResponse export must be recorded as closed without a completed response, not a 2xx');
+  expect(droppedExport.status === null, 'a dropped export must not carry a response status');
   expect(lossUnknown.caseStatus === 'EXPORT_PENDING', 'a lost response must leave the case EXPORT_PENDING, not EXPORTED');
   expect((await lossUnknown.payment).paymentStatus !== 'ACKNOWLEDGED', 'UNKNOWN must be persisted before any result');
   const lossPaymentCountBefore = await scalar(`select count(*) from payment_request where invoice_case_id = '${loss}'`);

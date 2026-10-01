@@ -9,6 +9,11 @@
 // exposes it through the same child-process lifecycle contract
 // (name/alive/stop) that runVerification already owns and cleans up.
 //
+// It also records, per export request, whether the HTTP response actually
+// FINISHED (a real status was written) versus closed without a response
+// (dropResponse) versus is still open. That distinction is required so a late
+// real 2xx is never inferred from request arrival or a fixed sleep.
+//
 // It is test infrastructure only. It never changes the mock-erp HTTP contract
 // or the core-api contract and it is not used by Compose.
 
@@ -30,28 +35,39 @@ export async function startErpFixture({
   autoWebhook = false,
 }) {
   const erp = createMockErp({ webhookUrl, webhookSecret, dropResponse, autoWebhook });
-  const state = { delayMs: 0, exportRequests: 0, lastExportAt: null };
-  // Test-only response delay: lets a scenario deterministically observe the
-  // committed SENDING window (the relay flips to SENDING, then blocks on HTTP)
-  // before a signed webhook resolves the same export. It is never used by
-  // Compose or by the committed mock-erp HTTP contract.
+  const state = { delayMs: 0, exportRequests: 0, exportCompletions: [] };
+
   const handler = (request, response) => {
     const pathname = new URL(request.url, 'http://localhost').pathname;
     if (request.method === 'POST' && pathname === '/api/payment-exports') {
+      const record = {
+        requestedAt: Date.now(),
+        status: null,
+        completedAt: null,
+        finished: false,
+        closedWithoutFinish: false,
+      };
       state.exportRequests += 1;
-    }
-    if (state.delayMs > 0 && request.method === 'POST' && pathname === '/api/payment-exports') {
-      // Record completion time when the delayed response is actually produced,
-      // so a scenario can prove a late HTTP success arrived after the webhook
-      // had already terminalized the outbox.
-      setTimeout(() => {
-        state.lastExportAt = Date.now();
-        erp.handler(request, response);
-      }, state.delayMs);
-      return;
+      state.exportCompletions.push(record);
+      response.on('finish', () => {
+        record.finished = true;
+        record.status = response.statusCode;
+        record.completedAt = Date.now();
+      });
+      response.on('close', () => {
+        if (!record.finished) {
+          record.closedWithoutFinish = true;
+          record.completedAt = Date.now();
+        }
+      });
+      if (state.delayMs > 0) {
+        setTimeout(() => erp.handler(request, response), state.delayMs);
+        return;
+      }
     }
     erp.handler(request, response);
   };
+
   const server = createServer(handler);
   // Track this fixture's own sockets so a delayed/pending response cannot keep
   // the process alive during a bounded shutdown.
@@ -66,16 +82,28 @@ export async function startErpFixture({
     server.once('error', reject);
     server.listen(port, host, () => resolve());
   });
+  const bound = server.address();
+  const boundPort = bound && typeof bound === 'object' ? bound.port : port;
 
   return {
     name,
     erp,
-    baseUrl: `http://${host}:${port}`,
+    baseUrl: `http://${host}:${boundPort}`,
     sign: (timestamp, rawBody) => signWebhook(webhookSecret, timestamp, rawBody),
     setDelayMs: (value) => { state.delayMs = Number(value) || 0; },
     setDropResponse: (value) => erp.setDropResponse(value),
     exportRequestCount: () => state.exportRequests,
-    lastExportAt: () => state.lastExportAt,
+    exportCompletions: () => state.exportCompletions.map((record) => ({ ...record })),
+    // The last request whose HTTP response actually FINISHED (a real status was
+    // written). A dropped or still-open request is never returned here.
+    lastCompletedExport: () => {
+      for (let i = state.exportCompletions.length - 1; i >= 0; i -= 1) {
+        if (state.exportCompletions[i].finished) {
+          return { ...state.exportCompletions[i] };
+        }
+      }
+      return null;
+    },
     alive() {
       return !closed && server.listening;
     },

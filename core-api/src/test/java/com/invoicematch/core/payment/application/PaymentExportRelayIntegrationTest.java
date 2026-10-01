@@ -5,6 +5,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.invoicematch.core.payment.adapter.PaymentExportOutcome;
 import com.invoicematch.core.payment.domain.PaymentExportPayload;
+import com.invoicematch.core.payment.webhook.PaymentResultCommand;
+import com.invoicematch.core.payment.webhook.PaymentResultOutcome;
+import com.invoicematch.core.payment.webhook.PaymentResultWebhookApplicationService;
 import com.invoicematch.core.support.StubErpServer;
 import java.io.IOException;
 import java.sql.Connection;
@@ -23,6 +26,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterAll;
@@ -92,6 +96,9 @@ class PaymentExportRelayIntegrationTest extends AbstractPaymentExportIntegration
 
     @Autowired
     private OutboxStore store;
+
+    @Autowired
+    private PaymentResultWebhookApplicationService webhooks;
 
     @Autowired
     private ApplicationContext applicationContext;
@@ -432,6 +439,112 @@ class PaymentExportRelayIntegrationTest extends AbstractPaymentExportIntegration
         } finally {
             pool.shutdownNow();
         }
+    }
+
+    @Test
+    void lateErpTwoHundredAfterWebhookConvergenceReachesStaleFinalizeNoOp() throws Exception {
+        UUID caseId = approvedCase("INV-LATE-2XX", 5);
+        UUID outboxId = outboxId(caseId);
+        UUID paymentId = (UUID) payment(caseId).get("id");
+        // A definite 2xx that arrives after the signed webhook already terminalized
+        // the export. The delay is below the 2s total request deadline, so the
+        // relay's client really receives 200 (not a timeout).
+        ERP.respondAfter(200, "{\"accepted\":true}", Duration.ofMillis(1200));
+
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<Integer> running = pool.submit(relay::runOnce);
+            awaitOutboxStatus(caseId, "SENDING", 10);
+            awaitErpRequests(1, 10);
+            assertThat(ERP.requestCount()).isEqualTo(1);
+
+            // The signed result converges the export while the HTTP request is
+            // still open in the relay.
+            assertThat(INTERCEPTOR.finalizeOutcome()).isNull();
+            webhooks.ingest(new PaymentResultCommand(
+                    "mock-erp", "evt-late-" + caseId, paymentId + ":1", paymentId,
+                    PaymentResultOutcome.ACKNOWLEDGED,
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "ERP-LATE"));
+            assertTuple(caseId, "ACKNOWLEDGED", "DELIVERED", "EXPORTED");
+
+            // The relay's HTTP call now completes with a real 2xx and reaches
+            // finalize, so the interceptor observes an Acknowledged outcome.
+            assertThat(INTERCEPTOR.awaitFinalize(30, TimeUnit.SECONDS))
+                    .as("the relay must receive the late real 2xx after convergence")
+                    .isTrue();
+            assertThat(INTERCEPTOR.finalizeOutcome()).isInstanceOf(PaymentExportOutcome.Acknowledged.class);
+            assertThat(INTERCEPTOR.finalized())
+                    .as("the stale finalize must not commit")
+                    .isFalse();
+            assertThat(running.get(30, TimeUnit.SECONDS)).isZero();
+
+            // Whole tuple and every count are unchanged by the stale finalize.
+            assertTuple(caseId, "ACKNOWLEDGED", "DELIVERED", "EXPORTED");
+            assertThat(count("payment_request")).isEqualTo(1);
+            assertThat(count("outbox_event")).isEqualTo(1);
+            assertThat(count("payment_result_event")).isEqualTo(1);
+            assertThat(acknowledgedAttempts(outboxId)).isZero();
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void openAndDroppedExportsAreNotMistakenForALateTwoHundred() throws Exception {
+        // (a) The server holds the request past the total deadline: a timeout is
+        // ResultUnknown, never a completed 2xx.
+        UUID openCase = approvedCase("INV-OPEN", 5);
+        UUID openOutbox = outboxId(openCase);
+        ERP.respondAfter(200, "{\"accepted\":true}", Duration.ofSeconds(3));
+        assertThat(relay.runOnce()).isZero();
+        assertThat(INTERCEPTOR.awaitFinalize(30, TimeUnit.SECONDS)).isTrue();
+        assertThat(INTERCEPTOR.finalizeOutcome()).isInstanceOf(PaymentExportOutcome.ResultUnknown.class);
+        assertTuple(openCase, "RESULT_UNKNOWN", "RESULT_UNKNOWN", "EXPORT_PENDING");
+        assertThat(acknowledgedAttempts(openOutbox)).isZero();
+
+        // (b) The server closes without a response status: also ResultUnknown.
+        INTERCEPTOR.reset();
+        UUID dropCase = approvedCase("INV-DROP", 5);
+        UUID dropOutbox = outboxId(dropCase);
+        ERP.respondDrop();
+        assertThat(relay.runOnce()).isZero();
+        assertThat(INTERCEPTOR.awaitFinalize(30, TimeUnit.SECONDS)).isTrue();
+        assertThat(INTERCEPTOR.finalizeOutcome()).isInstanceOf(PaymentExportOutcome.ResultUnknown.class);
+        assertTuple(dropCase, "RESULT_UNKNOWN", "RESULT_UNKNOWN", "EXPORT_PENDING");
+        assertThat(acknowledgedAttempts(dropOutbox)).isZero();
+
+        // Neither open nor dropped produced an external result or an
+        // ACKNOWLEDGED attempt.
+        assertThat(count("payment_result_event")).isZero();
+    }
+
+    private void awaitErpRequests(int expected, int seconds) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(seconds).toNanos();
+        while (System.nanoTime() < deadline) {
+            if (ERP.requestCount() >= expected) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("ERP did not receive " + expected + " request(s) within " + seconds + "s");
+    }
+
+    private void awaitOutboxStatus(UUID caseId, String expected, int seconds) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(seconds).toNanos();
+        while (System.nanoTime() < deadline) {
+            if (expected.equals(outbox(caseId).get("status"))) {
+                return;
+            }
+            Thread.sleep(50);
+        }
+        throw new AssertionError("outbox did not reach " + expected + " within " + seconds + "s");
+    }
+
+    private int acknowledgedAttempts(UUID outboxId) {
+        return jdbc.queryForObject(
+                "select count(*) from outbox_delivery_attempt where outbox_event_id = ? and outcome = 'ACKNOWLEDGED'",
+                Integer.class,
+                outboxId);
     }
 
     @Test
@@ -887,13 +1000,31 @@ class PaymentExportRelayIntegrationTest extends AbstractPaymentExportIntegration
         }
 
         private volatile Stage failAt;
+        private volatile CountDownLatch finalizeReached = new CountDownLatch(1);
+        private final AtomicReference<PaymentExportOutcome> finalizeOutcome = new AtomicReference<>();
+        private final AtomicBoolean finalized = new AtomicBoolean(false);
 
         void reset() {
             failAt = null;
+            finalizeReached = new CountDownLatch(1);
+            finalizeOutcome.set(null);
+            finalized.set(false);
         }
 
         void failAt(Stage stage) {
             failAt = stage;
+        }
+
+        boolean awaitFinalize(long timeout, TimeUnit unit) throws InterruptedException {
+            return finalizeReached.await(timeout, unit);
+        }
+
+        PaymentExportOutcome finalizeOutcome() {
+            return finalizeOutcome.get();
+        }
+
+        boolean finalized() {
+            return finalized.get();
         }
 
         private void crashIf(Stage stage) {
@@ -914,7 +1045,14 @@ class PaymentExportRelayIntegrationTest extends AbstractPaymentExportIntegration
 
         @Override
         public void beforeFinalize(UUID eventId, PaymentExportOutcome outcome) {
+            finalizeOutcome.set(outcome);
+            finalizeReached.countDown();
             crashIf(Stage.BEFORE_FINALIZE);
+        }
+
+        @Override
+        public void afterFinalized(UUID eventId) {
+            finalized.set(true);
         }
     }
 }
