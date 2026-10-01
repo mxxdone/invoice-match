@@ -59,6 +59,7 @@ class PaymentResultWebhookIntegrationTest extends AbstractPaymentExportIntegrati
     @DynamicPropertySource
     static void erpProperties(DynamicPropertyRegistry registry) {
         registry.add("payment-export.relay.base-url", ERP::baseUrl);
+        registry.add("mock-erp.webhook.secret", () -> SECRET);
     }
 
     @AfterAll

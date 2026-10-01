@@ -243,3 +243,23 @@ flowchart TD
     P109 --> P110
     P110 --> P111[P1-11 통합 인수]
 ```
+
+## 4. 유지보수 Ticket
+
+### R1-02 — main CI IntegrationTest 실패 조사·복구
+
+**진행 상태:** 완료(2026-10-02, 브랜치 `fix/main-ci-integration-tests`, 기준 로컬 `main` `766889c`). 원인은 테스트가 서명하는 secret(`test-webhook-secret`)과 CI OS 환경변수 `MOCK_ERP_WEBHOOK_SECRET=ci-only-webhook-secret`의 우선순위 불일치로 확인해 테스트 전용 고우선순위 설정으로 최소 수정했다. 사용자 제공 증거: CI 명령 `./gradlew --no-daemon clean test bootJar`에서 `PaymentResultWebhookIntegrationTest` 10건이 실패했다(CI 2026-10-01T08:54Z). 실패 run URL·SHA는 미제공이고 GitHub connector 404·`gh` 미인증으로 원격 run을 직접 확인하지 못해 로컬 `main` 재현으로 한정하며 Ubuntu CI 복구를 직접 주장하지 않는다.
+
+**검증 근거(자동):** 커밋된 CI env(`POSTGRES_PASSWORD=ci-only-not-for-production`, `MOCK_ERP_WEBHOOK_SECRET=ci-only-webhook-secret`)를 유지한 focused 재현에서 수정 전 12 tests/10 failures(전부 `Status expected:<200/409/404> but was:<401>`, 실패 라인은 제공 증거와 일치), 수정 후 12 tests/0 failures. 같은 env의 whole backend `clean test bootJar`는 516 tests/0 failures/0 errors/0 skipped로 BUILD SUCCESSFUL, web lint·test 208·build, mock-erp 7, mock-purchasing 6, Compose `config`/`build`와 격리 project·port smoke PASS. 증거는 ignored `output/main-ci-integration-tests/`. 실행 환경은 Windows + Temurin Java 21 + Docker Testcontainers다.
+
+**목적과 범위:** 실패 증거를 `main`에서 재현하고, 테스트 코드/제품 코드/CI runner·환경 중 원인을 구분해 최소 수정한다. 수정 후 해당 IntegrationTest와 CI 전체를 재검증한다.
+
+**관련 규칙/불변식:** 로그·run URL·실패 테스트명 없이 원인을 단정하지 않는다. flaky retry나 skip으로 실패를 숨기지 않는다. 제품 HMAC 검증을 약화하거나 secret을 하드코딩하지 않는다. CI 환경 변수를 테스트에 맞춰 바꾸는 것을 단독 수정으로 삼지 않는다.
+
+**Acceptance Criteria:** 실패 테스트명, 재현 절차, 원인 분류(테스트/코드/환경), 최소 수정 diff, focused·whole 재검증 결과가 증거로 남는다. Windows 로컬 PASS를 Ubuntu CI 복구 증거로 간주하지 않는다.
+
+**테스트/검증:** `.github/workflows/ci.yml`의 백엔드 실행 조건은 `ubuntu-latest`, Temurin Java 21, `core-api`에서 `./gradlew --no-daemon clean test bootJar`다. 커밋된 CI env(`POSTGRES_PASSWORD=ci-only-not-for-production`, `MOCK_ERP_WEBHOOK_SECRET=ci-only-webhook-secret`)를 그대로 설정해 focused 재현 후 whole backend와 가능한 파이프라인을 재실행하고 결과를 기록한다.
+
+**의존성:** 없음(신규 조사 Ticket). R1-01과 독립.
+
+**사람 확인:** 실패 테스트명, 재현·수정·재검증 증거를 확인한다.
