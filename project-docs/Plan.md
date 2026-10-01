@@ -3,7 +3,7 @@
 문서 상태: **Phase 1 착수 기준선**  
 작성일: **2026-09-25**  
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
-실행 방법: [`Implement.md`](../Implement.md)
+실행 방법: [`Implement.md`](./Implement.md)
 
 업무 범위, 용어, 상태, 불변식과 책임 경계는 `Spec.md`를 따른다. 이 문서는 Phase별 목표, Phase 1 Ticket, 의존성과 검증 기준만 정의한다. 각 Ticket에 반복한 규칙은 작업자가 그 Ticket만 읽고 안전하게 실행하도록 발췌한 계약이며, 별도의 원본 정의가 아니다.
 
@@ -18,6 +18,20 @@
 | 5 — 최적화·장애 시연·포트폴리오 | 측정 가능한 개선과 재현 가능한 설명 완성 | 조회·인덱스 실험, 부하·경합·장애 주입, ERP 대사, 관측성, README/ERD/보고서 | 5~7분 시연, Docker Compose 재현, 성능·AI 평가 결과와 trade-off 설명 |
 
 Phase 2~5의 Ticket은 직전 Phase 완료 검토 후 상세화한다.
+
+### Phase 2+ 인계 계약 (Phase 1 동결 인터페이스)
+
+Phase 2는 문서·비동기 처리(오브젝트 스토리지, presigned 업로드, PDF/Excel 파서, 원본 미리보기/다운로드/인쇄, `AnalysisRun`, RabbitMQ, 제한 재시도/DLQ, 운영 재처리)만 담당한다. AI 추출·매핑·근거(pgvector·평가셋)는 Phase 3, LangGraph checkpoint·human-in-the-loop 재개는 Phase 4, 최적화·관측성은 Phase 5다.
+
+Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바꾸지 않는다.
+
+- 승인 대상은 `ReviewSnapshot`이다. 새 스냅샷은 canonical `review-snapshot-v2`(객체 key 재귀 정렬, 배열 순서 보존)이고, 이미 발급된 `review-snapshot-v1`은 재작성하지 않는다. 검증은 저장된 `schemaVersion`이 지정한 **단일** 알고리즘으로만 수행하며 v1↔v2 fallback은 없다(missing/unknown은 fail-closed, v1로 재구성 불가능한 스냅샷은 `409 REVIEW_STATE_CONFLICT` 후 v2로 재-freeze).
+- `EvidenceBundle`(id/version/hash)과 canonical `match-result-v3` payload가 대사 기준선이다. AI 결과는 검토 자료로만 붙고 승인 효력을 갖지 않는다.
+- 승인은 `ReviewSnapshot` + `ReceiptAllocation` + APPROVED `ReviewDecision` + `PaymentRequest` + Outbox + audit을 한 트랜잭션으로 처리하며, 검수 잔량을 초과 배분하지 않는다.
+- Outbox 이벤트 계약(`PaymentRequestExportRequested`)과 외부 키(export idempotency key = `paymentRequestId:exportVersion`, webhook dedup = `provider + externalEventId`)를 유지한다. `RESULT_UNKNOWN`은 blind 재전송하지 않고 서명 결과가 같은 키로 한 번 수렴시킨다. `ACKNOWLEDGED`는 ERP 인계 접수이며 실제 송금이 아니다.
+- actor-scoped idempotency `(scope, resource_key, actor, requestId)`와 서버 파생 actor/audit을 유지한다.
+- `POST /api/invoice-cases/{id}/revisions`는 `SUPPLEMENT_REQUIRED`에서만 허용한다. `REJECTED`는 terminal이며 재개할 수 없다.
+- `Document`/`AnalysisRun`/`Proposal`과 분석 실행 상태(`QUEUED→RUNNING→…`)는 Phase 1에 없다.
 
 ## 2. Phase 1 Backlog
 
@@ -169,7 +183,7 @@ Phase 2~5의 Ticket은 직전 Phase 완료 검토 후 상세화한다.
 
 **인수된 실행 단위 — 상세·비교 조회 연결:** 기존 디자인을 유지하며 실제 목록 ID에서 청구서 상세로 이동하고, 청구·제출 근거·비교 결과·검토 대상/현재 자료 일치 여부·결정/감사 이력·ERP 인계 상태를 해당 역할이 허용받은 조회 API로 표시한다. API가 제공하지 않는 값은 만들지 않는다. 목록 복귀, 로딩·빈 값·401/403/404·서버 오류, 다른 ID/세션의 늦은 응답 차단을 검증한다. 이번 단위에는 작성·매핑·보완·거절·승인 등 쓰기 연결과 백엔드 변경을 포함하지 않는다. 사람은 실제 데이터 표시와 기존 디자인 유지 여부를 확인한다. 의존성은 인수된 로그인·목록과 P1-03~P1-09 조회 계약이다.
 
-**디자인 기준:** `docs/Spec.md` 19.0을 따른다. 우선 비교표 중심 상세 화면 하나를 제작해 사용자 확인을 받은 뒤 다른 화면에 확장한다. 디자인 확정만으로 구현 착수를 간주하지 않는다.
+**디자인 기준:** `Spec.md` 19.0을 따른다. 우선 비교표 중심 상세 화면 하나를 제작해 사용자 확인을 받은 뒤 다른 화면에 확장한다. 디자인 확정만으로 구현 착수를 간주하지 않는다.
 
 **목적과 범위:** 로그인, 사건 목록, 수동 작성, 3-way 비교, 매핑, 보완, 거절, 승인, 인계상태, 감사이력 화면을 구현한다.
 
@@ -185,7 +199,7 @@ Phase 2~5의 Ticket은 직전 Phase 완료 검토 후 상세화한다.
 
 ### P1-11 — Phase 1 통합 인수
 
-**진행 상태:** 진행 중(2026-10-01). 워커 구현·검증 완료, Head 최종 리뷰·인수 대기. 격리 `scripts/verify-p1-11.mjs`(HTTP/DB 실제 단언 + `--browser`)와 clean Compose smoke(`scripts/compose-smoke-p1-11.mjs`)가 PASS. 미해결 gap: 매핑 successor snapshot을 재-freeze 없이 바로 승인하면 `409 REVIEW_STATE_CONFLICT`("review snapshot payload does not match its authoritative sources")가 발생하며, 재-freeze 후 승인은 성공한다. Java 테스트에 approve-after-mapping 경로가 없어 제품 gap 후보로 Head 보고 대상이며, 본 Ticket에서 core-api를 임의 수정하지 않았다. 증거 `output/p1-11/evidence.json`, `output/playwright/p1-11-phase-one/`.
+**진행 상태:** 진행 중(2026-10-01). Head 독립 리뷰 FAIL(2be0963) 후속 수정 반영, Head 최종 리뷰·인수 대기. 후속에서 발견/해결: (1) `ReviewSnapshotPayloadBuilder`가 v2에서 객체 key를 재귀 정렬해 메모리/`jsonb` 순서 차이로 인한 same-semantics hash 불일치를 제거하고, `ApprovalSubjectVerifier`는 저장된 `schemaVersion`별로 v2(v2 알고리즘)/v1(legacy)을 분기 검증하며 missing/unknown은 fail-closed 한다(기존 v1 hash 불변, DB/API/DTO 변경 없음). 매핑 successor snapshot은 재-freeze 없이 직접 승인된다(PG 회귀 테스트 포함). (2) p1-11 harness의 재-freeze 우회 제거: 직접 승인 실패는 run FAILED/exit 1. (3) Compose smoke가 cleanup 실패(down 비정상/throw/timeout/envfile 삭제 실패)를 exit 1/PASS 금지로 처리하고, bounded kill/close와 ERP fixture bounded stop, browser close 실패 전파를 추가. (4) Compose env 격리(`COMPOSE_*`·generated key 상속 차단), per-run 고유 env/override 파일과 127.0.0.1 명시 publish(`!override`). 문서 Runbook/Phase2/API/ERD도 로드맵·계약에 맞게 정정. 증거 `output/p1-11/evidence.json`, `output/playwright/p1-11-phase-one/`.
 
 **목적과 범위:** 전체 Ticket을 통합하고 반복 가능한 fixture, E2E, 경합·장애 시연과 Phase 2 입력 계약을 확정한다.
 

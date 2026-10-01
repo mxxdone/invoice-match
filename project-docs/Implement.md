@@ -1,15 +1,15 @@
 # Invoice Match 구현 런북
 
-이 문서는 Ticket을 실행할 때 따르는 방법만 정의한다. 제품 요구사항의 원본은 `docs/Spec.md`, 로드맵과 Ticket의 원본은 `docs/Plan.md`다.
+이 문서는 Ticket을 실행할 때 따르는 방법만 정의한다. 제품 요구사항의 원본은 `Spec.md`, 로드맵과 Ticket의 원본은 `Plan.md`다.
 
 ## 실행 원칙
 
-- 한 번에 `docs/Plan.md`의 Ticket 하나를 완료한다.
+- 한 번에 `Plan.md`의 Ticket 하나를 완료한다.
 - 현재 Ticket 범위와 의존성을 지키고 미래 Phase 기능이나 무관한 정리를 추가하지 않는다.
-- 업무 규칙을 변경해야 하면 코드보다 `docs/Spec.md`, `CONTEXT.md`와 사건 기반 테스트를 먼저 갱신한다.
+- 업무 규칙을 변경해야 하면 코드보다 `Spec.md`, `CONTEXT.md`와 사건 기반 테스트를 먼저 갱신한다.
 - Ticket의 Acceptance Criteria와 검증을 통과하지 못하면 다음 Ticket으로 넘어가지 않는다.
 - 변경 범위에 맞는 테스트, lint, build와 smoke test를 실행하고 실패 원인을 수정한다.
-- Ticket 인수 과정에서 재현된 유의미한 정합성·동시성·복구·성능·운영 문제가 있으면 해결과 검증이 끝난 뒤 `docs/EngineeringNotes.md`에 결과 중심으로 추가한다. 단순 컴파일 오류나 일회성 시행착오는 기록하지 않는다.
+- Ticket 인수 과정에서 재현된 유의미한 정합성·동시성·복구·성능·운영 문제가 있으면 해결과 검증이 끝난 뒤 `EngineeringNotes.md`에 결과 중심으로 추가한다. 단순 컴파일 오류나 일회성 시행착오는 기록하지 않는다.
 - 문서와 코드가 충돌하면 임의로 해석하지 않고 Head에게 보고한다.
 
 ## 위임과 교차 검증
@@ -55,7 +55,7 @@ Worker 보고는 검증 증거이지 자동 승인으로 간주하지 않는다.
 
 ## Phase 1 착수 Gate
 
-- `docs/Spec.md` 1.1과 관련 ADR이 구현 기준으로 승인되어 있다.
+- `Spec.md` 1.1과 관련 ADR이 구현 기준으로 승인되어 있다.
 - P1-00 외 Ticket은 선행 계약 Ticket 완료 전 시작하지 않는다.
 - 각 Ticket에 구현 담당과 검증 방법이 정해져 있다.
 - 구현은 사용자의 별도 착수 지시 후 Ticket 단위로 수행한다.

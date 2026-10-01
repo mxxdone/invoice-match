@@ -3,8 +3,14 @@
 All application endpoints are under `/api/**` and require HTTP Basic
 authentication (demo identities exist only in the `local`/`test` profiles; the
 deployable default fails closed). The actuator health probes and the Mock ERP
-webhook are public. This index is current as of P1-11; the ticket-level detail
-lives in `README.md`.
+webhook are public.
+
+This document is a summary index. The authoritative wire contract is the
+implemented DTOs and controllers (exact fields, statuses and codes); the
+business rules, states and invariants are authoritative in `Spec.md`. If this
+summary conflicts with either the implementation or `Spec.md`, do not silently
+adopt one side: report the conflict and confirm consistency against the
+DTO/controller for the wire and `Spec.md` for the rules.
 
 ## Identity and errors
 
@@ -17,16 +23,21 @@ Error body shape is `{ "code", "message", … }`. `401` = unauthenticated,
 stale/conflict/state/balance, `400` = validation, `413` = body over the
 256 KiB cap, `503` = external purchasing timeout. Every request accepts an
 optional `X-Trace-Id`; the effective id is echoed in the response and stored on
-audit entries. Bodies are canonical JSON.
+audit entries. The canonical JSON form applies to the persisted payloads whose
+hash is computed (for example the evidence bundle, match result and review
+snapshot payloads); it does not constrain the object key order of an HTTP
+request body.
 
 ## Idempotency
 
-Every write requires a `requestId` (≤128 chars). The key is namespaced by the
-authenticated principal: `(scope, resource_key, actor, requestId)`. Repeating the
-same request with the same payload **as the same principal** replays the stored
-response with no second side effect; the same `requestId` with a different
-payload is an actor-local `409` conflict. A different actor can never inherit a
-replay.
+Every core business command under `/api/invoice-cases/**` requires a
+`requestId` (≤128 chars); the Mock ERP export and the signed result webhook are
+machine-to-machine endpoints with their own keys (export idempotency key and
+`provider + externalEventId`), not the actor-scoped `requestId`. The actor-scoped
+key is `(scope, resource_key, actor, requestId)`. Repeating the same command with
+the same payload **as the same principal** replays the stored response with no
+second side effect; the same `requestId` with a different payload is an
+actor-local `409` conflict. A different actor can never inherit a replay.
 
 ## Invoice case authoring (P1-03)
 
@@ -68,7 +79,9 @@ Human actions send `reviewSnapshotId`, `reviewPayloadHash`,
 `expectedCaseVersion` and `requestId`. Stale reasons: `CASE_STATE`,
 `CASE_VERSION`, `EVIDENCE_BUNDLE`, `MATCH_RESULT`, `MAPPING`,
 `PURCHASING_SNAPSHOT`, `SUPERSEDED`. The reviewer actor is derived server-side;
-a client `decidedBy` is ignored. Canonical payload schema `review-snapshot-v1`.
+a client `decidedBy` is ignored. Canonical payload schema `review-snapshot-v2`
+for newly frozen snapshots; the existing `review-snapshot-v1` verification
+algorithm is retained for already-frozen snapshots (see below).
 
 ## Atomic approval (P1-07)
 
@@ -79,19 +92,46 @@ a client `decidedBy` is ignored. Canonical payload schema `review-snapshot-v1`.
 Body: `{ requestId, expectedCaseVersion, reviewSnapshotId, reviewPayloadHash }`.
 One transaction writes all `ReceiptAllocation` rows, one APPROVED
 `ReviewDecision`, one `PaymentRequest`, the `APPROVE` audit and the case
-transition to `EXPORT_PENDING`. A shared receipt shortfall is `409`
-`INSUFFICIENT_RECEIPT_BALANCE` with `confirmedQuantity`/`allocatedQuantity`/
-`remainingQuantity`/`requestedQuantity`; an abnormal or inconsistent subject is
-`409` `APPROVAL_NOT_PERMITTED`.
+transition to `EXPORT_PENDING`.
+
+Approval conflicts are all `409` but mean different things, and the distinction
+is part of the contract:
+
+| Code | Meaning |
+| --- | --- |
+| `STALE_CASE_VERSION` | `expectedCaseVersion` is not the committed case version (carries `latestVersion`) |
+| `STALE_REVIEW_TARGET` | the subject is well-formed but no longer current: superseded case/bundle/match/mapping/purchasing (carries explicit `reasons`) |
+| `REVIEW_STATE_CONFLICT` | the **authoritative subject itself cannot be reconciled**: the stored snapshot payload/hash/relational sources disagree with the independent reconstruction, the source match result is missing, the purchasing source changed under the lock, or the snapshot `schemaVersion` is missing/unknown. A tampered or irreconcilable subject is rejected here, never approved |
+| `INSUFFICIENT_RECEIPT_BALANCE` | the subject is current and consistent, but the shared receipt line no longer has balance (carries `shortfalls` with `confirmedQuantity`/`allocatedQuantity`/`remainingQuantity`/`requestedQuantity`) |
+| `APPROVAL_NOT_PERMITTED` | the subject is current and internally consistent, but is not approvable as-is: the match is abnormal (any exception), or the allocation plan is incomplete / the total is inconsistent |
+
+So "the subject is inconsistent" (`REVIEW_STATE_CONFLICT`) is separate from "the
+subject is consistent but not approvable" (`APPROVAL_NOT_PERMITTED`).
+
+### Review snapshot canonical version
+
+Newly frozen snapshots are canonical `review-snapshot-v2`: every JSON object's
+keys are recursively sorted and array order is preserved before hashing, so an
+embedded match payload hashes equally whether it is held in memory or reloaded
+from PostgreSQL `jsonb`.
+
+Already-frozen `review-snapshot-v1` snapshots are **not rewritten**. Each
+snapshot is verified with the single canonical algorithm named by its stored
+`schemaVersion` — v1 legacy insertion order or v2 recursively sorted — with **no
+fallback** from one algorithm to the other, and a missing or unknown
+`schemaVersion` fails closed. Existing valid v1 snapshots still approve. A v1
+snapshot whose stored payload cannot be reconciled under the v1 algorithm is
+rejected `409 REVIEW_STATE_CONFLICT` with no side effect and must be re-frozen
+as a new v2 snapshot; it is not silently upgraded or verified under v2.
 
 ## Payment export and Mock ERP (P1-08/P1-09)
 
-| Method | Endpoint | Auth | Purpose |
+| Method | Endpoint | Auth / required headers | Purpose |
 | --- | --- | --- | --- |
-| `POST` | `/api/payment-exports` (Mock ERP) | `Idempotency-Key` + `X-Payment-Request-Id` | Idempotent export receipt |
-| `GET` | `/api/payment-exports/{idempotencyKey}` (Mock ERP) | none (mock) | Status inquiry for the same key |
-| `POST` | `/webhooks/mock-erp/payment-results` | HMAC signature | Signed external result (`ACKNOWLEDGED`/`FAILED`) |
-| `GET` | `/api/invoice-cases/{id}/handoff` | APPROVER, OPERATOR | Payment and outbox delivery state |
+| `POST` | `/api/payment-exports` (Mock ERP) | no auth (mock); requires the `Idempotency-Key` and `X-Payment-Request-Id` transport headers, which are **business identity, not authentication** | Idempotent export receipt |
+| `GET` | `/api/payment-exports/{idempotencyKey}` (Mock ERP) | no auth (mock) | Status inquiry for the same key |
+| `POST` | `/webhooks/mock-erp/payment-results` | shared-secret HMAC signature (the only authentication on this endpoint) | Signed external result (`ACKNOWLEDGED`/`FAILED`) |
+| `GET` | `/api/invoice-cases/{id}/handoff` | HTTP Basic, APPROVER or OPERATOR | Payment and outbox delivery state |
 
 The in-process relay is fail-closed by default (`PAYMENT_EXPORT_RELAY_ENABLED`).
 `paymentStatus ∈ {NOT_SENT, SENDING, ACKNOWLEDGED, RETRY_SCHEDULED, FAILED,
@@ -115,5 +155,6 @@ List filters: `status`, `supplierId`, `purchaseOrderId`, `invoiceNumber`,
 ## Phase 1 non-claims
 
 There is no AI extraction, document upload/preview, object storage, RabbitMQ,
-DLQ, automatic re-send/reconciliation or actual fund transfer in Phase 1. See
-`docs/Phase2-Input-Contract.md` for the frozen interfaces Phase 2 builds on.
+DLQ, automatic re-send/reconciliation or actual fund transfer in Phase 1. The
+frozen interfaces and the phase mapping live in the Phase 2+ handoff section of
+`Plan.md`.
