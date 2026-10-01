@@ -199,7 +199,9 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 ### P1-11 — Phase 1 통합 인수
 
-**진행 상태:** 진행 중(2026-10-01). Head 독립 리뷰 FAIL(2be0963) 후속 수정 반영, Head 최종 리뷰·인수 대기. 후속에서 발견/해결: (1) `ReviewSnapshotPayloadBuilder`가 v2에서 객체 key를 재귀 정렬해 메모리/`jsonb` 순서 차이로 인한 same-semantics hash 불일치를 제거하고, `ApprovalSubjectVerifier`는 저장된 `schemaVersion`별로 v2(v2 알고리즘)/v1(legacy)을 분기 검증하며 missing/unknown은 fail-closed 한다(기존 v1 hash 불변, DB/API/DTO 변경 없음). 매핑 successor snapshot은 재-freeze 없이 직접 승인된다(PG 회귀 테스트 포함). (2) p1-11 harness의 재-freeze 우회 제거: 직접 승인 실패는 run FAILED/exit 1. (3) Compose smoke가 cleanup 실패(down 비정상/throw/timeout/envfile 삭제 실패)를 exit 1/PASS 금지로 처리하고, bounded kill/close와 ERP fixture bounded stop, browser close 실패 전파를 추가. (4) Compose env 격리(`COMPOSE_*`·generated key 상속 차단), per-run 고유 env/override 파일과 127.0.0.1 명시 publish(`!override`). 문서 Runbook/Phase2/API/ERD도 로드맵·계약에 맞게 정정. 증거 `output/p1-11/evidence.json`, `output/playwright/p1-11-phase-one/`.
+**진행 상태:** 구현·자동검증·독립인수 완료(2026-10-01, HEAD `fe97247`, Head 독립 최종검수 PASS). **사람의 5~7분 실제 시연은 미실측·사용자 확인 대기**이며, 자동검증 완료를 사람 확인 완료로 간주하지 않는다. 후속에서 해결: (1) jsonb key 순서로 인한 검토 snapshot hash 불일치를 v2 재귀 canonical로 제거하고, v1은 불변·저장 `schemaVersion`별 단일 알고리즘·no fallback으로 검증(매핑 successor 직접 승인, legacy 변조 zero effect; DB/API/DTO 변경 없음). (2) p1-11 harness의 재-freeze 우회 제거(직접 승인 실패 = run FAILED/exit 1), Compose cleanup 실패 = exit 1, env 격리·per-run 파일·127.0.0.1 publish. (3) 늦은 2xx 증거를 handler 진입이 아니라 응답 finish/close와 relay `beforeFinalize`/no-op로 인과 관찰. 상세는 `EngineeringNotes.md`의 P1-11 항목.
+
+**검증 근거(자동):** `3a1285c` 시점에 whole backend 514 tests(0 fail)·web 191 + lint/build·`verify-p1-11 --browser`(13 시나리오 + 브라우저 hand-off 3상태 + 브라우저 후 DB tuple) ALL PASS·clean Compose PASS. 이후 `fe97247`은 focused JUnit 2 + Node fixture 3에 한정하며 수정된 전체 harness(browser/Compose)는 재실행하지 않았다. 증거 `output/p1-11/evidence.json`, `output/playwright/p1-11-phase-one/`.
 
 **목적과 범위:** 전체 Ticket을 통합하고 반복 가능한 fixture, E2E, 경합·장애 시연과 Phase 2 입력 계약을 확정한다.
 

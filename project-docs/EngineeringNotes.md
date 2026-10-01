@@ -501,6 +501,74 @@ upstream fetch에만 timeout을 걸면 아직 끝나지 않은 요청 body 읽�
 
 관련 커밋: `5d63c04`
 
+## P1-11 — jsonb key 순서로 깨지는 검토 snapshot hash와 schema version 분기
+
+### 문제
+
+매핑으로 만든 successor `ReviewSnapshot`을 재-freeze 없이 바로 승인하면 `409 REVIEW_STATE_CONFLICT`("the review snapshot payload does not match its authoritative sources")가 발생했고, 같은 대상을 재-freeze하면 승인됐다. 같은 semantics인데 두 snapshot의 hash가 달라지는 불일치였다.
+
+### 원인
+
+`ReviewSnapshotPayloadBuilder`가 중첩 match payload를 raw JSON 문자열로 삽입하고 그 key 순서를 직렬화에 그대로 반영했다. `match_result.payload`는 jsonb라 PostgreSQL이 key를 재정렬한다. 매핑은 같은 트랜잭션의 in-memory match payload(발생 순서)로, 승인 verifier와 재-freeze는 jsonb에서 재로드한 key 순서로 snapshot을 재구성해 hash가 갈렸다. match 결과 검증은 key 순서를 무시하는 비교라 통과해 문제가 드러나지 않았다.
+
+### 해결
+
+- 새 snapshot은 canonical `review-snapshot-v2`로 직렬화·hash한다: 모든 객체 key를 재귀 정렬하고 배열 순서는 보존한다.
+- 이미 발급된 `review-snapshot-v1`은 재작성하지 않는다. 검증은 저장된 `schemaVersion`이 지정한 **단일** 알고리즘(v1 legacy 삽입 순서 / v2 재귀 정렬)으로만 수행하고 서로 fallback하지 않는다. missing/unknown version은 fail-closed이며 v2 실패를 v1로 재검증하지 않는다.
+- 스키마·API·DTO·DB migration 변경 없이 verifier의 hash·semantic·관계 검증은 유지했다. 부정합 v1 snapshot은 `409` 후 v2로 재-freeze한다.
+
+### 검증과 교훈
+
+실제 PostgreSQL에서 매핑 successor 직접 승인(추가 freeze 없음) 200, 유효한 legacy v1 승인 200, v2·v1·unknown version 위조는 409와 zero side effect임을 확인했다. 단위 테스트로 중첩 반대 key 순서의 hash 동일, 배열 순서 차이의 hash 상이, unknown version 거부를 고정했다. 다른 계층의 직렬화 순서에 의존해 저장 payload를 재사용하면 hash 재현성이 깨지므로, 불변 payload는 알고리즘을 schema version으로 명시·분기하고 의미가 같은 입력은 표현 순서와 무관하게 같은 hash가 되도록 canonical화해야 한다.
+
+관련 커밋: `c1e14d6`
+
+## P1-11 — 검증 하네스의 false PASS와 정리·환경 격리
+
+### 문제
+
+P1-11 하네스가 (a) 매핑 successor 직접 승인 실패를 재-freeze로 우회하고 `ALL CHECKS PASSED`를 출력했으며, (b) Compose smoke의 `down` 비정상/throw가 WARN에 그쳐 workflow가 성공이면 exit 0이 됐다. env 파일 고정 경로, 호스트 publish `0.0.0.0`, caller의 `POSTGRES_*`/`COMPOSE_*` 상속 위험도 있었다.
+
+### 원인
+
+검증 하네스가 실패 원인을 기록만 하고 run 실패로 전파하지 않는 경로(우회 fallback, cleanup WARN)를 두었고, Compose 실행 환경과 생성 파일의 수명을 격리하지 않았다.
+
+### 해결
+
+- 시나리오에서 재-freeze 우회를 제거했고, 직접 승인 실패는 run FAILED/exit 1로 전파한다.
+- Compose lifecycle core가 cleanup 오류(`down`≠0/throw, timeout, env/override 삭제 실패)를 모아 workflow 성공과 무관하게 exit 1을 낸다. 프로세스 timeout은 bounded kill 후 close를 확인한 뒤에만 정리하고 kill/close 실패를 보존한다.
+- env 격리: caller의 `COMPOSE_*`와 generated key를 child env에서 제거하고, per-run 고유 env/override를 exclusive 생성 후 scoped delete한다. 5개 포트를 `127.0.0.1`에만 publish하고 `docker compose config`를 fail-closed로 검증한다. ERP fixture는 bounded server close + owned socket 정리를, browser 세션 close 실패는 전파를 추가했다.
+
+### 검증과 교훈
+
+DI 테스트로 `down`≠0/throw, up timeout/partial up/no-exe, verify fault, env 삭제 실패, 동시 2 run, `runStreaming` bounded kill/close를 검증했고, 실제 clean Compose가 고유 project로 up→workflow→`down`함을 확인했다. 열린 요청/dropResponse를 완료 2xx로 오인하지 않는 negative도 fixture 단위 테스트로 고정했다. 검증 하네스의 통과는 실패를 감추지 않는 전파 계약과 자원 수명·환경 격리 위에 세워야 한다.
+
+관련 커밋: `c1e14d6`, `3a1285c`
+
+## P1-11 — 지연 2xx를 handler 진입으로 오인하지 않는 인과 증거
+
+### 문제
+
+SENDING 도중 signed webhook이 수렴한 뒤 ERP의 늦은 HTTP 2xx가 relay finalize를 시도하는지에 대한 증거로, fixture가 요청 handler 진입 시각과 고정 sleep을 사용했다. 이는 실제 응답 완료가 아니며 열린 요청·dropResponse에도 기록돼 늦은 2xx를 주장할 수 없었다.
+
+### 원인
+
+관찰 지점이 HTTP 응답 완료가 아니라 handler 진입이었고, relay가 실제로 finalize에 도달했는지 직접 관찰하지 않았다.
+
+### 해결
+
+- fixture가 response `finish`/`close`를 구분해 요청별 `{status, completedAt, finished, closedWithoutFinish}`를 기록하고, 실제 status가 finish된 응답만 완료로 노출한다.
+- focused JUnit이 기존 package-private `PaymentExportInterceptor` seam으로 `beforeFinalize(outcome)`/`afterFinalized`를 관찰한다. 지연 2xx(총 deadline 이하)에서 relay가 200을 수신해 `beforeFinalize(Acknowledged)`에 도달하고, 이미 webhook이 종결했으므로 stale no-op(`afterFinalized` 없음)과 tuple·counts 불변임을 확인한다.
+- negative로 초과 deadline open과 `respondDrop()` 모두 `beforeFinalize(ResultUnknown)`임을 고정해 완료 2xx로 오인하지 않음을 보인다.
+
+### 검증과 교훈
+
+focused JUnit 2건과 Node fixture 단위 3건이 통과한다. 이 JUnit은 `PaymentResultWebhookApplicationService`를 직접 호출하므로 서명(HMAC) 검증 경로를 지나지 않으며, HMAC 경로는 별도 검증이며 여기서 주장하지 않는다.
+
+증거 범위: whole backend 514 / web 191 / browser / Compose PASS는 `3a1285c` 시점의 결과이고, 이후 `fe97247`은 focused JUnit 2건과 Node fixture 3건, 독립 fixture에 한정하며 수정된 전체 harness(browser/Compose)는 재실행하지 않았다. 인과 증거의 관찰 지점은 요청 도착이 아니라 응답 완료와 상대 측 후속 동작 도달이어야 하며, 고정 sleep·handler 진입 timestamp·attempt 0은 늦은 2xx나 finalize 도달의 증거가 아니다.
+
+관련 커밋: `fe97247`, `3a1285c`
+
 ## 앞으로 추가할 때의 형식
 
 새 사례는 아래 항목을 중심으로 짧게 추가한다.
