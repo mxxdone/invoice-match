@@ -248,7 +248,7 @@ flowchart TD
 
 ### R1-01 — 백엔드 3계층/클린코드 정리
 
-**진행 상태:** 완료(2026-10-02, 브랜치 `refactor/three-layer-cleanup`). Phase 1 인수 후 백엔드 리뷰 finding 7건과 Webhook 저장 모듈 분리 보완을 계약 변경 없이 bounded 범위로 반영했다. 상세 근거·결과는 `ThreeLayerRefactoring.md`에 기록했다.
+**진행 상태:** 완료(2026-10-02, 브랜치 `refactor/three-layer-cleanup`). 백엔드 리뷰의 책임 분리와 중복 정리를 반영했다. oversized page의 `400 VALIDATION_ERROR`를 명시하고 나머지 공개 API·멱등성·동시성 계약은 보존했다. 상세 근거·결과는 `ThreeLayerRefactoring.md`에 기록했다.
 
 **목적과 범위:** `core-api` main/test만 수정한다. 공개 API JSON/status/error schema, actor-scoped 멱등 replay, 승인 단일 트랜잭션과 write 순서, lock 순서·전파, canonical JSON byte/hash(legacy review 포함)를 보존한다. 프런트엔드·DB migration·신규 의존성·무관 기능은 포함하지 않는다.
 
@@ -258,7 +258,7 @@ flowchart TD
 
 **테스트/검증:** `core-api`에서 Java 21 + Testcontainers PostgreSQL로 focused unit/integration 후 whole suite와 bootJar를 실행했다. whole backend `.\gradlew.bat test --console=plain` = 521 tests, 0 failures/errors/skipped; `bootJar` BUILD SUCCESSFUL. golden canonical/hash와 Webhook/승인/검토/매칭/조회 focused 통합 테스트 PASS. 상세 명령·수치는 `ThreeLayerRefactoring.md`에 기록했다. 실패를 skip이나 flaky retry로 숨기지 않았다.
 
-**의존성:** P1-01~P1-11(인수 완료).
+**의존성:** P1-01~P1-11의 구현·자동검증·독립인수 완료 상태. P1-11의 사람 시연 확인 대기는 기존 상태를 유지한다.
 
 **사람 확인:** 공개 API 응답 schema와 승인·webhook replay 동작이 이전과 동일한지, oversized page만 새 400이 되는지 확인한다.
 
@@ -272,7 +272,7 @@ flowchart TD
 
 **Acceptance Criteria:** 실패 로그와 run URL, 실패 테스트명, 재현 절차, 원인 분류(테스트/코드/환경), 최소 수정 diff, 재검증 결과가 증거로 남는다.
 
-**테스트/검증:** 수집한 실패 로그 기준으로 재현 명령을 고정하고, 수정 범위의 IntegrationTest와 CI 전체 파이프라인을 다시 실행해 결과를 기록한다.
+**테스트/검증:** 현재 `.github/workflows/ci.yml`의 백엔드 실행 조건은 `ubuntu-latest`, Temurin Java 21, `core-api`에서 `./gradlew --no-daemon clean test bootJar`다. 실제 실패 run의 로그와 설정을 확인해 재현 명령을 고정하고, 수정 범위의 IntegrationTest와 CI 전체 파이프라인을 다시 실행해 결과를 기록한다. R1-01의 Windows 로컬 PASS를 main CI 복구 증거로 간주하지 않는다.
 
 **의존성:** 없음(신규 조사 Ticket). R1-01과 독립.
 

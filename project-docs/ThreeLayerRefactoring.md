@@ -1,8 +1,11 @@
 # 백엔드 3계층/클린코드 정리 (R1-01)
 
-작성일: **2026-10-02**  
-브랜치: `refactor/three-layer-cleanup`  
-범위: `core-api` main/test, `project-docs`  
+작성일: **2026-10-02**
+
+브랜치: `refactor/three-layer-cleanup`
+
+범위: `core-api` main/test, `project-docs`
+
 관련 Ticket: `Plan.md` R1-01 (완료), R1-02 (후속·미착수)
 
 ## 1. 배경과 목적
@@ -27,7 +30,7 @@ Phase 1 인수 후 백엔드 코드 리뷰에서 application 계층이 일부 pe
 
 ### R1-01-1 — 목록 조회 page/size 정수 overflow
 
-- `InvoiceCaseQueryService.list`가 page/size를 clamp한 뒤 offset을 `long`으로 계산하고 `Integer.MAX_VALUE` 초과 시 `DomainValidationException`을 던진다. `hasNext`는 `page + 1L < totalPages`로 계산하고 `totalPages`도 overflow 없이 계산한다.
+- `InvoiceCaseQueryService.list`가 page/size를 clamp하고, `InvoiceCaseListQueryStore.query`가 offset을 `long`으로 계산해 `Integer.MAX_VALUE` 초과 시 `DomainValidationException`을 던진다. 업무 계층의 `hasNext`는 `page + 1L < totalPages`로 계산하고 `totalPages`도 overflow 없이 계산한다.
 - 회귀 HTTP 통합 테스트 추가: `page=2147483647`(default size 20)와 `size=100`은 `400 VALIDATION_ERROR`, 정상 empty/out-of-range page와 `size=1` 최대 page는 `hasNext=false`.
 
 ### R1-01-2 — 목록 Criteria/SQL의 persistence 분리
@@ -75,12 +78,13 @@ Phase 1 인수 후 백엔드 코드 리뷰에서 application 계층이 일부 pe
 
 | 단계 | 명령 | 결과 |
 |---|---|---|
-| focused unit | `.\gradlew.bat test --tests "...MatchEngineTest" --tests "...MatchEngineGoldenTest" --tests "...ApprovalAggregatesTest" --tests "...ApprovedAllocationPlanFactoryTest" --console=plain` | BUILD SUCCESSFUL |
-| focused integration | `.\gradlew.bat test --tests "...InvoiceCaseReadApiIntegrationTest" --tests "...PaymentResultWebhookIntegrationTest" --tests "...PaymentExportRelayIntegrationTest" --tests "...ApprovalWorkflowIntegrationTest" --tests "...ReviewWorkflowApiIntegrationTest" --tests "...MatchingApiIntegrationTest" --console=plain` | BUILD SUCCESSFUL (6m 1s) |
+| focused unit | `.\gradlew.bat test --tests "com.invoicematch.core.matching.application.MatchEngineTest" --tests "com.invoicematch.core.matching.application.MatchEngineGoldenTest" --tests "com.invoicematch.core.approval.application.ApprovalAggregatesTest" --tests "com.invoicematch.core.approval.application.ApprovedAllocationPlanFactoryTest" --console=plain` | BUILD SUCCESSFUL, 34 tests |
+| focused integration | `.\gradlew.bat test --tests "com.invoicematch.core.invoicecase.InvoiceCaseReadApiIntegrationTest" --tests "com.invoicematch.core.payment.application.PaymentResultWebhookIntegrationTest" --tests "com.invoicematch.core.payment.application.PaymentExportRelayIntegrationTest" --tests "com.invoicematch.core.approval.ApprovalWorkflowIntegrationTest" --tests "com.invoicematch.core.review.ReviewWorkflowApiIntegrationTest" --tests "com.invoicematch.core.matching.MatchingApiIntegrationTest" --console=plain` | BUILD SUCCESSFUL (6m 1s), 113 tests |
 | whole backend | `.\gradlew.bat test --console=plain` | BUILD SUCCESSFUL (8m 15s), **521 tests, 0 failures, 0 errors, 0 skipped** (58 test classes) |
 | boot jar | `.\gradlew.bat bootJar --console=plain` | BUILD SUCCESSFUL |
 
 - 실패를 skip/flaky retry로 숨기지 않았다. `-q`나 출력 truncation을 쓰지 않았다.
+- 독립 정적 검토와 개선 의견 반영 후 후속 검토 모두 PASS. Head가 전체 JUnit XML의 521 tests 및 실패·오류·skip 0을 직접 확인했다. 원래 작업 폴더의 `output/three-layer-refactoring/`에 검증 증거와 JUnit 보고서를 보관했다(생성 산출물, Git 제외).
 - 검증에 사용한 DB는 Testcontainers가 띄운 일회성 PostgreSQL이며, 테스트 종료 후 컨테이너를 남기지 않았다. 별도 상주 서버/포트는 만들지 않았다.
 
 ## 6. 아키텍처 가드
