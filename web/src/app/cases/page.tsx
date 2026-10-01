@@ -223,9 +223,7 @@ function Cases() {
         </label>
         <button className="button filter-reset" onClick={resetFilters}>필터 초기화</button>
       </div>
-      {rangeError
-        ? <p className="list-search-help" role="alert">{rangeError}</p>
-        : <p className="list-search-help">선택한 날짜를 모두 포함합니다. (한국 시간)</p>}
+      {rangeError && <p className="list-range-error" role="alert">{rangeError}</p>}
       {filters.searchValue && <div className="applied-query" role="status">적용된 검색: {filters.searchField === 'invoiceNumber' ? '청구번호' : '발주번호'} = {filters.searchValue}<button className="icon-button" aria-label="검색 조건 지우기" onClick={() => updateFilters({ searchValue: null, page: 0 })}><Icon name="close" size={12} /></button></div>}
     </div>
     {body}

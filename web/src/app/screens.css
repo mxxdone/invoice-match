@@ -92,5 +92,27 @@ a{color:inherit;text-decoration:none}.primary-nav{display:flex;flex-direction:co
 .list-filter-row .small-filter input[type=date] { width: 150px; padding: 0 10px; }
 .list-filter-row .date-range { gap: 8px; }
 .list-scope-note { font-size: 11px; color: #8a8e7c; }
-button.session-link { display: block; border: 0; background: transparent; padding: 0; margin-top: 8px; font: inherit; font-size: 12px; color: #8b907f; text-decoration: none; text-align: left; cursor: pointer; }
-button.session-link:focus-visible { outline: 2px solid #798769; outline-offset: 3px; border-radius: 2px; }
+button.session-link { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; padding: 5px 10px; margin-top: 8px; border: 1px solid #d9ded5; border-radius: 6px; background: transparent; color: #6f7863; font: inherit; font-size: 12px; text-decoration: none; cursor: pointer; }
+button.session-link:hover { background: #f3f5ee; }
+button.session-link:focus-visible { outline: 2px solid #798769; outline-offset: 2px; }
+
+/* Standalone page states (loading/empty/error/forbidden/not-found) center in the
+   remaining main content area. Scoped to a direct child of .workspace so inline
+   warnings, toasts, table permission rows and empty table rows are never
+   affected. min-height:0 lets a short viewport scroll instead of overflowing. */
+.workspace > .empty-state {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 15px;
+  padding: 40px 20px;
+}
+.workspace > .empty-state h1 { font-size: 16px; font-weight: 400; color: #6f7863; margin: 0; }
+.workspace > .empty-state p { font-size: 12px; margin: 0; }
+
+/* Date range validation message, shown only when invalid, below the date group. */
+.list-range-error { margin: 8px 0 0; font-size: 11px; color: #92594c; }
