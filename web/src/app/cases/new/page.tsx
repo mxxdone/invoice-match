@@ -11,8 +11,7 @@ import { ApiRequestError } from '../../api/transport';
 import { claimLines, latestBundle } from '../[id]/detail-model';
 import { useCaseComposer } from '../use-case-composer';
 import { MutationFailureNotice } from '../mutation-failure-notice';
-
-type DraftLine = { id: number; name: string; quantity: number; price: number; item: string };
+import { draftLinePayload, enteredDraftLines, isUnusedDraftLine, isValidDraftLine, type DraftLine } from '../draft-line-model';
 
 const LINE_LIMIT = 100;
 
@@ -23,6 +22,7 @@ function toRows(lines: { rawItemName: string; quantity: number; unitPrice: numbe
     quantity: line.quantity,
     price: line.unitPrice,
     item: line.confirmedItemId ?? '',
+    edited: true,
   }));
 }
 
@@ -134,8 +134,9 @@ function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supple
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [existingId, supplementId, credentials, logout, router]);
 
-  const valid = supplier.trim() && po.trim() && invoice.trim() && rows.length > 0
-    && rows.every(row => row.name.trim() && Number.isInteger(row.quantity) && row.quantity > 0 && Number.isSafeInteger(row.price) && row.price >= 0);
+  const enteredRows = enteredDraftLines(rows);
+  const valid = supplier.trim() && po.trim() && invoice.trim() && enteredRows.length > 0
+    && enteredRows.every(isValidDraftLine);
 
   const dirty = rows.some(row => row.name.trim() || row.price > 0);
   const leavingRisk = composer.hasPending || composer.unresolved !== null || (dirty && composer.status !== 'submitted');
@@ -158,13 +159,7 @@ function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supple
   }, [composer.status, composer.submittedBundleVersion, composer.caseId, router]);
 
   const header = { supplierId: supplier, purchaseOrderId: po, invoiceNumber: invoice };
-  const draftLines = () => rows.map((row, index) => ({
-    lineNumber: index + 1,
-    rawItemName: row.name,
-    quantity: row.quantity,
-    unitPrice: row.price,
-    confirmedItemId: row.item || null,
-  }));
+  const draftLines = () => draftLinePayload(rows);
 
   async function ensureRevision(): Promise<boolean> {
     // The composer owns whether a revision was actually opened (including via an
@@ -176,6 +171,7 @@ function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supple
   }
 
   async function onSave() {
+    if (!valid) return;
     if (composer.unresolved) return;
     if (!(await ensureRevision())) return;
     if (await composer.saveDraft(header, draftLines())) {
@@ -184,6 +180,7 @@ function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supple
   }
 
   async function onSubmit() {
+    if (!valid) return;
     if (composer.unresolved) return;
     if (!(await ensureRevision())) return;
     if (!(await composer.saveDraft(header, draftLines()))) return;
@@ -226,7 +223,7 @@ function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supple
   }
 
   function edit(id: number, key: keyof DraftLine, value: string | number) {
-    setRows(rows.map(row => row.id === id ? { ...row, [key]: value } : row));
+    setRows(rows.map(row => row.id === id ? { ...row, [key]: value, edited: true } : row));
   }
 
   if (!isAuthenticated) {
@@ -285,13 +282,13 @@ function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supple
         <section className="form-section">
           <div className="section-heading"><h2>청구 기본 정보</h2><span>필수 입력 *</span></div>
           <div className="field-grid">
-            <label>공급사 ID *<input maxLength={64} required value={supplier} onChange={event => setSupplier(event.target.value)} disabled={Boolean(existingId) || locked} /><small>구매시스템의 공급사 식별자</small></label>
-            <label>발주번호 *<input maxLength={64} required value={po} onChange={event => setPo(event.target.value)} disabled={Boolean(existingId) || locked} /><small>연결할 발주 건의 식별자</small></label>
-            <label>청구번호 *<input maxLength={100} required value={invoice} onChange={event => setInvoice(event.target.value)} disabled={Boolean(existingId) || locked} /><small>공급사가 발행한 청구번호</small></label>
+            <label>공급사 코드 *<input maxLength={64} required value={supplier} onChange={event => setSupplier(event.target.value)} disabled={Boolean(existingId) || locked} /><small>구매시스템에 등록된 공급사 코드를 입력하세요.</small></label>
+            <label>발주번호 *<input maxLength={64} required value={po} onChange={event => setPo(event.target.value)} disabled={Boolean(existingId) || locked} /><small>이 청구서에 해당하는 발주번호를 입력하세요.</small></label>
+            <label>공급사 청구번호 *<input maxLength={100} required value={invoice} onChange={event => setInvoice(event.target.value)} disabled={Boolean(existingId) || locked} /><small>공급사에서 받은 청구서에 기재된 번호를 입력하세요.</small></label>
           </div>
         </section>
         <section className="form-section">
-          <div className="section-heading"><h2>청구 품목</h2><span>{rows.length}개 품목 · 원화</span></div>
+          <div className="section-heading"><h2>청구 품목</h2><span>{enteredRows.length}개 품목 · 원화</span></div>
           <div className="table-scroll">
             <table className="work-table edit-table">
               <thead><tr><th>#</th><th>청구 품목명 *</th><th>수량 *</th><th>단가 · 원 *</th><th>확정 품목 ID</th><th className="numeric">금액 · 원</th><th><span className="sr-only">삭제</span></th></tr></thead>
@@ -299,7 +296,7 @@ function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supple
                 {rows.map((row, index) => (
                   <tr key={row.id}>
                     <td>{String(index + 1).padStart(2, '0')}</td>
-                    <td><input aria-label={`${index + 1}번 품목명`} maxLength={500} value={row.name} disabled={locked} onChange={event => edit(row.id, 'name', event.target.value)} /></td>
+                    <td><input aria-label={`${index + 1}번 품목명`} aria-invalid={!isUnusedDraftLine(row) && !row.name.trim() || undefined} maxLength={500} value={row.name} disabled={locked} onChange={event => edit(row.id, 'name', event.target.value)} />{!isUnusedDraftLine(row) && !isValidDraftLine(row) && <small role="status">품목명, 수량(양의 정수), 단가(0 이상의 정수)를 확인하세요.</small>}</td>
                     <td><input aria-label={`${index + 1}번 수량`} type="number" min={1} step={1} value={row.quantity} disabled={locked} onChange={event => edit(row.id, 'quantity', Number(event.target.value))} /></td>
                     <td><input aria-label={`${index + 1}번 단가`} type="number" min={0} step={1} value={row.price} disabled={locked} onChange={event => edit(row.id, 'price', Number(event.target.value))} /></td>
                     <td><input aria-label={`${index + 1}번 품목 ID`} maxLength={64} value={row.item} placeholder="선택 입력" disabled={locked} onChange={event => edit(row.id, 'item', event.target.value)} /></td>

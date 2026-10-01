@@ -201,7 +201,7 @@ function Cases() {
             : <section className="empty-state" role="status" aria-busy="true"><Icon name="clock" size={25} /><h1>불러오는 중</h1><p>청구 목록을 서버에서 확인하고 있습니다.</p></section>;
 
   return <Shell active="cases" preview={false}>
-    <PageHeader eyebrow="청구 업무" title="매입 청구서" subtitle="제출된 청구와 처리 상태를 서버에서 조회합니다." action={<Link className="button primary" href="/cases/new"><Icon name="plus" />청구 작성</Link>} />
+    <PageHeader eyebrow="청구 업무" title="매입 청구서" subtitle={canSeeAllSubmitters ? '청구서와 처리 상태를 확인하세요.' : '제출한 청구서와 처리 상태를 확인하세요.'} action={<Link className="button primary" href="/cases/new"><Icon name="plus" />청구 작성</Link>} />
     <div className="tabs" role="tablist" aria-label="청구서 상태">{tabs.map(([id, label]) => <button key={id} role="tab" aria-selected={filters.status === id} className={filters.status === id ? 'active' : ''} onClick={() => updateFilters({ status: id, page: 0 })}>{label}</button>)}</div>
     <div className="list-filter-area">
       <form className="list-search-form" onSubmit={applySearch}>
@@ -211,10 +211,8 @@ function Cases() {
       </form>
       <div className="list-filter-row">
         <label className="small-filter">공급사 ID<input aria-label="공급사 ID 필터" maxLength={64} placeholder="정확히 일치" value={drafts.supplier} onChange={event => patchDrafts({ supplier: event.target.value })} onBlur={commitSupplier} onKeyDown={event => commitOnEnter(event, commitSupplier)} /></label>
-        {canSeeAllSubmitters ? (
+        {canSeeAllSubmitters && (
           <label className="small-filter">제출자 계정<input aria-label="제출자 계정 필터" maxLength={64} placeholder="정확히 일치" value={drafts.submitter} onChange={event => patchDrafts({ submitter: event.target.value })} onBlur={commitSubmitter} onKeyDown={event => commitOnEnter(event, commitSubmitter)} /></label>
-        ) : (
-          <span className="list-scope-note" role="status">내가 제출한 청구서</span>
         )}
         <label className="small-filter date-range">제출일
           <input type="date" aria-label="제출일 시작" value={drafts.rangeStart} onChange={event => { patchDrafts({ rangeStart: event.target.value }); commitRange(event.target.value, drafts.rangeEnd); }} />

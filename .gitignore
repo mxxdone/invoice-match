@@ -10,4 +10,5 @@
 *.log
 output/
 .playwright-cli/
+.ui-design-review/
 *.tsbuildinfo
