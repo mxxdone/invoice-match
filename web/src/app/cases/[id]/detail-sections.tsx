@@ -272,7 +272,7 @@ export function EvidencePanel({ data }: { data: CaseDetailData }) {
         </span>
       </div>
       {bundleBody}
-      <div className="section-heading"><h3>{sealedPayloadLines.source === 'draft' ? '작성 중 청구 라인' : '제출 시점 청구 라인'}</h3></div>
+      <div className="section-heading"><h3>{sealedPayloadLines.source === 'draft' ? '작성 중 청구 라인' : `최신 제출 본문${newest ? ` · 제출 차수 #${newest.version}` : ''}`}</h3></div>
       {linesBody}
       {sealedPayloadLines.source === 'evidence' && data.sealed.status === 'ready' && (
         <details className="snapshot-technical">

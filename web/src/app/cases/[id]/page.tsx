@@ -7,7 +7,7 @@ import { Icon, Shell } from '../../ui';
 import { useAuth } from '../../auth';
 import { formatInstant, presentStatus } from '../../api/contract';
 import type { EvidenceBundleSummary } from '../../api/contract';
-import { canReadReview, comparisonRows, decisionSubjectPayload, detailTabs, latestBundle, resolveDetailTab, reviewSubjectBinding } from './detail-model';
+import { canReadReview, comparisonRows, decisionSubjectPayload, detailTabHref, detailTabs, latestBundle, resolveDetailTab, reviewSubjectBinding, type DetailTab } from './detail-model';
 import {
   AuditPanel,
   ComparePanel,
@@ -30,25 +30,22 @@ function Detail() {
   const reviewReader = canReadReview(user?.roles ?? []);
   const isOperator = (user?.roles ?? []).includes('OPERATOR');
   const isApprover = (user?.roles ?? []).includes('APPROVER');
-  // The allowed tabs and the default depend on the account roles. A role/session
-  // switch resets to the default allowed tab, so a tab the previous account could
-  // see is never inherited. An explicit `?tab=` that is not allowed shows a
-  // permission notice instead of the (still server-blocked) restricted content.
+  // The URL is the single authority for the selected tab: it is resolved on
+  // every render from the account roles + `?tab=`, so a session/role/case change
+  // or a `?tab=` edit can never keep a stale local tab, and there is no separate
+  // tab state to drift from the URL. Clicking a tab updates the URL (preserving
+  // other query params such as `from`) without touching the detail fetch or any
+  // pending write intent; the default is the role-allowed first tab.
   const roles = user?.roles ?? [];
   const tabs = detailTabs(roles);
   const allowedTabIds: string[] = tabs.map(([id]) => id);
-  const defaultTab = tabs[0][0];
   const requestedTab = searchParams.get('tab');
   const resolvedTab = resolveDetailTab(roles, requestedTab);
+  const tab = resolvedTab.tab;
   const unsupportedTab = resolvedTab.unsupported;
-  const tabScope = `${sessionId}#${reviewReader ? 'review' : 'basic'}`;
-  const [tabState, setTabState] = useState(() => ({ key: tabScope, value: resolvedTab.tab as string }));
-  if (tabState.key !== tabScope) {
-    setTabState({ key: tabScope, value: defaultTab });
-  }
-  const tab = tabState.key === tabScope ? tabState.value : defaultTab;
-  const selectTab = (id: string) => {
-    if (allowedTabIds.includes(id)) setTabState({ key: tabScope, value: id });
+  const selectTab = (id: DetailTab) => {
+    if (!allowedTabIds.includes(id)) return;
+    router.replace(`/cases/${caseId}?${detailTabHref(searchParams.toString(), id)}`, { scroll: false });
   };
   const [reloadToken, setReloadToken] = useState(0);
   const [reasonPanel, setReasonPanel] = useState<'supplement' | 'reject' | null>(null);

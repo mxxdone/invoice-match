@@ -87,6 +87,14 @@ export function resolveDetailTab(roles: string[], requested: string | null): { t
   return { tab: defaultTab, unsupported: requested !== null && !(allowed as string[]).includes(requested) };
 }
 
+// The URL query for a tab click: sets `tab` while preserving every other query
+// parameter (for example `from`, so returning to the list keeps its filters).
+export function detailTabHref(search: string, id: DetailTab): string {
+  const params = new URLSearchParams(search);
+  params.set('tab', id);
+  return params.toString();
+}
+
 export function latestBundle(bundles: EvidenceBundleSummary[]): EvidenceBundleSummary | null {
   return bundles.reduce<EvidenceBundleSummary | null>(
     (latest, bundle) => (latest === null || bundle.version > latest.version ? bundle : latest),

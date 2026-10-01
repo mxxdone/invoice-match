@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canReadReview, detailTabs, resolveDetailTab } from '../src/app/cases/[id]/detail-model.ts';
+import { canReadReview, detailTabHref, detailTabs, resolveDetailTab } from '../src/app/cases/[id]/detail-model.ts';
 
 const ids = (roles) => detailTabs(roles).map(([id]) => id);
 
@@ -37,4 +37,28 @@ test('a restricted tab is unsupported for a submitter, not silently allowed', ()
 
 test('an account with no roles only sees the submission history', () => {
   assert.deepEqual(ids([]), ['evidence']);
+});
+
+test('a tab click sets tab while preserving other query params', () => {
+  const next = new URLSearchParams(detailTabHref('from=status%3DREVIEW_PENDING%26page%3D1', 'audit'));
+  assert.equal(next.get('tab'), 'audit');
+  assert.equal(next.get('from'), 'status=REVIEW_PENDING&page=1');
+});
+
+test('an unsupported URL tab becomes valid after clicking an allowed tab', () => {
+  // A submitter opening ?tab=audit is told it is not allowed...
+  const first = resolveDetailTab(['SUBMITTER'], 'audit');
+  assert.deepEqual(first, { tab: 'evidence', unsupported: true });
+  // ...and the click writes tab=evidence into the URL, which then resolves as
+  // allowed (the warning is a function of the URL, not a sticky local flag).
+  const clicked = new URLSearchParams(detailTabHref('tab=audit', 'evidence')).get('tab');
+  assert.deepEqual(resolveDetailTab(['SUBMITTER'], clicked), { tab: 'evidence', unsupported: false });
+});
+
+test('a role change re-resolves the tab from the URL, never a stale local tab', () => {
+  // Approver had ?tab=compare; the submitter-only view must not keep it.
+  assert.deepEqual(resolveDetailTab(['SUBMITTER'], 'compare'), { tab: 'evidence', unsupported: true });
+  // A default (no tab) always resolves to the role-allowed first tab.
+  assert.deepEqual(resolveDetailTab(['SUBMITTER'], null), { tab: 'evidence', unsupported: false });
+  assert.deepEqual(resolveDetailTab(['APPROVER'], null), { tab: 'compare', unsupported: false });
 });
