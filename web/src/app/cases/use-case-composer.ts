@@ -99,6 +99,9 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
   const [notice, setNotice] = useState<string | null>(null);
   const [submittedBundleVersion, setSubmittedBundleVersion] = useState<number | null>(null);
   const [unresolved, setUnresolved] = useState<UnresolvedIntent | null>(null);
+  // Owns the "a supplement revision was actually opened" fact so the page does
+  // not keep a parallel ref that can drift from a retried revision.
+  const [revisionOpened, setRevisionOpened] = useState(false);
 
   const caseRef = useRef<{ id: string | null; version: number | null }>({ id: null, version: null });
   const frozen = useRef<FrozenIntent | null>(null);
@@ -119,6 +122,7 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
     setNotice(null);
     setSubmittedBundleVersion(null);
     setUnresolved(null);
+    setRevisionOpened(false);
   }
 
   useEffect(() => {
@@ -327,6 +331,9 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
           caseRef.current = { id: existingCaseId, version: data.version };
           setCaseId(existingCaseId);
           setCaseVersion(data.version);
+          // The hook owns this fact so a retried revision also marks the page's
+          // revision as opened; the page no longer keeps its own ref.
+          setRevisionOpened(true);
         },
       );
       if (!result.ok) return false;
@@ -345,14 +352,18 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
   }, [execute]);
 
   const adoptLatest = useCallback((id: string, version: number, statusNote?: string) => {
-    // Re-reading the server state is the sanctioned way to resolve an unknown
-    // intent, so a successful re-read clears the frozen request.
+    // While a request is unresolved, a server read is NOT proof that the
+    // operation landed (the read may see another writer's change), so it must
+    // not change identity/version/inputs or drop the frozen request. The only
+    // sanctioned resolution is the exact replay in retry(); 409-confirmed
+    // failures have no frozen intent and still adopt the latest version here.
+    if (frozen.current) {
+      setNotice(statusNote ?? '서버 상태를 다시 읽었습니다. 미확정 작업은 같은 요청을 다시 시도해야 해소됩니다.');
+      return;
+    }
     caseRef.current = { id, version };
     setCaseId(id);
     setCaseVersion(version);
-    frozen.current = null;
-    setUnresolved(null);
-    setHasPending(false);
     setFailure(null);
     setNotice(statusNote ?? '서버의 최신 청구서 버전을 반영했습니다. 내용을 다시 확인하고 저장·제출하세요.');
   }, []);
@@ -370,6 +381,7 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
     setNotice(null);
     setSubmittedBundleVersion(null);
     setUnresolved(null);
+    setRevisionOpened(false);
   }, []);
 
   const clearFailure = useCallback(() => setFailure(null), []);
@@ -383,6 +395,7 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
     notice,
     submittedBundleVersion,
     unresolved,
+    revisionOpened,
     createOrReuse,
     saveDraft,
     submit,

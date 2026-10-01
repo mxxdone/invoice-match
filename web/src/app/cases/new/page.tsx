@@ -71,7 +71,6 @@ function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supple
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadingExisting, setLoadingExisting] = useState(Boolean(existingId));
   const [refreshing, setRefreshing] = useState(false);
-  const revisionOpened = useRef(false);
   const adopted = useRef(false);
 
   useEffect(() => {
@@ -166,12 +165,12 @@ function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supple
   }));
 
   async function ensureRevision(): Promise<boolean> {
-    if (!supplementId || revisionOpened.current) return true;
+    // The composer owns whether a revision was actually opened (including via an
+    // explicit retry), so the page does not track a parallel flag.
+    if (!supplementId || composer.revisionOpened) return true;
     const version = composer.caseVersion;
     if (version === null) return false;
-    const ok = await composer.openRevision(supplementId, version);
-    if (ok) revisionOpened.current = true;
-    return ok;
+    return composer.openRevision(supplementId, version);
   }
 
   async function onSave() {
@@ -196,12 +195,21 @@ function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supple
     // account/case/mount can never adopt, toast, error or sign out here.
     const session = sessionId;
     const stillCurrent = () => alive.current && sessionRef.current === session;
+    const hadUnresolved = composer.unresolved !== null;
     setRefreshing(true);
     try {
       const detail = await fetchInvoiceCase(credentials, id);
       if (!stillCurrent()) return;
-      composer.adoptLatest(detail.id, detail.version);
-      setToast('서버의 최신 청구서 버전을 반영했습니다. 내용을 확인하고 다시 시도하세요.');
+      // A server read cannot prove an unresolved write landed, so it only adds a
+      // notice and leaves the frozen intent/version for an exact replay to clear.
+      composer.adoptLatest(
+        detail.id,
+        detail.version,
+        hadUnresolved ? '서버 상태를 다시 읽었습니다. 미확정 작업은 같은 요청을 다시 시도해야 해소됩니다.' : undefined,
+      );
+      if (!hadUnresolved) {
+        setToast('서버의 최신 청구서 버전을 반영했습니다. 내용을 확인하고 다시 시도하세요.');
+      }
     } catch (caught) {
       if (!stillCurrent()) return;
       if (caught instanceof ApiRequestError && caught.status === 401) {

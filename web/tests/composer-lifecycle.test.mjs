@@ -300,3 +300,97 @@ test('under React StrictMode the create to submit flow still completes exactly o
     t.restore();
   }
 });
+
+test('a server re-read of an unresolved write keeps the frozen intent and does not change version', async () => {
+  let draftAttempts = 0;
+  const t = setup((url, init) => {
+    if (init.method === 'POST' && url.endsWith('/api/invoice-cases')) return jsonResponse(201, created);
+    if (init.method === 'PUT' && url.endsWith('/draft')) {
+      draftAttempts += 1;
+      return draftAttempts === 1 ? jsonResponse(503, { code: 'CORE_API_UNAVAILABLE', message: 'x' }) : jsonResponse(200, { ...created, version: 1 });
+    }
+    return jsonResponse(500, { code: 'X', message: 'unexpected' });
+  });
+  try {
+    await t.render();
+    await t.run(() => latest.saveDraft(header, lines));
+    assert.equal(latest.unresolved.operation, 'draft');
+    const versionBefore = latest.caseVersion;
+    // A server read claiming a different version must not change identity/version
+    // or clear the frozen request.
+    await t.run(() => latest.adoptLatest('case-1', 99));
+    assert.equal(latest.caseVersion, versionBefore);
+    assert.equal(latest.unresolved.operation, 'draft');
+    assert.match(latest.notice, /같은 요청을 다시 시도/);
+
+    const before = t.calls.length;
+    await t.run(() => latest.saveDraft(header, [{ ...lines[0], quantity: 9 }]));
+    assert.equal(t.calls.length, before, 'a changed input must remain blocked while unresolved');
+
+    const firstDraftId = t.calls.filter((call) => call.url.endsWith('/draft'))[0].body.requestId;
+    await t.run(() => latest.retry());
+    const drafts = t.calls.filter((call) => call.url.endsWith('/draft'));
+    assert.equal(drafts.length, 2);
+    assert.equal(drafts[1].body.requestId, firstDraftId, 'the retry must reuse the exact draft request id');
+    assert.equal(drafts[1].body.expectedCaseVersion, versionBefore);
+    assert.equal(latest.status, 'draft-saved');
+    assert.equal(latest.unresolved, null);
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
+
+test('a retried supplement revision marks the revision opened so a later save does not open a new one', async () => {
+  let revisionAttempts = 0;
+  const t = setup((url, init) => {
+    if (init.method === 'POST' && url.endsWith('/revisions')) {
+      revisionAttempts += 1;
+      return revisionAttempts === 1
+        ? jsonResponse(503, { code: 'CORE_API_UNAVAILABLE', message: 'x' })
+        : jsonResponse(201, { ...created, version: 1 });
+    }
+    if (init.method === 'PUT' && url.endsWith('/draft')) return jsonResponse(200, { ...created, version: 2 });
+    return jsonResponse(500, { code: 'X', message: 'unexpected' });
+  });
+  try {
+    await t.render();
+    await t.run(() => latest.openRevision('case-1', 0));
+    assert.equal(latest.unresolved.operation, 'revision');
+    assert.equal(latest.revisionOpened, false);
+
+    await t.run(() => latest.retry());
+    assert.equal(latest.revisionOpened, true, 'a successful retried revision is opened');
+    assert.equal(latest.caseVersion, 1);
+    assert.equal(latest.unresolved, null);
+
+    // The page's ensureRevision now skips opening again; a save only replaces the draft.
+    await t.run(() => latest.saveDraft(header, lines));
+    const revisions = t.calls.filter((call) => call.url.endsWith('/revisions'));
+    assert.equal(revisions.length, 2, 'no new revision may be opened after the retried one');
+    assert.equal(revisions[1].body.requestId, revisions[0].body.requestId, 'the retried revision reused its request id');
+    assert.equal(t.calls.filter((call) => call.url.endsWith('/draft')).length, 1);
+    assert.equal(latest.status, 'draft-saved');
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
+
+test('retry after a session change cannot open a revision for another view', async () => {
+  const t = setup(() => jsonResponse(503, { code: 'CORE_API_UNAVAILABLE', message: 'x' }));
+  try {
+    await t.render({ sessionId: 1 });
+    await t.run(() => latest.openRevision('case-1', 0));
+    assert.equal(latest.unresolved.operation, 'revision');
+    await t.render({ sessionId: 2 });
+    const before = t.calls.length;
+    let result = true;
+    await t.run(async () => { result = await latest.retry(); });
+    assert.equal(result, false);
+    assert.equal(t.calls.length, before, 'a late retry must not send a revision for the replaced view');
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});
