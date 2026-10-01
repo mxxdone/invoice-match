@@ -185,6 +185,8 @@ Phase 2~5의 Ticket은 직전 Phase 완료 검토 후 상세화한다.
 
 ### P1-11 — Phase 1 통합 인수
 
+**진행 상태:** 진행 중(2026-10-01). 워커 구현·검증 완료, Head 최종 리뷰·인수 대기. 격리 `scripts/verify-p1-11.mjs`(HTTP/DB 실제 단언 + `--browser`)와 clean Compose smoke(`scripts/compose-smoke-p1-11.mjs`)가 PASS. 미해결 gap: 매핑 successor snapshot을 재-freeze 없이 바로 승인하면 `409 REVIEW_STATE_CONFLICT`("review snapshot payload does not match its authoritative sources")가 발생하며, 재-freeze 후 승인은 성공한다. Java 테스트에 approve-after-mapping 경로가 없어 제품 gap 후보로 Head 보고 대상이며, 본 Ticket에서 core-api를 임의 수정하지 않았다. 증거 `output/p1-11/evidence.json`, `output/playwright/p1-11-phase-one/`.
+
 **목적과 범위:** 전체 Ticket을 통합하고 반복 가능한 fixture, E2E, 경합·장애 시연과 Phase 2 입력 계약을 확정한다.
 
 **관련 규칙/불변식:** 기대 결과는 구현과 독립된 사건 예제로 정의한다. flaky retry로 실패를 감추지 않으며 미구현 AI/문서/RabbitMQ를 완료로 주장하지 않는다.

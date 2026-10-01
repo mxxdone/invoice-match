@@ -1,6 +1,20 @@
 # Invoice Match
 
-P1-00 provides a runnable baseline for the invoice matching project. It has one Java 21 Spring Boot 3 API, a Next.js TypeScript web app, PostgreSQL, and a minimal Mock ERP process. P1-01 adds the domain contract and PostgreSQL schema baseline (invoice case, draft revision, evidence bundle, match result, review snapshot and decision). P1-02 adds a read-only external purchasing system Mock (`mock-purchasing`), a read-only Core API adapter and a PostgreSQL-backed current snapshot of suppliers' purchase orders, lines, receipts and receipt lines with external versions. P1-03 adds the first business write APIs: manual invoice case creation validated against the external purchase order, atomic current-draft editing, submission that freezes a canonical hashed `EvidenceBundle` version, supplement revisions that copy the previous frozen lines, past bundle version reads and request-id idempotency. P1-04 adds the deterministic, AI-free 3-way match: the latest frozen bundle is compared with zero tolerance against the current purchasing snapshot and an immutable, canonically hashed `MatchResult` with per-line calculation evidence, an exception taxonomy and a non-consuming expected FIFO allocation plan is appended. P1-05 adds the human review workflow: a frozen `ReviewSnapshot` approval subject with a canonical payload hash, case-local item mapping with deterministic re-match and a successor snapshot, supplement request and rejection, machine-checkable freshness/staleness, and request-id idempotency. P1-06 adds role-based authorization for `SUBMITTER`, `APPROVER` and `OPERATOR` with local demo identities, an authoritative server-derived `submittedBy`/review actor (the client `decidedBy` is ignored), a request trace id, and an append-only, transactionally recorded audit history. P1-07 adds atomic approval: one APPROVER command consumes the exact frozen `ReviewSnapshot` into append-only `ReceiptAllocation` rows, one APPROVED `ReviewDecision`, one internal `PaymentRequest` and an `APPROVE` audit, all in one transaction with deterministic PostgreSQL row/advisory locking. Outbox/ERP relay and AI remain out of scope.
+P1-00 provides a runnable baseline for the invoice matching project. It has one Java 21 Spring Boot 3 API, a Next.js TypeScript web app, PostgreSQL, and a minimal Mock ERP process. P1-01 adds the domain contract and PostgreSQL schema baseline (invoice case, draft revision, evidence bundle, match result, review snapshot and decision). P1-02 adds a read-only external purchasing system Mock (`mock-purchasing`), a read-only Core API adapter and a PostgreSQL-backed current snapshot of suppliers' purchase orders, lines, receipts and receipt lines with external versions. P1-03 adds the first business write APIs: manual invoice case creation validated against the external purchase order, atomic current-draft editing, submission that freezes a canonical hashed `EvidenceBundle` version, supplement revisions that copy the previous frozen lines, past bundle version reads and request-id idempotency. P1-04 adds the deterministic, AI-free 3-way match: the latest frozen bundle is compared with zero tolerance against the current purchasing snapshot and an immutable, canonically hashed `MatchResult` with per-line calculation evidence, an exception taxonomy and a non-consuming expected FIFO allocation plan is appended. P1-05 adds the human review workflow: a frozen `ReviewSnapshot` approval subject with a canonical payload hash, case-local item mapping with deterministic re-match and a successor snapshot, supplement request and rejection, machine-checkable freshness/staleness, and request-id idempotency. P1-06 adds role-based authorization for `SUBMITTER`, `APPROVER` and `OPERATOR` with local demo identities, an authoritative server-derived `submittedBy`/review actor (the client `decidedBy` is ignored), a request trace id, and an append-only, transactionally recorded audit history. P1-07 adds atomic approval: one APPROVER command consumes the exact frozen `ReviewSnapshot` into append-only `ReceiptAllocation` rows, one APPROVED `ReviewDecision`, one internal `PaymentRequest` and an `APPROVE` audit, all in one transaction with deterministic PostgreSQL row/advisory locking. P1-08 adds the minimal transactional Outbox and the in-process relay to Mock ERP. P1-09 adds the idempotent Mock ERP receiver (ACK by export key) and the signed result webhook that converges a lost or unknown response without creating a second payment. P1-10 adds the connected workflow screens (login, list, detail/comparison, authoring, review, approval, ERP hand-off and operations). P1-11 is the Phase 1 integration acceptance: reproducible isolated fixtures, end-to-end/concurrency/fault verification, the clean Compose smoke, this runbook and the Phase 2 input contract. AI document extraction, object storage and RabbitMQ/DLQ remain Phase 2; Phase 1 ships the full manual invoice → deterministic match → human review → atomic approval → Outbox → Mock ERP hand-off path.
+
+## Documentation
+
+`AGENTS.md` is the routing index. The current design and verification references are:
+
+| Document | Contents |
+| --- | --- |
+| `docs/Spec.md` | Product scope, user scenarios, state model, invariants, transaction/concurrency and messaging design |
+| `docs/Plan.md` | Ticket roadmap and acceptance criteria (P1-00 … P1-11) |
+| `docs/ERD.md` | PostgreSQL schema map produced by migrations `V1`…`V9` |
+| `docs/API.md` | Current HTTP API index, roles, idempotency and error contracts |
+| `docs/Runbook.md` | 5–7 minute demo script and the reproducible verification/smoke commands |
+| `docs/Phase2-Input-Contract.md` | The frozen Phase 1 interfaces that Phase 2 must build on |
+| `docs/adr/` | Accepted architecture decisions (review subject, receipt facts, transactional outbox) |
 
 ## Run all services
 
@@ -635,4 +649,42 @@ reject, the server self-approval denial (a verification-only dual-role identity
 is injected into the throwaway child's `SPRING_APPLICATION_JSON`), stale
 blocking, list return, console and a 1024px viewport overflow check.
 
-The GitHub Actions workflow runs these checks and a five-service Compose smoke test. Source layout is intentionally small: `core-api` holds one Spring application organized by feature (`invoicecase`, `matching`, `purchasingreference`, `review`, `shared`); `web/src/app` holds the Next.js routes; `mock-erp` serves only a deterministic health response; `mock-purchasing` serves deterministic read-only purchase order aggregates. P1-01 defines the Phase 1 state contract and PostgreSQL baseline, P1-02 defines the external purchasing reference snapshot and refresh version semantics, P1-03 defines manual submission, evidence bundle versioning and request-id idempotency, P1-04 defines the deterministic AI-free 3-way match, P1-05 defines the frozen review snapshot, case-local mapping with deterministic re-match, supplement/reject and freshness, P1-06 defines role-based authorization, the authoritative submitter/reviewer identity, request trace ids and the append-only audit history, but later tickets still own approval, allocation, payment and P1-09 behavior.
+The Phase 1 integration acceptance is a separate self-contained script. It hosts
+the committed `mock-erp` module in-process (so `dropResponse`/response-delay can
+be driven deterministically), starts the same throwaway PostgreSQL + purchasing
++ core-api + web stack with the payment relay enabled, and asserts the persisted
+decision/allocation/payment/outbox/webhook/audit rows plus the Mock ERP record
+count over real HTTP. It covers normal approval, 60/100 supplement → corrected
+resubmission, unit-price difference, item mapping, invoice-number duplicate,
+insufficient evidence, a signed result that disagrees with the export, a signed
+result that resolves an in-flight `SENDING` send, lost-response
+`RESULT_UNKNOWN` → explicit status inquiry → signed-result convergence, `FAILED`
+vs `RESULT_UNKNOWN`, and a repeated real-PostgreSQL 40+40 shared-receipt
+contention. It writes a sanitized `output/p1-11/evidence.json`:
+
+```sh
+cd core-api && ./gradlew bootJar
+cd ../web && npm ci && npm run build
+cd ..
+node scripts/verify-p1-11.mjs --browser
+```
+
+`--browser` drives a real Chromium and covers the actual hand-off states
+`ACKNOWLEDGED/DELIVERED/EXPORTED`, `FAILED` and `RESULT_UNKNOWN` (not only
+`NOT_SENT`), writing `output/playwright/p1-11-phase-one/`.
+
+The clean five-service Compose smoke is also a script. It brings the stack up as
+a uniquely named project on freshly chosen isolated ports with generated
+test-only credentials, waits for every healthcheck, runs one full
+create → submit → match → freeze → approve → Outbox → Mock ERP workflow over
+HTTP, asserts the Mock ERP holds one logical record, and then removes only that
+project's resources (`down -v` scoped to the project). It never runs a bare
+`docker compose down` and never touches an existing stack:
+
+```sh
+node scripts/compose-smoke-p1-11.mjs
+```
+
+The 5–7 minute demo script and the full command list are in `docs/Runbook.md`.
+
+The GitHub Actions workflow runs these checks and a five-service Compose smoke test. Source layout is intentionally small: `core-api` holds one Spring application organized by feature (`invoicecase`, `matching`, `purchasingreference`, `review`, `shared`); `web/src/app` holds the Next.js routes; `mock-erp` serves only a deterministic health response; `mock-purchasing` serves deterministic read-only purchase order aggregates. P1-01 defines the Phase 1 state contract and PostgreSQL baseline, P1-02 defines the external purchasing reference snapshot and refresh version semantics, P1-03 defines manual submission, evidence bundle versioning and request-id idempotency, P1-04 defines the deterministic AI-free 3-way match, P1-05 defines the frozen review snapshot, case-local mapping with deterministic re-match, supplement/reject and freshness, P1-06 defines role-based authorization, the authoritative submitter/reviewer identity, request trace ids and the append-only audit history, P1-07 defines atomic approval, allocation and the internal payment request, P1-08 defines the transactional Outbox and in-process relay, P1-09 defines the idempotent Mock ERP receiver and signed result webhook, and P1-10 connects the workflow screens. AI document processing, object storage and RabbitMQ/DLQ are explicitly Phase 2 (`docs/Phase2-Input-Contract.md`).

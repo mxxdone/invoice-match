@@ -146,7 +146,76 @@ function demoUsersOverride() {
   });
 }
 
-export function buildConfig({ ports, repo, pgPassword }) {
+// buildConfig shares the isolated stack definition. The default (P1-10) shape
+// starts PG + mock-purchasing + core-api + web and leaves the payment relay
+// fail-closed. `withErp` additionally hosts the P1-11 in-process Mock ERP
+// fixture and opts the throwaway core-api into the signed payment relay, all on
+// the isolated loopback ports; it changes nothing for callers that omit it.
+export function buildConfig({
+  ports,
+  repo,
+  pgPassword,
+  withErp = false,
+  webhookSecret,
+  relayInterval = '1s',
+} = {}) {
+  const coreEnv = {
+    DB_URL: `jdbc:postgresql://${LOOPBACK}:${ports.pg}/invoice_match`,
+    DB_USER: 'invoice_match',
+    DB_PASSWORD: pgPassword,
+    SPRING_PROFILES_ACTIVE: 'local',
+    PURCHASING_BASE_URL: loopbackUrl(ports.mock),
+    SPRING_APPLICATION_JSON: demoUsersOverride(),
+  };
+  if (withErp) {
+    coreEnv.ERP_BASE_URL = loopbackUrl(ports.erp);
+    coreEnv.PAYMENT_EXPORT_RELAY_ENABLED = 'true';
+    coreEnv.PAYMENT_EXPORT_INTERVAL = relayInterval;
+    coreEnv.MOCK_ERP_WEBHOOK_SECRET = webhookSecret;
+  }
+
+  const children = [
+    {
+      name: 'mock-purchasing',
+      cmd: 'node',
+      args: ['server.js'],
+      cwd: join(repo, 'mock-purchasing'),
+      env: { PORT: String(ports.mock) },
+      readiness: { url: `${loopbackUrl(ports.mock)}/health`, verify: (body) => body.includes('"status":"UP"') },
+    },
+  ];
+  if (withErp) {
+    children.push({
+      name: 'mock-erp',
+      inProcess: 'erp',
+      host: LOOPBACK,
+      port: ports.erp,
+      webhookUrl: `${loopbackUrl(ports.core)}/webhooks/mock-erp/payment-results`,
+      webhookSecret,
+      dropResponse: false,
+      autoWebhook: false,
+      readiness: { url: `${loopbackUrl(ports.erp)}/health`, verify: (body) => body.includes('"status":"UP"') },
+    });
+  }
+  children.push(
+    {
+      name: 'core-api',
+      cmd: 'java',
+      args: ['-jar', join(repo, 'core-api', 'build', 'libs', 'core-api-0.1.0-SNAPSHOT.jar'), `--server.port=${ports.core}`, `--server.address=${LOOPBACK}`],
+      cwd: join(repo, 'core-api'),
+      env: coreEnv,
+      readiness: { url: `${loopbackUrl(ports.core)}/actuator/health`, verify: (body) => body.includes('"status":"UP"') },
+    },
+    {
+      name: 'web',
+      cmd: 'node',
+      args: ['server.js'],
+      cwd: join(repo, 'web', '.next', 'standalone'),
+      env: { CORE_API_URL: loopbackUrl(ports.core), PORT: String(ports.web), HOSTNAME: LOOPBACK },
+      readiness: { url: `${loopbackUrl(ports.web)}/login` },
+    },
+  );
+
   return {
     ports,
     images: { postgres: 'postgres:18-alpine' },
@@ -154,38 +223,6 @@ export function buildConfig({ ports, repo, pgPassword }) {
     pgPublish: `${LOOPBACK}:${ports.pg}:5432`,
     pgReadyArgs: ['pg_isready', '-U', 'invoice_match', '-d', 'invoice_match'],
     readinessTimeoutMs: 90000,
-    children: [
-      {
-        name: 'mock-purchasing',
-        cmd: 'node',
-        args: ['server.js'],
-        cwd: join(repo, 'mock-purchasing'),
-        env: { PORT: String(ports.mock) },
-        readiness: { url: `${loopbackUrl(ports.mock)}/health`, verify: (body) => body.includes('"status":"UP"') },
-      },
-      {
-        name: 'core-api',
-        cmd: 'java',
-        args: ['-jar', join(repo, 'core-api', 'build', 'libs', 'core-api-0.1.0-SNAPSHOT.jar'), `--server.port=${ports.core}`, `--server.address=${LOOPBACK}`],
-        cwd: join(repo, 'core-api'),
-        env: {
-          DB_URL: `jdbc:postgresql://${LOOPBACK}:${ports.pg}/invoice_match`,
-          DB_USER: 'invoice_match',
-          DB_PASSWORD: pgPassword,
-          SPRING_PROFILES_ACTIVE: 'local',
-          PURCHASING_BASE_URL: loopbackUrl(ports.mock),
-          SPRING_APPLICATION_JSON: demoUsersOverride(),
-        },
-        readiness: { url: `${loopbackUrl(ports.core)}/actuator/health`, verify: (body) => body.includes('"status":"UP"') },
-      },
-      {
-        name: 'web',
-        cmd: 'node',
-        args: ['server.js'],
-        cwd: join(repo, 'web', '.next', 'standalone'),
-        env: { CORE_API_URL: loopbackUrl(ports.core), PORT: String(ports.web), HOSTNAME: LOOPBACK },
-        readiness: { url: `${loopbackUrl(ports.web)}/login` },
-      },
-    ],
+    children,
   };
 }

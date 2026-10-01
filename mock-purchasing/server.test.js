@@ -69,6 +69,19 @@ test("unconfirmed fixture is exposed and distinguishable", async () => {
   });
 });
 
+test("ambiguous-item fixture exposes one item id on two active lines", async () => {
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/purchase-orders/PO-1003`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+
+    assert.equal(body.purchaseOrder.status, "CONFIRMED");
+    const itemIds = body.purchaseOrder.lines.map((line) => line.itemId);
+    assert.deepEqual(itemIds, ["ITEM-DUP-1", "ITEM-DUP-1"]);
+    assert.equal(itemIds.filter((itemId) => itemId === "ITEM-DUP-1").length, 2);
+  });
+});
+
 test("unknown purchase order returns 404 with a distinguishable body", async () => {
   await withServer(async (base) => {
     const response = await fetch(`${base}/api/purchase-orders/PO-9999`);

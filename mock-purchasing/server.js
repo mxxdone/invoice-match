@@ -78,6 +78,56 @@ const PURCHASE_ORDERS = Object.freeze({
     }),
     receipts: Object.freeze([]),
   }),
+  // Deterministic P1-11 fixture: one confirmed purchase order whose item id
+  // appears on two active lines. A confirmed item that resolves to several
+  // lines is exactly the P1-04 EVIDENCE_INSUFFICIENT case ("price/receipt basis
+  // is not uniquely supportable"), which the PO-1001/PO-1002 fixtures cannot
+  // reproduce because each of their item ids is unique. This is test-only
+  // fixture data; it adds no business behaviour.
+  "PO-1003": Object.freeze({
+    snapshotVersion: 2,
+    purchaseOrder: Object.freeze({
+      purchaseOrderId: "PO-1003",
+      status: "CONFIRMED",
+      version: 2,
+      supplier: Object.freeze({
+        supplierId: "SUP-1",
+        name: "Hanul Office Supply",
+      }),
+      lines: Object.freeze([
+        Object.freeze({
+          purchaseOrderLineId: "POL-1003-1",
+          itemId: "ITEM-DUP-1",
+          itemName: "Ambiguous Item A",
+          orderedQuantity: 30,
+          unitPrice: 4000,
+        }),
+        Object.freeze({
+          purchaseOrderLineId: "POL-1003-2",
+          itemId: "ITEM-DUP-1",
+          itemName: "Ambiguous Item B",
+          orderedQuantity: 30,
+          unitPrice: 4000,
+        }),
+      ]),
+    }),
+    receipts: Object.freeze([
+      Object.freeze({
+        receiptId: "RCV-1003-1",
+        status: "CONFIRMED",
+        receiptDate: "2026-01-06",
+        version: 1,
+        lines: Object.freeze([
+          Object.freeze({
+            receiptLineId: "RCL-1003-1-1",
+            version: 1,
+            purchaseOrderLineId: "POL-1003-1",
+            confirmedQuantity: 10,
+          }),
+        ]),
+      }),
+    ]),
+  }),
 });
 
 const AGGREGATE_PATH = /^\/api\/purchase-orders\/([^/]+)$/;

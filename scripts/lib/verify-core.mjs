@@ -178,7 +178,21 @@ export async function runVerification(deps) {
       }
     };
     guard();
-    outcome = { ok: true, value: await deps.verify({ request, config, guard, log }) };
+    outcome = {
+      ok: true,
+      value: await deps.verify({
+        request,
+        config,
+        guard,
+        log,
+        // Child adapters and created container ids let a P1-11 scenario reach
+        // its in-process ERP fixture and assert persisted database state. The
+        // existing cleanup still owns and stops exactly these resources.
+        children: created.children,
+        containers: created.containers.slice(),
+        docker,
+      }),
+    };
   } catch (error) {
     outcome = { ok: false, failure: error };
   }
