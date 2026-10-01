@@ -85,6 +85,23 @@ export async function runBrowserChecks({ config, guard, log = () => {} }) {
     if (summary.unexpectedConsoleErrors && summary.unexpectedConsoleErrors.length > 0) {
       throw new VerifyError(`browser console errors: ${summary.unexpectedConsoleErrors.join(' | ')}`);
     }
+    // Persistent evidence artifact: the raw results/steps/errors plus what was
+    // actually asserted against.
+    const summaryPath = join(outDir, 'browser-summary.json');
+    writeFileSync(summaryPath, JSON.stringify({
+      webOrigin: webUrl,
+      assertedSource: `${webUrl}/backend/... proxy (Basic per-request), roles submitter/approver/operator/dual`,
+      capturedAt: new Date().toISOString(),
+      results: summary.results,
+      steps: summary.steps,
+      mutations: summary.mutations,
+      writeRequestIds: summary.writeRequestIds,
+      httpErrors: summary.httpErrors,
+      unexpectedHttpErrors: summary.unexpectedHttpErrors,
+      consoleErrors: summary.consoleErrors,
+      unexpectedConsoleErrors: summary.unexpectedConsoleErrors,
+    }, null, 2), 'utf8');
+    log(`INFO browser summary ${summaryPath}`);
     for (const [name, value] of Object.entries(summary.results ?? {})) {
       if (value) log(`PASS browser ${name}`);
     }

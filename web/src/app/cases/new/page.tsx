@@ -45,6 +45,13 @@ function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supple
   const existingId = draftId ?? supplementId;
   const { credentials, user, isAuthenticated, sessionId, logout } = useAuth();
   const isSubmitter = (user?.roles ?? []).includes('SUBMITTER');
+  const sessionRef = useRef(sessionId);
+  const alive = useRef(true);
+  useEffect(() => { sessionRef.current = sessionId; }, [sessionId]);
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
 
   const composer = useCaseComposer({
     credentials,
@@ -185,12 +192,18 @@ function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supple
   async function refreshLatest() {
     const id = composer.caseId;
     if (!id || !credentials) return;
+    // Capture the view identity so a late response from a replaced
+    // account/case/mount can never adopt, toast, error or sign out here.
+    const session = sessionId;
+    const stillCurrent = () => alive.current && sessionRef.current === session;
     setRefreshing(true);
     try {
       const detail = await fetchInvoiceCase(credentials, id);
+      if (!stillCurrent()) return;
       composer.adoptLatest(detail.id, detail.version);
       setToast('서버의 최신 청구서 버전을 반영했습니다. 내용을 확인하고 다시 시도하세요.');
     } catch (caught) {
+      if (!stillCurrent()) return;
       if (caught instanceof ApiRequestError && caught.status === 401) {
         logout();
         router.replace('/login');
@@ -198,7 +211,7 @@ function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supple
       }
       setLoadError(caught instanceof Error ? caught.message : '최신 청구서를 불러오지 못했습니다.');
     } finally {
-      setRefreshing(false);
+      if (stillCurrent()) setRefreshing(false);
     }
   }
 
@@ -316,9 +329,12 @@ function NewCaseForm({ draftId, supplementId }: { draftId: string | null; supple
 // can leak into the next.
 function NewCaseRoute() {
   const searchParams = useSearchParams();
+  const { sessionId } = useAuth();
   const draftId = searchParams.get('case');
   const supplementId = searchParams.get('supplement');
-  return <NewCaseForm key={draftId ?? supplementId ?? 'new'} draftId={draftId} supplementId={supplementId} />;
+  // Key on both the account session and the target case: a different login must
+  // not inherit the previous account's rows, adoption ref or opened revision.
+  return <NewCaseForm key={`${sessionId}#${draftId ?? supplementId ?? 'new'}`} draftId={draftId} supplementId={supplementId} />;
 }
 
 export default function NewCasePage() {

@@ -270,6 +270,21 @@ export type ReviewBinding = {
   reasons: string[];
 };
 
+// Minimal structural read of the frozen snapshot payload (ReviewSnapshotView.payload).
+// The backend writes that canonical JSON; the UI only reads the identity/hash
+// fields it needs to prove the displayed comparison is the frozen one. It never
+// recomputes the payload hash.
+type FrozenSnapshotPayload = {
+  evidenceBundle?: { id?: unknown; version?: unknown; payloadHash?: unknown };
+  matchResult?: { id?: unknown; resultNumber?: unknown; resultHash?: unknown; mappingWatermark?: unknown };
+  purchasingSnapshot?: { snapshotVersion?: unknown; payloadHash?: unknown };
+};
+
+function frozenPayloadOf(payload: unknown): FrozenSnapshotPayload | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  return payload as FrozenSnapshotPayload;
+}
+
 export function reviewSubjectBinding(input: {
   snapshot: ReviewSnapshotView | null;
   freshnessCurrent: boolean | null;
@@ -285,12 +300,41 @@ export function reviewSubjectBinding(input: {
     reasons.push('비교 결과를 확인할 수 없습니다.');
     return { bound: false, reasons };
   }
+  // A missing/unknown current bundle hash cannot be proven; fail closed rather
+  // than approving against an unverified bundle.
+  if (currentBundleVersion === null || currentBundleHash === null) {
+    reasons.push('현재 증빙의 버전·지문을 확인할 수 없습니다.');
+  } else {
+    if (snapshot.evidenceBundleVersion !== currentBundleVersion) reasons.push('표시된 증빙 버전이 검토 대상의 근거와 다릅니다.');
+    if (match.payload.evidenceBundle.payloadHash !== currentBundleHash) reasons.push('표시된 증빙 지문이 현재 증빙과 다릅니다.');
+  }
   if (snapshot.matchResultId !== match.id) reasons.push('표시된 비교 결과가 검토 대상의 비교 결과와 다릅니다.');
-  if (snapshot.evidenceBundleVersion !== currentBundleVersion) reasons.push('표시된 증빙 버전이 검토 대상의 근거와 다릅니다.');
+  if (snapshot.mappingWatermark !== match.mappingWatermark) reasons.push('표시된 매핑 watermark가 검토 대상과 다릅니다.');
   if (snapshot.evidenceBundleId !== match.evidenceBundleId) reasons.push('비교 결과의 증빙이 검토 대상의 근거와 다릅니다.');
-  if (currentBundleHash !== null && match.payload.evidenceBundle.payloadHash !== currentBundleHash) reasons.push('표시된 증빙 지문이 현재 증빙과 다릅니다.');
   if (snapshot.purchasingSnapshotVersion !== match.payload.purchasingSnapshot.snapshotVersion) reasons.push('비교 결과의 구매 스냅샷 버전이 검토 대상과 다릅니다.');
   if (snapshot.purchasingSnapshotHash !== match.payload.purchasingSnapshot.payloadHash) reasons.push('비교 결과의 구매 스냅샷 지문이 검토 대상과 다릅니다.');
+
+  // The frozen canonical payload must carry the same source match/bundle/
+  // purchasing facts the screen is showing; a snapshot whose own payload does
+  // not is not a trustworthy subject.
+  const frozen = frozenPayloadOf(snapshot.payload);
+  const frozenMatch = frozen?.matchResult;
+  if (!frozenMatch) {
+    reasons.push('검토 대상의 동결 근거를 확인할 수 없습니다.');
+  } else {
+    if (frozenMatch.id !== match.id) reasons.push('검토 대상 근거의 비교 결과 ID가 표시된 비교와 다릅니다.');
+    if (frozenMatch.resultNumber !== match.resultNumber) reasons.push('검토 대상 근거의 비교 결과 번호가 표시된 비교와 다릅니다.');
+    if (frozenMatch.resultHash !== match.resultHash) reasons.push('검토 대상 근거의 비교 해시가 표시된 비교와 다릅니다.');
+    if (frozenMatch.mappingWatermark !== snapshot.mappingWatermark) reasons.push('검토 대상 근거의 매핑 watermark가 동결 값과 다릅니다.');
+  }
+  const frozenBundle = frozen?.evidenceBundle;
+  if (!frozenBundle || frozenBundle.id !== match.evidenceBundleId || frozenBundle.version !== snapshot.evidenceBundleVersion || frozenBundle.payloadHash !== match.payload.evidenceBundle.payloadHash) {
+    reasons.push('검토 대상 근거의 증빙 정보가 표시된 비교와 다릅니다.');
+  }
+  const frozenPurchasing = frozen?.purchasingSnapshot;
+  if (!frozenPurchasing || frozenPurchasing.snapshotVersion !== match.payload.purchasingSnapshot.snapshotVersion || frozenPurchasing.payloadHash !== match.payload.purchasingSnapshot.payloadHash) {
+    reasons.push('검토 대상 근거의 구매 스냅샷 정보가 표시된 비교와 다릅니다.');
+  }
   return { bound: reasons.length === 0, reasons };
 }
 

@@ -24,10 +24,10 @@ import {
   UNSAFE_NUMBER_MARKER,
 } from '../src/app/cases/[id]/detail-model.ts';
 
-function matchOf(id, bundleId, bundleVersion, bundleHash, snapVersion, snapHash) {
+function matchOf(id, bundleId, bundleVersion, bundleHash, snapVersion, snapHash, { resultNumber = 1, resultHash = 'r', mappingWatermark = 0 } = {}) {
   return {
-    id, invoiceCaseId: 'c1', evidenceBundleId: bundleId, resultNumber: 1, resultHash: 'r',
-    purchasingSnapshotVersion: snapVersion, purchasingSnapshotHash: snapHash, mappingWatermark: 0,
+    id, invoiceCaseId: 'c1', evidenceBundleId: bundleId, resultNumber, resultHash,
+    purchasingSnapshotVersion: snapVersion, purchasingSnapshotHash: snapHash, mappingWatermark,
     payload: {
       evidenceBundle: { id: bundleId, version: bundleVersion, payloadHash: bundleHash },
       purchasingSnapshot: { snapshotVersion: snapVersion, payloadHash: snapHash },
@@ -35,12 +35,18 @@ function matchOf(id, bundleId, bundleVersion, bundleHash, snapVersion, snapHash)
     createdAt: 'x',
   };
 }
-function snapshotOf(id, matchId, bundleId, bundleVersion, snapVersion, snapHash, payloadHash = 'snap-hash') {
+function snapshotOf(id, matchId, bundleId, bundleVersion, bundleHash, snapVersion, snapHash, { payloadHash = 'snap-hash', resultNumber = 1, resultHash = 'r', mappingWatermark = 0 } = {}) {
   return {
     id, invoiceCaseId: 'c1', snapshotNumber: 1, evidenceBundleId: bundleId, evidenceBundleVersion: bundleVersion,
-    matchResultId: matchId, matchResultNumber: 1, targetCaseVersion: 3,
-    purchasingSnapshotVersion: snapVersion, purchasingSnapshotHash: snapHash, mappingWatermark: 0,
-    payloadHash, payload: {}, createdAt: 'x',
+    matchResultId: matchId, matchResultNumber: resultNumber, targetCaseVersion: 3,
+    purchasingSnapshotVersion: snapVersion, purchasingSnapshotHash: snapHash, mappingWatermark,
+    payloadHash,
+    payload: {
+      evidenceBundle: { id: bundleId, version: bundleVersion, payloadHash: bundleHash },
+      matchResult: { id: matchId, resultNumber, resultHash, mappingWatermark },
+      purchasingSnapshot: { snapshotVersion: snapVersion, payloadHash: snapHash },
+    },
+    createdAt: 'x',
   };
 }
 
@@ -162,36 +168,58 @@ test('audit action labels reuse the confirmed UI phrasing without a new domain t
   assert.equal(presentAuditAction('MATCH_RUN'), '비교 결과 생성');
 });
 
+function consistent(snapshotOverrides = {}, matchOverrides = {}) {
+  const match = matchOf('match-1', 'bundle-1', 2, 'b-hash', 5, 'ps-hash', matchOverrides);
+  const snapshot = snapshotOf('snap-1', 'match-1', 'bundle-1', 2, 'b-hash', 5, 'ps-hash', snapshotOverrides);
+  return { snapshot, match };
+}
+
 test('a decision subject is bound only when the displayed comparison is the frozen snapshots own facts', () => {
-  const snapshot = snapshotOf('snap-1', 'match-1', 'bundle-1', 2, 5, 'ps-hash');
-  const match = matchOf('match-1', 'bundle-1', 2, 'b-hash', 5, 'ps-hash');
+  const { snapshot, match } = consistent();
   const bound = reviewSubjectBinding({ snapshot, freshnessCurrent: true, match, currentBundleVersion: 2, currentBundleHash: 'b-hash' });
   assert.equal(bound.bound, true);
   assert.deepEqual(bound.reasons, []);
 });
 
+test('a null current bundle hash fails closed', () => {
+  const { snapshot, match } = consistent();
+  const result = reviewSubjectBinding({ snapshot, freshnessCurrent: true, match, currentBundleVersion: 2, currentBundleHash: null });
+  assert.equal(result.bound, false);
+  assert.ok(result.reasons.some((reason) => reason.includes('지문을 확인할 수 없습니다')));
+});
+
 test('a B snapshot with A display facts is not bound', () => {
   // Snapshot points at match-B, but the screen is showing match-A.
-  const snapshot = snapshotOf('snap-B', 'match-B', 'bundle-B', 2, 5, 'ps-hash');
-  const displayedB = matchOf('match-A', 'bundle-B', 2, 'b-hash', 5, 'ps-hash');
-  const result = reviewSubjectBinding({ snapshot, freshnessCurrent: true, match: displayedB, currentBundleVersion: 2, currentBundleHash: 'b-hash' });
+  const match = matchOf('match-A', 'bundle-B', 2, 'b-hash', 5, 'ps-hash');
+  const snapshot = snapshotOf('snap-B', 'match-B', 'bundle-B', 2, 'b-hash', 5, 'ps-hash');
+  const result = reviewSubjectBinding({ snapshot, freshnessCurrent: true, match, currentBundleVersion: 2, currentBundleHash: 'b-hash' });
   assert.equal(result.bound, false);
   assert.ok(result.reasons.some((reason) => reason.includes('비교 결과')));
 });
 
+test('a snapshot whose own frozen payload disagrees with the display is not bound', () => {
+  const { match } = consistent();
+  const wrongResultHash = consistent({ resultHash: 'different' }).snapshot;
+  assert.equal(reviewSubjectBinding({ snapshot: wrongResultHash, freshnessCurrent: true, match, currentBundleVersion: 2, currentBundleHash: 'b-hash' }).bound, false);
+  const wrongWatermark = consistent({ mappingWatermark: 9 }).snapshot;
+  assert.equal(reviewSubjectBinding({ snapshot: wrongWatermark, freshnessCurrent: true, match, currentBundleVersion: 2, currentBundleHash: 'b-hash' }).bound, false);
+  const missingPayload = { ...consistent().snapshot, payload: {} };
+  assert.equal(reviewSubjectBinding({ snapshot: missingPayload, freshnessCurrent: true, match, currentBundleVersion: 2, currentBundleHash: 'b-hash' }).bound, false);
+});
+
 test('a current flag is not enough: evidence and purchasing facts must match the snapshot', () => {
-  const snapshot = snapshotOf('snap-1', 'match-1', 'bundle-1', 2, 5, 'ps-hash');
+  const { snapshot } = consistent();
   const wrongBundle = matchOf('match-1', 'bundle-1', 3, 'b-hash', 5, 'ps-hash');
   assert.equal(reviewSubjectBinding({ snapshot, freshnessCurrent: true, match: wrongBundle, currentBundleVersion: 3, currentBundleHash: 'b-hash' }).bound, false);
   const wrongPurchasing = matchOf('match-1', 'bundle-1', 2, 'b-hash', 9, 'ps-hash');
   assert.equal(reviewSubjectBinding({ snapshot, freshnessCurrent: true, match: wrongPurchasing, currentBundleVersion: 2, currentBundleHash: 'b-hash' }).bound, false);
-  assert.equal(reviewSubjectBinding({ snapshot, freshnessCurrent: false, match: matchOf('match-1', 'bundle-1', 2, 'b-hash', 5, 'ps-hash'), currentBundleVersion: 2, currentBundleHash: 'b-hash' }).bound, false);
+  assert.equal(reviewSubjectBinding({ snapshot, freshnessCurrent: false, match: consistent().match, currentBundleVersion: 2, currentBundleHash: 'b-hash' }).bound, false);
   assert.equal(reviewSubjectBinding({ snapshot, freshnessCurrent: true, match: null, currentBundleVersion: 2, currentBundleHash: 'b-hash' }).bound, false);
   assert.equal(reviewSubjectBinding({ snapshot: null, freshnessCurrent: true, match: null, currentBundleVersion: null, currentBundleHash: null }).bound, false);
 });
 
 test('the decision payload always uses the frozen snapshot, not the displayed match', () => {
-  const snapshotB = snapshotOf('snap-B', 'match-B', 'bundle-B', 2, 5, 'ps-hash', 'hash-B');
+  const snapshotB = snapshotOf('snap-B', 'match-B', 'bundle-B', 2, 'b-hash', 5, 'ps-hash', { payloadHash: 'hash-B' });
   const payload = decisionSubjectPayload(7, snapshotB);
   assert.deepEqual(payload, { expectedCaseVersion: 7, reviewSnapshotId: 'snap-B', reviewPayloadHash: 'hash-B' });
 });

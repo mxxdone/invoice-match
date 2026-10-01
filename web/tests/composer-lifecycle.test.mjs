@@ -253,6 +253,7 @@ test('an unresolved submit is retried exactly, without re-saving a draft, and ed
     assert.equal(submitCalls2[1].body.requestId, firstSubmitId, 'retry reuses the exact submit request id');
     assert.equal(t.calls.filter((call) => call.url.endsWith('/draft')).length, 1, 'retry must not re-save a draft');
     assert.equal(latest.submittedBundleVersion, 1);
+    assert.equal(latest.status, 'submitted', 'a successful retry must reach the completed status so the page routes');
     assert.equal(latest.unresolved, null);
   } finally {
     await t.unmount();

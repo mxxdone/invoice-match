@@ -112,7 +112,12 @@ function Detail() {
   });
   const subjectReady = binding.bound;
   const mappingRows = match ? comparisonRows(match) : [];
-  const actionBusy = actions.pendingAction !== null || Boolean(actions.unresolved);
+  const actionInFlight = actions.pendingAction !== null;
+  const actionUnresolved = actions.unresolved !== null;
+  // In-flight and unresolved are distinct: while a request is in flight every
+  // action is blocked, but an unresolved request only blocks *other* intents and
+  // leaves the exact retry enabled.
+  const actionBlocked = actionInFlight || actionUnresolved;
 
   async function doFreeze() {
     if (!newest) return;
@@ -207,7 +212,7 @@ function Detail() {
       {isOperator && tab === 'compare' && (
         <div className="toolbar">
           <span className="demo-description">운영자 대사 실행 · 최신 제출 증빙을 대상으로 서버가 결정론적으로 대사합니다.</span>
-          <button className="button" disabled={actionBusy || newest === null} title={newest === null ? '제출된 증빙이 없어 대사를 실행할 수 없습니다.' : '대사 실행'} onClick={actions.runMatch}>{actions.pendingAction === 'match' ? '대사 실행 중…' : '대사 실행'}</button>
+          <button className="button" disabled={actionBlocked || newest === null} title={newest === null ? '제출된 증빙이 없어 대사를 실행할 수 없습니다.' : '대사 실행'} onClick={actions.runMatch}>{actions.pendingAction === 'match' ? '대사 실행 중…' : '대사 실행'}</button>
         </div>
       )}
 
@@ -217,19 +222,23 @@ function Detail() {
         ))}
       </div>
 
+      <div className="action-panel">
+      {actionUnresolved && (
+        <section className="form-section" aria-label="미확정 요청 복구">
+          <SectionMessage tone="notice">
+            <strong>이전 요청의 결과가 확정되지 않았습니다</strong>
+            <p>자동으로 다시 보내지 않습니다. 같은 요청을 다시 시도하면 동일한 요청 식별자로 한 번만 반영됩니다. 서버 재조회만으로는 이 작업이 반영됐는지 확정할 수 없어 미확정 상태를 유지합니다.</p>
+            <div className="dialog-actions">
+              <button className="button primary" disabled={actionInFlight} onClick={() => actions.retry()}>{actions.pendingAction ? '다시 시도 중…' : '같은 요청 다시 시도'}</button>
+              <button className="button" onClick={() => { actions.clearFailure(); setReloadToken((value) => value + 1); }}>최신 자료 다시 조회</button>
+            </div>
+          </SectionMessage>
+        </section>
+      )}
+
       {isApprover && (
         <section className="form-section" aria-label="승인자 검토 동작">
           <div className="section-heading"><h2>검토 동작</h2><span>서버가 권한·소유권·최신성을 검증합니다</span></div>
-          {actions.unresolved && (
-            <SectionMessage tone="notice">
-              <strong>이전 요청의 결과가 확정되지 않았습니다</strong>
-              <p>자동으로 다시 보내지 않습니다. 같은 요청을 다시 시도하거나 최신 자료를 다시 조회해 먼저 해소하세요.</p>
-              <div className="dialog-actions">
-                <button className="button" disabled={actionBusy} onClick={() => actions.retry()}>같은 요청 다시 시도</button>
-                <button className="button" onClick={() => { actions.clearFailure(); setReloadToken((value) => value + 1); }}>최신 자료 다시 조회</button>
-              </div>
-            </SectionMessage>
-          )}
           {!subjectReady && (
             <SectionMessage tone="notice">
               결정을 기록하려면 표시된 비교·증빙·구매 사실이 동결된 검토 대상과 일치해야 합니다.
@@ -238,14 +247,14 @@ function Detail() {
             </SectionMessage>
           )}
           <div className="dialog-actions">
-            <button className="button" disabled={actionBusy || newest === null || subjectReady} title={subjectReady ? '이미 최신 검토 대상이 있습니다.' : '현재 자료로 검토 대상을 동결합니다.'} onClick={doFreeze}>
+            <button className="button" disabled={actionBlocked || newest === null || subjectReady} title={subjectReady ? '이미 최신 검토 대상이 있습니다.' : '현재 자료로 검토 대상을 동결합니다.'} onClick={doFreeze}>
               {actions.pendingAction === 'freeze' ? '동결 중…' : '검토 대상 동결'}
             </button>
           </div>
 
           {subjectReady && snapshot && (
             <>
-              <div className="field-grid">
+              <div className="field-grid mapper-grid">
                 <label>매핑할 라인
                   <select aria-label="매핑할 라인" value={mappingLine} onChange={(event) => setMappingLine(event.target.value)}>
                     <option value="">라인 선택</option>
@@ -257,9 +266,9 @@ function Detail() {
                   <input maxLength={64} value={mappingItem} onChange={(event) => setMappingItem(event.target.value)} placeholder="품목 ID 직접 입력" />
                   <small>품목 후보 조회 API는 제공하지 않으므로 ID를 직접 입력하며 서버가 검증합니다.</small>
                 </label>
-                <div className="dialog-actions">
-                  <button className="button" disabled={actionBusy || !mappingLine || !mappingItem.trim()} onClick={doMapping}>{actions.pendingAction === 'mapping' ? '확정 중…' : '매핑 확정'}</button>
-                </div>
+              </div>
+              <div className="dialog-actions">
+                <button className="button" disabled={actionBlocked || !mappingLine || !mappingItem.trim()} onClick={doMapping}>{actions.pendingAction === 'mapping' ? '확정 중…' : '매핑 확정'}</button>
               </div>
 
               <div className="review-warning" role="status">
@@ -278,16 +287,16 @@ function Detail() {
               <div className="dialog-actions">
                 {reasonPanel ? (
                   <>
-                    <button className="button" disabled={actionBusy} onClick={() => { setReasonPanel(null); setReason(''); }}>취소</button>
-                    <button className="button primary" disabled={actionBusy || !reason.trim()} onClick={reasonPanel === 'supplement' ? doSupplement : doReject}>
+                    <button className="button" disabled={actionBlocked} onClick={() => { setReasonPanel(null); setReason(''); }}>취소</button>
+                    <button className="button primary" disabled={actionBlocked || !reason.trim()} onClick={reasonPanel === 'supplement' ? doSupplement : doReject}>
                       {actions.pendingAction === reasonPanel ? '기록 중…' : reasonPanel === 'supplement' ? '보완 요청 기록' : '거절 기록'}
                     </button>
                   </>
                 ) : (
                   <>
-                    <button className="button footer-secondary" disabled={actionBusy} onClick={() => { setReason(''); setReasonPanel('reject'); }}>청구 거절</button>
-                    <button className="button footer-secondary" disabled={actionBusy} onClick={() => { setReason(''); setReasonPanel('supplement'); }}>보완 요청</button>
-                    <button className="button primary" disabled={actionBusy} title={ownerSubmitter ? '본인이 제출한 청구는 서버가 승인을 거부합니다.' : '표시된 검토 대상으로 승인합니다.'} onClick={doApprove}>{actions.pendingAction === 'approve' ? '승인 중…' : '승인'}</button>
+                    <button className="button footer-secondary" disabled={actionBlocked} onClick={() => { setReason(''); setReasonPanel('reject'); }}>청구 거절</button>
+                    <button className="button footer-secondary" disabled={actionBlocked} onClick={() => { setReason(''); setReasonPanel('supplement'); }}>보완 요청</button>
+                    <button className="button primary" disabled={actionBlocked} title={ownerSubmitter ? '본인이 제출한 청구는 서버가 승인을 거부합니다.' : '표시된 검토 대상으로 승인합니다.'} onClick={doApprove}>{actions.pendingAction === 'approve' ? '승인 중…' : '승인'}</button>
                   </>
                 )}
               </div>
@@ -296,6 +305,7 @@ function Detail() {
           )}
         </section>
       )}
+      </div>
 
       <section className="tab-content" role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
         {tab === 'compare' ? <ComparePanel data={data} />

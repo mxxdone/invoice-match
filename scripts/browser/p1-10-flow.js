@@ -14,10 +14,20 @@ async (page) => {
   const consoleErrors = [];
   const httpErrors = [];
   const mutations = [];
+  const writeRequestIds = [];
   const results = {};
 
   page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()); });
   page.on('pageerror', (error) => consoleErrors.push('pageerror: ' + (error && error.message ? error.message : String(error))));
+  page.on('request', (request) => {
+    const url = request.url();
+    if (url.includes('/backend/') && request.method() !== 'GET') {
+      try {
+        const body = JSON.parse(request.postData() ?? '{}');
+        if (typeof body.requestId === 'string') writeRequestIds.push({ url: url.split('/backend')[1], requestId: body.requestId });
+      } catch { /* non-JSON body */ }
+    }
+  });
   page.on('response', (response) => {
     const url = response.url();
     if (url.includes('/backend/') && response.request().method() !== 'GET') {
@@ -132,7 +142,10 @@ async (page) => {
   await page.getByText('지급요청과 전송 상태').first().waitFor({ timeout: 20000 });
   await page.getByText(/실제 지급·송금은 외부 ERP/).first().waitFor({ timeout: 20000 });
   await page.getByText('고정된 요청 식별정보').first().waitFor({ timeout: 20000 });
-  results.handoffAckNotTransfer = true;
+  // The relay is not enabled in this stack, so the real state is NOT_SENT; this
+  // records the payment/transfer disclaimer shown for that actual state.
+  await page.getByText('전송 전').first().waitFor({ timeout: 20000 });
+  results.handoffPaymentAndTransferDisclaimer = true;
   await shot('handoff-approved');
 
   await goList();
@@ -240,6 +253,37 @@ async (page) => {
   results.selfApprovalDenied = true;
   await shot('self-approval-denied');
 
+  // --- unknown-result recovery: an ambiguous operator match retries the exact id
+  steps.push('unknown:start');
+  await switchUser('submitter', 'submitter-pass');
+  const unknownInvoice = 'INV-UI-UNK-' + stamp;
+  await createAndSubmit(unknownInvoice, 'ITEM-A4-80');
+  await switchUser('operator', 'operator-pass');
+  await openDetailByInvoice(unknownInvoice);
+  let abortedOnce = false;
+  await page.route('**/backend/api/invoice-cases/**/match', async (route) => {
+    if (!abortedOnce) {
+      abortedOnce = true;
+      await route.abort('failed');
+    } else {
+      await route.continue();
+    }
+  });
+  await page.locator('button:has-text("대사 실행")').first().click();
+  await page.getByText(/이전 요청의 결과가 확정되지 않았습니다/).first().waitFor({ timeout: 30000 });
+  const retryMatch = page.locator('button:text-is("같은 요청 다시 시도")').first();
+  await retryMatch.waitFor({ state: 'visible', timeout: 20000 });
+  must(!(await retryMatch.isDisabled()), 'the unresolved retry button must be enabled');
+  const matchIdsBefore = writeRequestIds.filter((entry) => /\/match$/.test(entry.url)).map((entry) => entry.requestId);
+  await retryMatch.click();
+  await page.getByText(/비교 결과 #/).first().waitFor({ timeout: 30000 });
+  const matchIdsAfter = writeRequestIds.filter((entry) => /\/match$/.test(entry.url)).map((entry) => entry.requestId);
+  must(matchIdsAfter.length >= matchIdsBefore.length + 1, 'the retried match should have been sent');
+  must(matchIdsAfter[matchIdsAfter.length - 1] === matchIdsAfter[matchIdsAfter.length - 2], 'the retried match must reuse the exact request id');
+  await page.unroute('**/backend/api/invoice-cases/**/match');
+  results.unknownRetry = true;
+  await shot('unknown-retry');
+
   // --- narrow viewport has no document-level horizontal overflow
   await page.setViewportSize({ width: 1024, height: 768 });
   await goList();
@@ -263,9 +307,10 @@ async (page) => {
   };
   const unexpectedHttpErrors = httpErrors.filter((entry) => !allowedHttpError(entry));
   const unexpectedConsoleErrors = consoleErrors.filter(
-    (message) => !/Failed to load resource: the server responded with a status of (404|403)/.test(message),
+    (message) => !/Failed to load resource: the server responded with a status of (404|403)/.test(message)
+      && !/Failed to load resource: net::ERR_/.test(message),
   );
-  return { ok: true, results, mutations, consoleErrors, unexpectedConsoleErrors, httpErrors, unexpectedHttpErrors, steps };
+  return { ok: true, results, mutations, writeRequestIds, consoleErrors, unexpectedConsoleErrors, httpErrors, unexpectedHttpErrors, steps };
   } catch (error) {
     const where = steps.length > 0 ? steps[steps.length - 1] : 'unknown';
     let alertText = '';

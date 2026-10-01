@@ -58,6 +58,7 @@ type FrozenIntent = {
   requestId: string;
   signature: string;
   payload: unknown;
+  completeStatus: ComposerStatus;
   invoke: (requestId: string, signal: AbortSignal) => Promise<unknown>;
   apply: (data: unknown) => void;
 };
@@ -159,6 +160,7 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
     async <T,>(
       operation: MutationOperation,
       businessPayload: unknown,
+      completeStatus: ComposerStatus,
       invoke: (requestId: string, signal: AbortSignal) => Promise<T>,
       apply: (data: T) => void,
     ): Promise<ExecuteResult<T>> => {
@@ -189,6 +191,7 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
             requestId: newRequestId('web'),
             signature,
             payload: businessPayload,
+            completeStatus,
             invoke: invoke as (requestId: string, signal: AbortSignal) => Promise<unknown>,
             apply: apply as (data: unknown) => void,
           };
@@ -206,6 +209,9 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
           return { ok: false, failure: supersededFailure() };
         }
         intent.apply(data);
+        // Reaching the terminal status here (not only in the wrapper) is what
+        // lets an explicit retry complete the original operation and navigate.
+        setStatus(intent.completeStatus);
         clearIntent();
         return { ok: true, data: data as T };
       } catch (caught) {
@@ -248,6 +254,7 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
       const result = await execute(
         'create',
         payload,
+        'created',
         (requestId, signal) => createInvoiceCase(credentialsRef.current as Credentials, { requestId, ...payload }, signal),
         (data) => {
           caseRef.current = { id: data.id, version: data.version };
@@ -256,7 +263,6 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
         },
       );
       if (!result.ok) return null;
-      setStatus('created');
       return result.data.id;
     },
     [execute],
@@ -274,6 +280,7 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
       const result = await execute(
         'draft',
         payload,
+        'draft-saved',
         (requestId, signal) => replaceDraft(credentialsRef.current as Credentials, id, { requestId, expectedCaseVersion: version, lines: normalized }, signal),
         (data) => {
           caseRef.current.version = data.version;
@@ -281,7 +288,6 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
         },
       );
       if (!result.ok) return false;
-      setStatus('draft-saved');
       return true;
     },
     [createOrReuse, execute],
@@ -296,6 +302,7 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
     const result = await execute(
       'submit',
       payload,
+      'submitted',
       (requestId, signal) => submitInvoiceCase(credentialsRef.current as Credentials, id, { requestId, expectedCaseVersion: version }, signal),
       (data) => {
         caseRef.current.version = data.version;
@@ -304,7 +311,6 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
       },
     );
     if (!result.ok) return null;
-    setStatus('submitted');
     return id;
   }, [execute]);
 
@@ -315,6 +321,7 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
       const result = await execute(
         'revision',
         payload,
+        'draft-saved',
         (requestId, signal) => openSupplementRevision(credentialsRef.current as Credentials, existingCaseId, { requestId, expectedCaseVersion }, signal),
         (data) => {
           caseRef.current = { id: existingCaseId, version: data.version };
@@ -323,7 +330,6 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
         },
       );
       if (!result.ok) return false;
-      setStatus('draft-saved');
       return true;
     },
     [execute],
@@ -334,7 +340,7 @@ export function useCaseComposer({ credentials, sessionId, onUnauthorized }: Comp
   const retry = useCallback(async (): Promise<boolean> => {
     const intent = frozen.current;
     if (!intent) return false;
-    const result = await execute(intent.operation, intent.payload, intent.invoke, intent.apply);
+    const result = await execute(intent.operation, intent.payload, intent.completeStatus, intent.invoke, intent.apply);
     return result.ok;
   }, [execute]);
 

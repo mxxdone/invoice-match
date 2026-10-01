@@ -102,6 +102,7 @@ function Handoff() {
         </dl>
       </PageHeader>
 
+      <div className="handoff-content">
       {!payment ? (
         <div className="inline-notice" role="status"><strong>아직 승인·인계 전입니다</strong><span>승인 시 서버가 지급요청과 Outbox를 생성합니다. 이 사건에는 아직 지급요청이 없습니다.</span></div>
       ) : (
@@ -148,6 +149,7 @@ function Handoff() {
         </>
       )}
       <div className="dialog-actions"><Link className="button" href="/operations">운영 작업으로 돌아가기</Link></div>
+      </div>
     </Shell>
   );
 }

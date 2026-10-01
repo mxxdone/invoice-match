@@ -274,3 +274,27 @@ test('under React StrictMode a review action still completes exactly once', asyn
     t.restore();
   }
 });
+
+test('an operator match unknown failure is retried with the same request id, not a new one', async () => {
+  let attempts = 0;
+  const t = setup(() => {
+    attempts += 1;
+    return attempts === 1
+      ? jsonResponse(503, { code: 'CORE_API_UNAVAILABLE', message: 'x' })
+      : jsonResponse(201, { id: 'm1', payload: {} });
+  });
+  try {
+    await t.render();
+    await t.run(() => latest.runMatch());
+    assert.equal(latest.unresolved.operation, 'match');
+    const firstId = t.calls[0].body.requestId;
+    await t.run(() => latest.retry());
+    assert.equal(t.calls.length, 2);
+    assert.equal(t.calls[1].body.requestId, firstId, 'the retried match must reuse the exact request id');
+    assert.deepEqual(t.completed, ['match']);
+    assert.equal(latest.unresolved, null);
+  } finally {
+    await t.unmount();
+    t.restore();
+  }
+});

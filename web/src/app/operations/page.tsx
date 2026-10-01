@@ -3,14 +3,15 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
-import { Icon, PageHeader, Shell, Toast } from '../ui';
+import { Icon, PageHeader, Shell } from '../ui';
 import { useAuth } from '../auth';
-import { fetchCaseHandoff, runMatch } from '../api/client';
+import { fetchCaseHandoff } from '../api/client';
 import { ApiRequestError } from '../api/transport';
 import { formatInstant, presentStatus, type CaseHandoffStatus, type InvoiceCaseSummary } from '../api/contract';
 import type { InvoiceCaseFilters } from '../api/query';
-import { newRequestId } from '../cases/composer-model';
 import { presentOutboxStatus, presentPaymentStatus } from '../cases/[id]/detail-model';
+import { MutationFailureNotice } from '../cases/mutation-failure-notice';
+import { useCaseActions } from '../cases/[id]/use-case-actions';
 import { useInvoiceCases } from '../cases/use-invoice-cases';
 
 const tabs: Array<[string, string]> = [
@@ -49,9 +50,7 @@ function Operations() {
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
-  const [matchPending, setMatchPending] = useState(false);
   const [handoffState, setHandoffState] = useState<{ key: string | null; load: HandoffLoad }>({ key: null, load: { status: 'idle' } });
-  const [toast, setToast] = useState('');
 
   const onUnauthorized = useCallback(() => {
     logout();
@@ -94,20 +93,18 @@ function Operations() {
     return () => { cancelled = true; };
   }, [credentials, selectedId, handoffKey, sessionId, onUnauthorized]);
 
-  async function runSelectedMatch() {
-    if (!credentials || !selectedRow) return;
-    setMatchPending(true);
-    try {
-      await runMatch(credentials, selectedRow.id, { requestId: newRequestId('web') });
-      setToast('대사를 실행했습니다. 최신 비교 결과를 다시 조회합니다.');
-      setReloadToken((value) => value + 1);
-    } catch (caught) {
-      if (caught instanceof ApiRequestError && caught.status === 401) { onUnauthorized(); return; }
-      setToast(caught instanceof Error ? `대사 실행에 실패했습니다: ${caught.message}` : '대사 실행에 실패했습니다.');
-    } finally {
-      setMatchPending(false);
-    }
-  }
+  // Match runs through the shared actions hook so its intent/id are frozen and
+  // an uncertain failure is retried with the exact same request id (never a new
+  // one), and a late response from a replaced session/case is dropped.
+  const actions = useCaseActions({
+    credentials,
+    sessionId,
+    caseId: selectedId ?? '',
+    onUnauthorized,
+    onCompleted: () => setReloadToken((value) => value + 1),
+  });
+  const matchPending = actions.pendingAction !== null && actions.pendingAction === 'match';
+  const matchBlocked = actions.pendingAction !== null || actions.unresolved !== null;
 
   const body = !isAuthenticated
     ? <section className="empty-state" role="status"><Icon name="clock" size={25} /><h1>로그인이 필요합니다</h1><p>로그인 화면으로 이동합니다.</p></section>
@@ -160,7 +157,7 @@ function Operations() {
 
                 {selectedRow.status === 'REVIEW_PENDING' && isOperator && (
                   <div className="dialog-actions">
-                    <button className="button primary" disabled={matchPending} onClick={runSelectedMatch}>{matchPending ? '대사 실행 중…' : '대사 실행'}</button>
+                    <button className="button primary" disabled={matchPending || matchBlocked} onClick={() => actions.runMatch()}>{matchPending ? '대사 실행 중…' : '대사 실행'}</button>
                   </div>
                 )}
                 {['EXPORT_PENDING', 'EXPORTED'].includes(selectedRow.status) && (
@@ -179,6 +176,13 @@ function Operations() {
                   <Link className="button" href={`/cases/${selectedRow.id}`}>청구서 상세</Link>
                   {['EXPORT_PENDING', 'EXPORTED'].includes(selectedRow.status) && <Link className="button" href={`/handoff?case=${selectedRow.id}`}>ERP 인계 상세</Link>}
                 </div>
+                {actions.failure && <MutationFailureNotice failure={actions.failure} />}
+                {actions.unresolved && (
+                  <div className="dialog-actions">
+                    <button className="button primary" disabled={actions.pendingAction !== null} onClick={() => actions.retry()}>같은 요청 다시 시도</button>
+                    <button className="button" disabled={actions.pendingAction !== null} onClick={() => { actions.clearFailure(); setReloadToken((value) => value + 1); }}>최신 자료 다시 조회</button>
+                  </div>
+                )}
                 <p className="panel-footnote">자동 재전송·재처리·queue/DLQ 지표는 제공하지 않습니다. 결과불명은 운영자가 별도로 확인합니다.</p>
               </aside>}
             </div>;
@@ -192,7 +196,6 @@ function Operations() {
       {!isOperator && <div className="review-warning" role="status"><div><strong>운영자 역할이 아닙니다</strong><p>대사 실행은 운영자만 가능합니다. 목록 조회는 역할에 따라 서버가 범위를 정합니다.</p></div></div>}
       <div className="list-tools"><span className="muted-text">서버 상태 필터 · 자동 재전송 없음</span></div>
       {body}
-      <Toast message={toast} dismiss={() => setToast('')} />
     </Shell>
   );
 }
@@ -204,3 +207,4 @@ export default function OperationsPage() {
     </Suspense>
   );
 }
+
