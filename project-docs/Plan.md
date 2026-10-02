@@ -286,11 +286,13 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 ### P2-03 — 권한 있는 원본 조회와 PDF 미리보기·다운로드
 
-**진행 상태:** 착수(2026-10-02). P2-02 통합·push된 `a9df807`에서 분기. Head가 계약·인수를 맡고 backend는 설정된 Implementation Worker, UI는 backend 계약 검토 후 Gemini/Antigravity로 순차 위임한다. 한 번에 한 writer/worktree를 유지하며 다음 Phase로 넘어가지 않는다.
+**진행 상태:** 구현·자동 검증 인수 완료(2026-10-03). P2-02 통합·push된 `a9df807`에서 분기했다. 장시간 지연된 backend Worker와 변경 없이 실패한 Gemini 실행을 정리하고 사용자 지시에 따라 Head가 구현·통합을 완료했다. PDF 표준 인쇄는 별도 사람 확인 항목이며 실제 인쇄 결과는 미확인이다. Phase 2 전체 완료는 아니다.
 
-**구현 인계(2026-10-03):** 사용자 지시에 따라 장시간 지연된 backend Worker를 중지하고 Head가 현재 변경을 기본 작업공간으로 인계했다. provider 응답 300초 timeout과 MinIO test bootstrap 예외 처리/컴파일 수정 반복을 확인했다. Head는 bootstrap을 재현된 `XMinioServerNotInitialized`에 대한 제한 재시도로 좁히고 checked exception 컴파일 오류를 수정했으며, 반복 검증에서 기존 공통 MinIO 이미지를 재사용하도록 했다. 사용자 수정 AGENTS/Implement는 보존한다. backend 최종 검증·인수 및 UI는 아직 진행 중이다.
+**구현 인계(2026-10-03):** 사용자 지시에 따라 장시간 지연된 backend Worker를 중지하고 Head가 현재 변경을 기본 작업공간으로 인계했다. provider 응답 300초 timeout과 MinIO test bootstrap 예외 처리/컴파일 수정 반복을 확인했다. Head는 bootstrap을 재현된 `XMinioServerNotInitialized`에 대한 제한 재시도로 좁히고 checked exception 컴파일 오류를 수정했으며, 반복 검증에서 기존 공통 MinIO 이미지를 재사용하도록 했다. 사용자 수정 AGENTS/Implement는 보존했다.
 
-**Backend 인수(2026-10-03):** Head 직접 수정 후 `node scripts/verify-p2-03.mjs` 전체 backend 571 tests/64 classes, failures/errors/skipped 0 및 bootJar PASS(17분). actual PostgreSQL/MinIO와 문서/승인/권한/불변 회귀가 모두 포함됐으며 전체 suite의 단일 실행으로 성공했다. URL 실제 서명시각+TTL과 DTO expiresAt를 일치시키고 헤더 직렬화는 infrastructure에 두었다. API/application/persistence 책임·의존성 Head 검토 완료. 본인 Java/Gradle 및 Testcontainers 잔류 없음; 기존 사용자 시연 서비스 유지. 증거: ignored `output/p2-03/head-whole-backend.log`, `head-whole-summary.json`. UI 연결 및 Ticket 전체 인수는 아직 남아 있다.
+**Backend 인수(2026-10-03):** Head 직접 수정 후 `node scripts/verify-p2-03.mjs` 전체 backend 571 tests/64 classes, failures/errors/skipped 0 및 bootJar PASS(17분). actual PostgreSQL/MinIO와 문서/승인/권한/불변 회귀가 모두 포함됐으며 전체 suite의 단일 실행으로 성공했다. URL 실제 서명시각+TTL과 DTO expiresAt를 일치시키고 헤더 직렬화는 infrastructure에 두었다. API/application/persistence 책임·의존성 Head 검토 완료. 본인 Java/Gradle 및 Testcontainers 잔류 없음; 기존 사용자 시연 서비스 유지. 증거: ignored `output/p2-03/head-whole-backend.log`, `head-whole-summary.json`. 아래 UI/통합 인수 기록으로 이어진다.
+
+**UI/통합 인수(2026-10-03):** 기존 문서 목록·GET URL 발급 API를 제출 이력 탭에 연결하고 프록시는 검증된 UUID의 두 read 경로만 추가했다. 목록 페이지 추가 조회, PDF inline iframe·새 탭 fallback, PDF/XLSX attachment, 2분 만료 제거·재발급, 사건/세션 교체·logout 및 오래된 응답 폐기를 구현했다. frontend lint 오류/경고 0, 기존 포함 214 tests/0 failures 및 최종 build PASS. 현재 bootJar·실제 PostgreSQL/MinIO·최종 Next 빌드의 격리 브라우저 검증에서 PDF 렌더링, PDF/XLSX 실제 다운로드 SHA-256 동일·한글 파일명, 실제 120초 경과 후 iframe 제거·새 URL 성공, logout 제거, 다른 제출자 403, URL 영구 저장 없음과 문서 영역 여백/가로 넘침 없음을 확인했다. 사람의 표준 PDF 인쇄 결과와 원격 CI는 미확인이다. 증거는 ignored `output/p2-03/`, `output/playwright/p2-03/original-pdf-final.png`에 보존한다. 테스트용 서버·컨테이너/volume·브라우저와 두 위임 worktree는 정리하고 기존 사용자 서비스는 유지했다. 실제 책임·의존성 Head 검토 및 기존 architecture guard PASS; 신규 린트/분석 프레임워크는 추가하지 않았다.
 
 **범위/계약:** 기존 완료 문서 목록 API와 `GET /api/invoice-cases/{caseId}/documents/{documentId}/download-url?disposition=attachment|inline`을 사용한다. 기본 attachment, inline은 PDF만 허용하고 XLSX inline 또는 잘못된 disposition은 400이다. 기존 사건 읽기 권한을 그대로 적용한다(소유 제출자 및 기존 허용 검토/운영 역할). 다른 사건 문서나 미완료 예약은 404, 인증/권한 거부는 기존 정책이다. DRAFT·제출·과거 보완 원본도 완료 Document이면 조회 가능하다. 클라이언트가 object key·filename·mediaType을 지정할 수 없다.
 

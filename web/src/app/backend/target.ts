@@ -23,6 +23,8 @@ const ALLOWED_ROUTES: readonly (readonly string[])[] = [
   ['api', 'invoice-cases', '*'],
   ['api', 'invoice-cases', '*', 'evidence-bundles'],
   ['api', 'invoice-cases', '*', 'evidence-bundles', '#'],
+  ['api', 'invoice-cases', '*', 'documents'],
+  ['api', 'invoice-cases', '*', 'documents', '*', 'download-url'],
   ['api', 'invoice-cases', '*', 'match'],
   ['api', 'invoice-cases', '*', 'review-snapshots', 'latest'],
   ['api', 'invoice-cases', '*', 'review-snapshots', '#', 'freshness'],

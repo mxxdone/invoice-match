@@ -368,3 +368,29 @@ export function formatInstant(value: string | null | undefined): string {
     timeZone: 'Asia/Seoul',
   }).format(date);
 }
+export type RegisteredDocument = {
+  documentId: string;
+  draftRevisionId: string;
+  fileName: string;
+  mediaType: string;
+  sizeBytes: number;
+  checksum: string;
+  caseVersion: number;
+  registeredAt: string;
+};
+
+export type DocumentPage = {
+  items: RegisteredDocument[];
+  page: number;
+  size: number;
+  hasNext: boolean;
+};
+
+export type DocumentDownload = {
+  documentId: string;
+  fileName: string;
+  mediaType: string;
+  url: string;
+  method: 'GET';
+  expiresAt: string;
+};
