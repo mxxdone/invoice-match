@@ -276,6 +276,8 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 **검증/인수:** Worker는 focused 및 전체 검증 증거를 보고한다. Head는 승인 증빙 경계와 migration을 독립 검토하고 필요 시 독립 통합 검증을 추가한다. 기존 완료한 결정론적 검증은 근거 없이 반복하지 않는다. 코드/문서 충돌 시 보고하고 멈춘다.
 
+**사용자 추가 인수 Gate(2026-10-02):** Worker 완료 후 Head가 변경 diff의 API → application → persistence 책임과 의존성, domain 독립성 및 기존 infrastructure port/adapter 경계를 엄격하게 점검한다. Controller의 DB/저장소 직접 접근, persistence의 application/API 타입 의존, 업무 규칙·HTTP 책임의 잘못된 계층 배치를 확인한다. 위반이나 관련 개선사항은 같은 Worker에 수정 지시하고 수정 diff와 필요한 검증을 확인한 뒤 인수한다. 이번 Ticket과 무관한 전역 리팩터링은 포함하지 않는다.
+
 **의존성:** 로컬 자동 인수된 P2-01. 변경된 원격 CI 확인과 사람 시연 확인은 별도 대기다.
 
 ### Phase 2 후속 실행 순서
