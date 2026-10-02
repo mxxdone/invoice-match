@@ -55,4 +55,25 @@ public class DocumentService {
         var rows = documents.list(caseId, size + 1, (long) page * size);
         return new Page(rows.stream().limit(size).map(DocumentView::from).toList(), page, size, rows.size() > size);
     }
+
+    /**
+     * Issues a short-lived, browser-facing GET capability for one registered
+     * immutable original. Authorization and the registered-document lookup are
+     * performed before signing; the repository is not touched while the storage
+     * adapter signs, and no original byte is read or written.
+     */
+    @Transactional(propagation = Propagation.NEVER)
+    public DownloadUrlView downloadUrl(UUID caseId, UUID documentId, String dispositionParam) {
+        authorization.requireCaseRead(caseId);
+        String disposition = DocumentPolicy.disposition(dispositionParam);
+        var document = documents.document(caseId, documentId).orElseThrow(() ->
+                new DocumentFailure(404, "DOCUMENT_NOT_FOUND", "Registered document was not found in this case"));
+        var upload = document.upload();
+        DocumentPolicy.requireInlineSupported(disposition, upload.mediaType());
+        SignedDownload signed = storage.presignDownload(new DocumentDownloadRequest(
+                document.objectKey(), upload.fileName(), upload.mediaType(), disposition,
+                DocumentPolicy.DOWNLOAD_TTL_SECONDS));
+        return new DownloadUrlView(upload.id(), upload.fileName(), upload.mediaType(), signed.url(), "GET",
+                signed.expiresAt());
+    }
 }

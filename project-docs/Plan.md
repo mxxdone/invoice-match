@@ -288,6 +288,10 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 **진행 상태:** 착수(2026-10-02). P2-02 통합·push된 `a9df807`에서 분기. Head가 계약·인수를 맡고 backend는 설정된 Implementation Worker, UI는 backend 계약 검토 후 Gemini/Antigravity로 순차 위임한다. 한 번에 한 writer/worktree를 유지하며 다음 Phase로 넘어가지 않는다.
 
+**구현 인계(2026-10-03):** 사용자 지시에 따라 장시간 지연된 backend Worker를 중지하고 Head가 현재 변경을 기본 작업공간으로 인계했다. provider 응답 300초 timeout과 MinIO test bootstrap 예외 처리/컴파일 수정 반복을 확인했다. Head는 bootstrap을 재현된 `XMinioServerNotInitialized`에 대한 제한 재시도로 좁히고 checked exception 컴파일 오류를 수정했으며, 반복 검증에서 기존 공통 MinIO 이미지를 재사용하도록 했다. 사용자 수정 AGENTS/Implement는 보존한다. backend 최종 검증·인수 및 UI는 아직 진행 중이다.
+
+**Backend 인수(2026-10-03):** Head 직접 수정 후 `node scripts/verify-p2-03.mjs` 전체 backend 571 tests/64 classes, failures/errors/skipped 0 및 bootJar PASS(17분). actual PostgreSQL/MinIO와 문서/승인/권한/불변 회귀가 모두 포함됐으며 전체 suite의 단일 실행으로 성공했다. URL 실제 서명시각+TTL과 DTO expiresAt를 일치시키고 헤더 직렬화는 infrastructure에 두었다. API/application/persistence 책임·의존성 Head 검토 완료. 본인 Java/Gradle 및 Testcontainers 잔류 없음; 기존 사용자 시연 서비스 유지. 증거: ignored `output/p2-03/head-whole-backend.log`, `head-whole-summary.json`. UI 연결 및 Ticket 전체 인수는 아직 남아 있다.
+
 **범위/계약:** 기존 완료 문서 목록 API와 `GET /api/invoice-cases/{caseId}/documents/{documentId}/download-url?disposition=attachment|inline`을 사용한다. 기본 attachment, inline은 PDF만 허용하고 XLSX inline 또는 잘못된 disposition은 400이다. 기존 사건 읽기 권한을 그대로 적용한다(소유 제출자 및 기존 허용 검토/운영 역할). 다른 사건 문서나 미완료 예약은 404, 인증/권한 거부는 기존 정책이다. DRAFT·제출·과거 보완 원본도 완료 Document이면 조회 가능하다. 클라이언트가 object key·filename·mediaType을 지정할 수 없다.
 
 성공 DTO는 `documentId`, `fileName`, `mediaType`, `url`, `method: GET`, `expiresAt`이다. 만료는 서버 시각 기준 120초이며 불변 확정 object만 서버가 presigned GET으로 서명한다. 내부 endpoint가 아닌 브라우저용 endpoint를 사용한다. 다운로드 URL 자체에는 서명된 object 경로가 필요하지만 별도 objectKey·credential 필드는 제공하지 않고 로그·감사·DB·브라우저 영구 저장에 URL을 남기지 않는다. URL은 만료까지 사용 가능한 권한이므로 요청마다 인증하고 `Cache-Control: no-store`를 적용한다. API는 URL 발급을 위해 원본 byte를 읽거나 변경하지 않는다. 저장소가 비활성인 경우 기존 generic 503, 서명 오류도 secret 없이 503이다. 서명된 응답 Content-Type 및 안전한 UTF-8 Content-Disposition으로 이름/inline/attachment를 고정한다. object 원본·EvidenceBundle/hash·case version·idempotency·업무상태는 변경하지 않는다.

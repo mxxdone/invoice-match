@@ -21,9 +21,9 @@ import com.invoicematch.core.invoicecase.domain.InvoiceLine;
 import com.invoicematch.core.invoicecase.persistence.InvoiceCaseRepository;
 import com.invoicematch.core.invoicecase.persistence.InvoiceLineRepository;
 import com.invoicematch.core.support.AbstractPostgresIntegrationTest;
+import com.invoicematch.core.support.MinioTestSupport;
 import com.invoicematch.core.support.PurchasingPayloads;
 import com.invoicematch.core.support.StubPurchasingServer;
-import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
 import java.io.IOException;
 import java.net.URI;
@@ -102,11 +102,11 @@ class DocumentEvidenceIntegrationTest extends AbstractPostgresIntegrationTest {
         MINIO.start();
         CLIENT = MinioClient.builder().endpoint(endpoint()).credentials(ACCESS, SECRET).region("us-east-1").build();
         try {
-            CLIENT.makeBucket(MakeBucketArgs.builder().bucket("invoice-documents").build());
-        } catch (Exception e) {
+            MinioTestSupport.initializeBucket(CLIENT, "invoice-documents");
+        } catch (RuntimeException e) {
             MINIO.stop();
             STUB.close();
-            throw new ExceptionInInitializerError(e);
+            throw e;
         }
     }
 
