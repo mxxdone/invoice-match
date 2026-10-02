@@ -75,3 +75,12 @@ management:
     web:
       exposure:
         include: health,info
+
+document-storage:
+  enabled: ${DOCUMENT_STORAGE_ENABLED:false}
+  endpoint: ${DOCUMENT_STORAGE_ENDPOINT:http://localhost:9000}
+  public-endpoint: ${DOCUMENT_STORAGE_PUBLIC_ENDPOINT:http://localhost:9000}
+  access-key: ${DOCUMENT_STORAGE_ACCESS_KEY:}
+  secret-key: ${DOCUMENT_STORAGE_SECRET_KEY:}
+  bucket: ${DOCUMENT_STORAGE_BUCKET:invoice-documents}
+  region: ${DOCUMENT_STORAGE_REGION:us-east-1}

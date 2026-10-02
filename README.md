@@ -50,11 +50,13 @@ docker compose up --build -d --wait
 ## Phase 1 범위와 제약
 
 - 포함: 수동 입력 → 결정론적 대사 → 사람 검토 → 원자적 승인 → 지급요청 Outbox → Mock ERP 인계.
-- 제약: Mock ERP 인계 성공(ACK)은 실제 송금이 아니며 실제 지급·회계는 외부 ERP 범위다. 구매·검수 데이터는 결정론적 read-only Mock이다. 문서 업로드·AI 추출/LangGraph/RAG, RabbitMQ·DLQ는 아직 구현하지 않는다.
+- 제약: Mock ERP 인계 성공(ACK)은 실제 송금이 아니며 실제 지급·회계는 외부 ERP 범위다. 구매·검수 데이터는 결정론적 read-only Mock이다. 업무 화면의 파일 업로드 연결·AI 추출/LangGraph/RAG·RabbitMQ/DLQ는 아직 구현하지 않는다. 문서 접수 API는 아래 Phase 2 절을 따른다.
 
 정지: `docker compose down`(named volume 유지) / 데이터까지 제거: `docker compose down -v`.
 
 ## Phase 2 문서 저장소 (P2-00)
+
+로컬 JVM을 저장소에 연결할 때 `DOCUMENT_STORAGE_ACCESS_KEY`/`DOCUMENT_STORAGE_SECRET_KEY`는 아래 MinIO의 `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`와 같은 로컬 값으로 설정한다. Compose 연결 설정은 이를 자동으로 전달한다.
 
 `.env`의 `MINIO_ROOT_USER`와 `MINIO_ROOT_PASSWORD`를 고유한 로컬 값으로 바꾼 뒤 선택 실행한다. API는 `http://localhost:9000`, 콘솔은 `http://localhost:9001`이며 두 포트 모두 localhost에만 바인딩한다. 콘솔에는 해당 로컬 자격 증명으로 로그인한다. 기존 포트와 겹치면 `.env`의 `MINIO_API_PORT`/`MINIO_CONSOLE_PORT`를 변경한다.
 
@@ -79,4 +81,23 @@ docker compose -f compose.storage.yaml down
 docker compose -f compose.storage.yaml down -v
 ```
 
-현재는 저장소 기준선만 제공한다. 사건별 Document와 presigned 업로드/완료 검증은 다음 P2-01에서 연결한다.
+P2-01에서는 사건별 Document 접수 API도 제공한다. 기본 Phase 1 실행에서는 저장소 연결이 꺼져 있다. 저장소를 위 명령으로 초기화한 뒤 API까지 연결하려면 다음처럼 실행한다.
+
+```sh
+docker compose -f compose.yaml -f compose.storage.yaml -f compose.documents.yaml up --build -d --wait --wait-timeout 120
+```
+
+브라우저가 접근하는 주소는 `DOCUMENT_STORAGE_PUBLIC_ENDPOINT`이며, MinIO host port를 바꾸면 이 값도 맞춘다. 컨테이너의 내부 주소는 `http://minio:9000`이다. 로컬 JVM은 `.env.example`의 `DOCUMENT_STORAGE_*` 값을 환경변수로 설정하고 `DOCUMENT_STORAGE_ENABLED=true`로 활성화한다. `.env`는 Compose가 읽으며 JVM이 자동으로 읽지는 않는다. 접수 API 계약은 [API.md](project-docs/API.md)의 Document intake 절을 따른다. 등록 문서는 아직 제출 증빙/승인 근거에 포함되지 않는다.
+
+문서 접수의 실제 PostgreSQL/MinIO 통합 테스트 및 전체 backend 검증은 다음과 같다. 실행 스크립트가 저장소 이미지를 먼저 빌드하며 빌드와 검증에는 각각 20분 제한을 둔다. Testcontainers가 해당 검증용 container를 생성·정리한다.
+
+```sh
+node scripts/verify-p2-01.mjs --focused
+node scripts/verify-p2-01.mjs
+```
+
+문서 API를 함께 띄운 환경의 정지에는 같은 파일 조합을 사용한다(named volume 유지).
+
+```sh
+docker compose -f compose.yaml -f compose.storage.yaml -f compose.documents.yaml down
+```

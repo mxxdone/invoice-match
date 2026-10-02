@@ -1,4 +1,4 @@
-# API — current Phase 1 contract
+# API — current Phase 1 and document intake contract
 
 All application endpoints are under `/api/**` and require HTTP Basic
 authentication (demo identities exist only in the `local`/`test` profiles; the
@@ -11,6 +11,40 @@ business rules, states and invariants are authoritative in `Spec.md`. If this
 summary conflicts with either the implementation or `Spec.md`, do not silently
 adopt one side: report the conflict and confirm consistency against the
 DTO/controller for the wire and `Spec.md` for the rules.
+
+## Document intake (P2-01)
+
+| Method | Endpoint | Roles | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/api/invoice-cases/{id}/documents/presign` | owner SUBMITTER | Reserve a file in the current open draft and return a PUT URL |
+| `POST` | `/api/invoice-cases/{id}/documents/complete` | owner SUBMITTER | Verify storage bytes and register an immutable original |
+| `GET` | `/api/invoice-cases/{id}/documents?page=0&size=20` | case read policy | Completed document metadata, across revisions |
+
+Presign JSON: `{requestId, expectedCaseVersion, draftRevisionId, fileName, mediaType, sizeBytes, checksum}`.
+Accepts `.pdf`/`application/pdf` or `.xlsx`/`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`;
+names cannot contain a path or control characters. SHA-256 is 64 lowercase hex characters.
+Limit: 10 MiB per file, 10 completed documents plus active reservations per draft, 10-minute URL expiry.
+The 10 MiB bound is enforced when accepting the document; the temporary PUT capability itself does not impose a transfer-size bound.
+`201` response: `{documentId, draftRevisionId, caseVersion, uploadUrl, method: "PUT", requiredHeaders, expiresAt}`.
+The browser sends the bytes directly to `uploadUrl`, using `requiredHeaders`.
+Reservation does not increase caseVersion. Exact request replay returns the same URL and expiry; after expiry use a new requestId.
+
+Complete JSON: `{requestId, expectedCaseVersion, draftRevisionId, documentId, checksum}`.
+It reads the object once, bounds the read, checks the GET Content-Type, actual length, SHA-256 and PDF/ZIP signature,
+then writes those verified bytes to a fresh server-only original key. Structural PDF/XLSX validation belongs to the parser Ticket.
+Storage I/O runs outside DB transactions. A final case/draft/version check precedes the atomic Document/version/audit/idempotency commit.
+Reusing a PUT URL changes only its temporary object, never the registered original.
+`201` response: `{documentId, draftRevisionId, fileName, mediaType, sizeBytes, checksum, caseVersion, registeredAt}`.
+Repeating a completed document with its checksum returns the original registration without another version bump or audit,
+including after reservation expiry or draft sealing. Exact requestId replay is actor-scoped; a changed payload conflicts.
+
+List response: `{items, page, size, hasNext}`; size 1..50, page 0..100000. Object keys and signed URLs are not returned.
+Document failures: `400 DOCUMENT_CONTENT_MISMATCH`, `404 DOCUMENT_NOT_FOUND`,
+`409 DOCUMENT_NOT_UPLOADED / DOCUMENT_UPLOAD_EXPIRED / DOCUMENT_LIMIT_REACHED / DOCUMENT_SUBJECT_CONFLICT`,
+plus existing validation/ownership/stale/draft/idempotency errors. Disabled or failed storage returns `503 DOCUMENT_STORAGE_UNAVAILABLE`.
+Documents are not yet included in EvidenceBundle or approval inputs; that is the following Ticket.
+Treat upload URLs as temporary bearer capabilities. They are stored only in the actor-scoped replay response,
+never in audit summaries or application logs. Storage credentials are supplied through server environment variables.
 
 ## Identity and errors
 

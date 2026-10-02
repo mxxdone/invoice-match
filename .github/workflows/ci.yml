@@ -42,7 +42,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Backend tests and build
         working-directory: core-api
-        run: ./gradlew --no-daemon clean test bootJar
+        run: |
+          docker build --progress=plain -t invoice-match-minio:p2-security-2025-10-15 ../infra/minio
+          ./gradlew --no-daemon clean test bootJar
       - uses: actions/setup-node@v4
         with:
           node-version: '24'

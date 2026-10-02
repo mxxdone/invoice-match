@@ -1,0 +1,14 @@
+# Optional API connection; use with compose.yaml and compose.storage.yaml.
+services:
+  core-api:
+    environment:
+      DOCUMENT_STORAGE_ENABLED: "true"
+      DOCUMENT_STORAGE_ENDPOINT: http://minio:9000
+      DOCUMENT_STORAGE_PUBLIC_ENDPOINT: ${DOCUMENT_STORAGE_PUBLIC_ENDPOINT:-http://localhost:9000}
+      DOCUMENT_STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      DOCUMENT_STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+      DOCUMENT_STORAGE_BUCKET: invoice-documents
+      DOCUMENT_STORAGE_REGION: us-east-1
+    depends_on:
+      minio:
+        condition: service_healthy

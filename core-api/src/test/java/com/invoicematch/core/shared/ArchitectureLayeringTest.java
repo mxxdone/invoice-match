@@ -21,6 +21,11 @@ class ArchitectureLayeringTest {
     private static final Path MAIN = Path.of("src", "main", "java", "com", "invoicematch", "core");
 
     @Test
+    void documentPersistenceDoesNotDependOnApplicationOrApiTypes() throws IOException {
+        assertNoApplicationImport("document/persistence/DocumentStore.java");
+    }
+
+    @Test
     void invoiceCaseListPersistenceDoesNotDependOnTheApplicationLayer() throws IOException {
         assertNoApplicationImport("invoicecase/persistence/InvoiceCaseListQueryStore.java");
         assertNoApplicationImport("invoicecase/persistence/InvoiceCaseListQuery.java");

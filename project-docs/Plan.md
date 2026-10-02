@@ -244,7 +244,17 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 ### P2-01 — Document 접수와 presigned 업로드
 
-**진행 상태:** 다음 Ticket, 착수 전 상세 계약을 확정한다.
+**진행 상태:** 구현·로컬 자동 인수 완료(2026-10-02, `feat/p2-01-document-upload`). P2-00을 로컬 main에 통합한 후 분기했다. 변경된 CI의 원격 실행 확인은 별도 대기다.
+
+**검증 근거:** `node scripts/verify-p2-01.mjs --focused` 16 tests/0 failures/errors/skipped, 최종 `node scripts/verify-p2-01.mjs` whole backend 538 tests/0 failures/errors/skipped와 bootJar PASS(8m 34s). 세 Compose 파일의 config 검증, Java 21·실제 Testcontainers PostgreSQL/MinIO에서 서명 PUT·브라우저 preflight·원본 익명 GET 403·동일/다른 requestId 동시 완료·원본 보존·권한·만료·stale·크기/type/hash/signature·DB 불변·감사 실패 rollback·저장소 I/O 중 트랜잭션 없음 PASS. 실행 후 Java 프로세스와 테스트 MinIO가 종료됨을 확인했다. 집계 증거는 ignored `output/p2-01/evidence.json`, 상세 JUnit은 `core-api/build/test-results/test/`다. 사건 제출·승인·프런트엔드 코드는 변경하지 않았다.
+
+**확정 계약:** `POST /api/invoice-cases/{id}/documents/presign`은 requestId/expectedCaseVersion/draftRevisionId/fileName/mediaType/sizeBytes/checksum(SHA-256 소문자 hex)를 받고 upload URL·documentId·expiresAt·필수 Content-Type을 반환한다. PDF 및 XLSX만, 파일당 10MiB, 작성 차수당 완료 문서 + 아직 유효한 예약 합계 10개, URL 수명 10분이다. 이름은 경로/제어문자 없이 최대 255자이고 확장자와 mediaType이 일치해야 한다. 예약은 사건 version을 올리지 않는다. 같은 requestId는 같은 만료시각/URL을 replay하므로 만료 후 새 requestId가 필요하다.
+
+`POST .../documents/complete`는 requestId/expectedCaseVersion/draftRevisionId/documentId/checksum을 받는다. 인증된 소유 제출자만 열린 현재 작성 차수에 쓸 수 있다. 최초 완료는 만료 전이어야 하며 실제 GET 응답의 Content-Type·크기·SHA-256·PDF/ZIP signature를 검증한다. XLSX 내부 구조·PDF 페이지 검증은 parser Ticket 범위다. 검증된 byte를 서버 전용의 새 확정 object key에 쓰고, 짧은 DB 트랜잭션에서 사건/작성 차수/version을 다시 확인해 immutable Document·version 증가·감사·멱등 응답을 함께 저장한다. S3 호출 중 DB 잠금은 유지하지 않는다. 같은 documentId/checksum의 완료는 한 번만 반영되고 완료 후 재시도는 만료·사건 상태 변경에도 기존 성공을 반환한다. 다른 payload의 동일 requestId는 409다. 실패/경합 loser의 서버 생성 object는 트랜잭션 밖에서 제거하며, 저장소 장애나 process 중단으로 남은 orphan 정리는 후속 배치 Ticket이다.
+
+`GET .../documents?page=0&size=20`은 기존 사건 읽기 권한으로 완료 문서 metadata를 조회한다(size 최대 50, page 최대 100000). object key·서명 URL·credential을 목록/감사에 노출하지 않는다. 업로드/완료는 저장소 설정을 명시적으로 활성화해야 하며 기본 Phase 1은 계속 기동된다. 문서는 아직 제출 증빙 및 승인 근거에 포함되지 않는다.
+
+**Acceptance Criteria:** 실제 PostgreSQL+MinIO에서 정상 PDF/XLSX 접수·서명 PUT·익명 접근 거부·다른 사건/역할 거부·stale 및 sealed 작성 차수 차단·크기/type/checksum/signature 불일치·만료·최대 파일 수·동일 요청 replay/payload 충돌·동시 완료·원본 불변·감사/DB rollback을 검증한다. 기존 backend whole suite와 bootJar가 통과한다. 서비스 경계는 저장소 호출 중 트랜잭션 부재도 검증한다.
 
 **목적과 범위:** 사건 소유권·draft revision·expected version 검증, PDF/XLSX 파일 조건·상한, 짧은 수명의 업로드 URL, 완료 시 실제 object 크기/media type/SHA-256 검증과 Document 저장·조회, actor-scoped 멱등 replay와 감사 기록. storage 내부 endpoint와 브라우저 endpoint를 구분한다. 같은 object에 대한 재업로드로 완료된 Document를 변조할 수 없도록 임시 upload object와 서버가 확정하는 immutable object를 분리한다. 제출 및 EvidenceBundle hash 변경은 후속 Ticket에서 처리한다.
 

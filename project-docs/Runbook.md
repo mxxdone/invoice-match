@@ -88,7 +88,9 @@ pre-build.
 ## Full verification
 
 ```sh
-# Backend: real PostgreSQL via Testcontainers
+# Backend: real PostgreSQL and MinIO via Testcontainers
+# P2-01 tests require the fixed local storage image before invoking Gradle.
+docker build --progress=plain -t invoice-match-minio:p2-security-2025-10-15 infra/minio
 cd core-api
 ./gradlew clean test bootJar
 

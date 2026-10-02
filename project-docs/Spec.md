@@ -430,6 +430,8 @@ Phase 1은 지급요청 인계 유실을 막기 위한 최소 transactional Outb
 
 ## 15. 파일 처리
 
+P2-01 접수 기준선은 PDF/XLSX 파일당 10MiB, 작성 차수당 완료 문서 및 유효 예약 합계 10개, 업로드 URL 10분을 사용한다. 소유 제출자가 열린 현재 작성 차수에만 등록하며, 완료 시 실제 파일 크기·Content-Type·SHA-256 및 포맷 signature를 검사한다. parser의 PDF 페이지/XLSX 압축 해제 구조 검증은 후속 Ticket에서 추가한다. 임시 업로드와 확정 원본을 분리해 URL 재사용이 원본을 바꾸지 못하게 한다. 문서 등록만으로 증빙 제출 또는 승인 근거 편입이 이루어지지 않으며, 제출 시 문서 동결은 다음 Ticket에서 구현한다.
+
 1. Spring이 사건 권한과 파일 조건을 확인하고 짧은 수명의 presigned upload URL을 발급한다.
 2. 브라우저가 S3 또는 MinIO로 직접 업로드한다.
 3. 업로드 완료 API가 object 크기·media type·checksum·소유 사건을 확인한다.
