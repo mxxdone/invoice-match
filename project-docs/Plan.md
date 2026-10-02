@@ -17,7 +17,7 @@
 | 4 — Human-in-the-loop | 사람 대기와 재개를 안전하게 모델링 | LangGraph checkpoint, mapping interrupt, 새 증빙 재분석, resume 멱등성, stale 차단 | worker/message 점유 없이 정확한 version만 재개·반영 |
 | 5 — 최적화·장애 시연·포트폴리오 | 측정 가능한 개선과 재현 가능한 설명 완성 | 조회·인덱스 실험, 부하·경합·장애 주입, ERP 대사, 관측성, README/ERD/보고서 | 5~7분 시연, Docker Compose 재현, 성능·AI 평가 결과와 trade-off 설명 |
 
-Phase 2~5의 Ticket은 직전 Phase 완료 검토 후 상세화한다.
+Phase 2는 사용자 착수 지시(2026-10-02)에 따라 아래 Ticket 순서로 진행한다. Phase 1 자동 인수와 CI는 통과했으며, 사람의 5~7분 시연 미실측은 별도 확인 항목으로 유지한다. Phase 3~5의 Ticket은 직전 Phase 완료 검토 후 상세화한다.
 
 ### 후속 설계 결정·보류 (2026-10-01)
 
@@ -222,7 +222,45 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 **사람 확인:** 5~7분 실제 시연과 화이트보드 설명을 수행하고 Phase 2에서 유지할 contract를 확인한다.
 
-## 3. Ticket 의존성
+## 3. Phase 2 Backlog
+
+### P2-00 — 비공개 문서 저장소 실행 기준선
+
+**진행 상태:** 구현·로컬 자동 인수 완료(2026-10-02, `feat/p2-00-document-storage`). 사용자 Phase 2 착수 지시에 따른 첫 Ticket이다. 신규 storage CI job의 원격 실행 확인은 아직 남아 있다.
+
+**검증 근거:** 공식 릴리스 소스 빌드 PASS, `node --test web/tests/compose-smoke.test.mjs` 20 tests/0 failures, `node scripts/verify-p2-00.mjs` PASS. 실제 MinIO에서 localhost publish·인증 write/read byte 동일·익명 목록/파일 403·반복 초기화·container 재생성 후 원본 및 private 정책 보존을 확인했다. 성공/실패 실행의 자신이 만든 container/volume와 secret 파일은 모두 정리했다. 최종 증거: ignored `output/p2-00/im-p200-aa03773a/evidence.json`. 초기화 one-shot은 `--wait` 대상에서 제외한 `tools` profile로 명시 실행한다. 백엔드/API/DB/프런트엔드 변경은 없다.
+
+**목적과 범위:** opt-in `compose.storage.yaml`, 로컬 MinIO 소스 빌드, 비공개 `invoice-documents` bucket 초기화, 환경변수 예시, 재사용 격리 검증 스크립트를 추가한다. 기존 Phase 1 Compose 실행은 그대로 가능하다. 백엔드 API·DB·UI·문서 제출·OCR·RabbitMQ는 이 Ticket에 포함하지 않는다.
+
+**관련 규칙/불변식:** 문서 저장소는 비공개이며 localhost에만 publish한다. 저장소 자격 증명은 env로 전달하고 커밋·로그·검증 증거에 남기지 않는다. 검증은 실행마다 고유 Compose project·임시 port·volume·secret 파일을 만들고 성공/실패 모두 자신이 만든 자원만 제거한다. 이 단계의 인증된 S3 PUT 자체는 덮어쓰기 방지를 보장하지 않는다. 사건별 소유권·업로드 완료 검증·불변 Document는 P2-01에서 구현한다.
+
+**Acceptance Criteria:** (1) 고정된 공식 보안 수정 릴리스로 MinIO 이미지 빌드·기동·readiness 성공. (2) bucket 초기화 반복 성공과 익명 목록/파일 읽기 403. (3) 인증된 object write/read byte 동일. (4) container 재생성 후 파일과 private 정책 보존. (5) 검증 제한 시간·진행 로그·cleanup 적용, cleanup 실패도 비정상 exit. (6) README 실행과 제거 절차가 최신이다.
+
+**테스트/검증:** `node scripts/verify-p2-00.mjs`로 실제 Docker/MinIO HTTP와 파일 비교를 검증한다. 기존 `compose-core`의 자원 관리 코드를 재사용한다. 제품 보안 정책은 mock이 아닌 실제 익명 HTTP 요청으로 교차 검증한다.
+
+**의존성:** Phase 1 자동 인수 완료와 사용자 확인 CI 통과. 사람 시연 확인 대기는 기존대로 유지한다.
+
+**사람 확인:** 저장소가 선택 실행 가능하고 기본 Phase 1 사용 흐름이 유지되는지 확인한다.
+
+### P2-01 — Document 접수와 presigned 업로드
+
+**진행 상태:** 다음 Ticket, 착수 전 상세 계약을 확정한다.
+
+**목적과 범위:** 사건 소유권·draft revision·expected version 검증, PDF/XLSX 파일 조건·상한, 짧은 수명의 업로드 URL, 완료 시 실제 object 크기/media type/SHA-256 검증과 Document 저장·조회, actor-scoped 멱등 replay와 감사 기록. storage 내부 endpoint와 브라우저 endpoint를 구분한다. 같은 object에 대한 재업로드로 완료된 Document를 변조할 수 없도록 임시 upload object와 서버가 확정하는 immutable object를 분리한다. 제출 및 EvidenceBundle hash 변경은 후속 Ticket에서 처리한다.
+
+**의존성/검증 방향:** P2-00. 실제 MinIO + PostgreSQL로 다른 사건 접근 거부, checksum/크기 불일치, 완료 중복·payload 충돌, 업로드 URL 재사용 후 원본 불변, 동시 완료를 검증한다. 한도·URL TTL·revision 결합·API DTO는 착수 시 관련 Spec/CONTEXT와 함께 고정한다.
+
+### Phase 2 후속 실행 순서
+
+P2-01 이후에는 아래 순서로 Ticket 계약을 상세화하며, 한 번에 하나씩 인수한다.
+
+1. 제출 시 Document 목록·checksum을 EvidenceBundle에 동결하고 보완 revision에서도 과거 원본을 보존한다.
+2. 원본 조회 권한·짧은 다운로드 URL, PDF 미리보기/다운로드/표준 인쇄와 Excel 다운로드 UI를 연결한다.
+3. PDF text layer와 Excel 구조를 제한된 자원으로 파싱하고 parser version·원문 위치를 보존한다. Azure 스캔 OCR은 F0 조건·외부 전송·실제 샘플을 검증한 뒤 별도 계약으로 연결한다. 품목 매핑·AI Proposal은 Phase 3 범위다.
+4. AnalysisRun과 분석 요청 Outbox, RabbitMQ·문서 worker·결과 멱등 반영을 연결한다. 실행 상태와 업무 사건 상태를 분리한다.
+5. 제한 재시도·DLQ·운영자 재처리·미제출 임시 object 정리와 중단/중복/장애 통합 인수를 완료한다.
+
+## 4. Ticket 의존성
 
 ```mermaid
 flowchart TD
@@ -244,7 +282,7 @@ flowchart TD
     P110 --> P111[P1-11 통합 인수]
 ```
 
-## 4. 유지보수 Ticket
+## 5. 유지보수 Ticket
 
 ### R1-01 — 백엔드 3계층/클린코드 정리
 
@@ -263,6 +301,8 @@ flowchart TD
 **사람 확인:** 공개 API 응답 schema와 승인·webhook replay 동작이 이전과 동일한지, oversized page만 새 400이 되는지 확인한다.
 
 ### R1-02 — main CI IntegrationTest 실패 조사·복구
+
+**후속 확인(2026-10-02):** 사용자가 원격 CI 통과를 확인했다. 아래의 원격 CI 대기는 해소되었다. 에이전트가 run URL·SHA를 직접 조회한 증거는 아니며, 실패 당시 run URL·SHA는 미확보 상태로 남긴다.
 
 **통합 검증(2026-10-02):** R1-01과 R1-02를 통합한 코드에서 커밋된 CI 환경변수를 적용해 webhook 12건·계층 의존성 3건·canonical JSON golden 1건, 총 16건을 다시 검증했다. 실패·오류·skip 0이며 `bootJar`도 통과했다. 두 작업을 `main`에 반영하고 push하며, GitHub Actions 실행 결과 확인은 별도 대기 상태로 유지한다. 로그: ignored `output/merge-verification/backend.log`.
 

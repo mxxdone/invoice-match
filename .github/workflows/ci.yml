@@ -8,6 +8,24 @@ on:
   workflow_dispatch:
 
 jobs:
+  document-storage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Private document storage acceptance
+        run: node scripts/verify-p2-00.mjs
+      - name: Storage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: document-storage-evidence
+          path: output/p2-00/**/evidence.json
+          if-no-files-found: warn
+
   checks:
     runs-on: ubuntu-latest
     env:

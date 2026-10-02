@@ -53,3 +53,30 @@ docker compose up --build -d --wait
 - 제약: Mock ERP 인계 성공(ACK)은 실제 송금이 아니며 실제 지급·회계는 외부 ERP 범위다. 구매·검수 데이터는 결정론적 read-only Mock이다. 문서 업로드·AI 추출/LangGraph/RAG, RabbitMQ·DLQ는 아직 구현하지 않는다.
 
 정지: `docker compose down`(named volume 유지) / 데이터까지 제거: `docker compose down -v`.
+
+## Phase 2 문서 저장소 (P2-00)
+
+`.env`의 `MINIO_ROOT_USER`와 `MINIO_ROOT_PASSWORD`를 고유한 로컬 값으로 바꾼 뒤 선택 실행한다. API는 `http://localhost:9000`, 콘솔은 `http://localhost:9001`이며 두 포트 모두 localhost에만 바인딩한다. 콘솔에는 해당 로컬 자격 증명으로 로그인한다. 기존 포트와 겹치면 `.env`의 `MINIO_API_PORT`/`MINIO_CONSOLE_PORT`를 변경한다.
+
+```sh
+docker compose -f compose.storage.yaml build --progress=plain
+docker compose -f compose.storage.yaml up -d --wait --wait-timeout 90
+docker compose -f compose.storage.yaml run --rm minio-init
+```
+
+`minio-init`은 `invoice-documents` bucket을 생성하고 익명 접근을 차단한 뒤 정상 종료한다. 종료 코드 0은 초기화 완료 상태다. 파일은 named volume에 보존된다. 첫 빌드는 Go 의존성 다운로드와 컴파일에 시간이 걸린다. MinIO는 공식 [보안 수정 릴리스](https://github.com/minio/minio/releases/tag/RELEASE.2025-10-15T17-29-55Z)를 소스 빌드하며, builder/client 버전도 Dockerfile에 고정한다. 이는 로컬 개발용 실행 기준선이고 운영 배포의 유지보수·업데이트 정책은 별도 검토 대상이다.
+
+반복 검증은 자동 생성한 secret·빈 포트·고유 Compose project로 실행하며, 실제 object 쓰기/읽기·익명 접근 거부·초기화 반복·container 재생성 후 보존을 확인한다. 성공과 실패 모두 검증용 container/volume/secret 파일을 제거한다. 기존 사용자 서버는 건드리지 않으며 credential 없는 증거를 `output/p2-00/<project>/evidence.json`에 저장한다. Node 22+와 Docker Desktop이 필요하다.
+
+```sh
+node scripts/verify-p2-00.mjs
+```
+
+저장소만 정지하거나 로컬 저장소 데이터까지 제거하는 명령은 각각 다음과 같다.
+
+```sh
+docker compose -f compose.storage.yaml down
+docker compose -f compose.storage.yaml down -v
+```
+
+현재는 저장소 기준선만 제공한다. 사건별 Document와 presigned 업로드/완료 검증은 다음 P2-01에서 연결한다.
