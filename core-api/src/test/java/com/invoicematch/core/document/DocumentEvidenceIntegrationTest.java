@@ -711,26 +711,38 @@ class DocumentEvidenceIntegrationTest extends AbstractPostgresIntegrationTest {
 
     @Test
     void supplementRejectsForgedV2SchemaAndLegacyDisguiseWithoutEffects() throws Exception {
+        // Every fixture is a fully valid manifest built from the real authoritative
+        // document metadata, with exactly one defect injected, so the assertion
+        // proves that defect is the rejection cause.
         UUID badSchema = forgedSupplementCase("bad1", "document-v2",
-                id -> "{\"schemaVersion\":999,\"lines\":[]}");
+                manifest -> manifest(manifest, "\"schemaVersion\":999", documents(manifest)));
         assertSupplementRejected(badSchema, "bad1");
 
         UUID missingDocuments = forgedSupplementCase("bad2", "document-v2",
-                id -> "{\"schemaVersion\":2,\"lines\":[]}");
+                manifest -> "{" + header(manifest) + ",\"schemaVersion\":2,\"lines\":[]}");
         assertSupplementRejected(missingDocuments, "bad2");
 
         UUID duplicated = forgedSupplementCase("bad3", "document-v2",
-                id -> "{\"schemaVersion\":2,\"lines\":[],\"documents\":["
-                        + documentJson(id) + "," + documentJson(id) + "]}");
+                manifest -> manifest(manifest, "\"schemaVersion\":2",
+                        "[" + documentEntry(manifest) + "," + documentEntry(manifest) + "]"));
         assertSupplementRejected(duplicated, "bad3");
 
         UUID legacyDisguise = forgedSupplementCase("bad4", "legacy-v1",
-                id -> "{\"schemaVersion\":2,\"lines\":[],\"documents\":[" + documentJson(id) + "]}");
+                manifest -> manifest(manifest, "\"schemaVersion\":2", documents(manifest)));
         assertSupplementRejected(legacyDisguise, "bad4");
+
+        UUID legacyDocumentsField = forgedSupplementCase("bad5", "legacy-v1",
+                manifest -> manifest(manifest, null, "[]"));
+        assertSupplementRejected(legacyDocumentsField, "bad5");
+    }
+
+    private record ForgedManifest(UUID caseId, UUID documentId, UUID revisionId) {
     }
 
     private UUID forgedSupplementCase(
-            String suffix, String payloadSchema, java.util.function.Function<UUID, String> payloadBuilder)
+            String suffix,
+            String payloadSchema,
+            java.util.function.Function<ForgedManifest, String> payloadBuilder)
             throws Exception {
         JsonNode created = createCase("c-" + suffix, "INV-" + suffix);
         UUID caseId = UUID.fromString(created.get("id").asText());
@@ -738,7 +750,8 @@ class DocumentEvidenceIntegrationTest extends AbstractPostgresIntegrationTest {
         replaceDraft(caseId, "d-" + suffix, created.get("version").asLong(), 1, 60, 2500, ITEM_A);
         JsonNode document = completeDocument(caseId, revision, "doc-" + suffix, currentCaseVersion(caseId), pdf,
                 "a.pdf", DocumentPolicy.PDF);
-        String payload = payloadBuilder.apply(UUID.fromString(document.get("documentId").asText()));
+        String payload = payloadBuilder.apply(
+                new ForgedManifest(caseId, UUID.fromString(document.get("documentId").asText()), revision));
 
         boolean legacy = "legacy-v1".equals(payloadSchema);
         if (legacy) {
@@ -761,10 +774,12 @@ class DocumentEvidenceIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     private void assertSupplementRejected(UUID caseId, String suffix) throws Exception {
-        MvcResult result = openRevisionRaw(caseId, "r-" + suffix, currentCaseVersion(caseId));
+        long versionBefore = currentCaseVersion(caseId);
+        MvcResult result = openRevisionRaw(caseId, "r-" + suffix, versionBefore);
         assertThat(result.getResponse().getStatus())
                 .as(result.getResponse().getContentAsString(StandardCharsets.UTF_8))
                 .isEqualTo(409);
+        assertThat(currentCaseVersion(caseId)).isEqualTo(versionBefore);
         assertThat(jdbc.queryForObject("select count(*) from draft_revision where invoice_case_id = ?",
                 Long.class, caseId)).isEqualTo(1L);
         assertThat(jdbc.queryForObject("select count(*) from draft_revision_document where invoice_case_id = ?",
@@ -779,11 +794,26 @@ class DocumentEvidenceIntegrationTest extends AbstractPostgresIntegrationTest {
                 .isZero();
     }
 
-    private static String documentJson(UUID documentId) {
-        return "{\"documentId\":\"" + documentId + "\","
-                + "\"sourceDraftRevisionId\":\"00000000-0000-0000-0000-0000000000bb\","
-                + "\"fileName\":\"a.pdf\",\"mediaType\":\"application/pdf\",\"sizeBytes\":1,"
-                + "\"checksum\":\"" + "0".repeat(64) + "\"}";
+    private static String header(ForgedManifest manifest) {
+        return "\"caseId\":\"" + manifest.caseId() + "\",\"supplierId\":\"SUP-1\","
+                + "\"purchaseOrderId\":\"PO-1001\",\"invoiceNumber\":\"INV-x\",\"revisionNumber\":1";
+    }
+
+    private String manifest(ForgedManifest manifest, String schemaVersionFragment, String documentsJson) {
+        return "{" + header(manifest) + ",\"lines\":[]"
+                + (schemaVersionFragment == null ? "" : "," + schemaVersionFragment)
+                + ",\"documents\":" + documentsJson + "}";
+    }
+
+    private String documents(ForgedManifest manifest) {
+        return "[" + documentEntry(manifest) + "]";
+    }
+
+    private String documentEntry(ForgedManifest manifest) {
+        return "{\"documentId\":\"" + manifest.documentId() + "\","
+                + "\"sourceDraftRevisionId\":\"" + manifest.revisionId() + "\","
+                + "\"fileName\":\"a.pdf\",\"mediaType\":\"application/pdf\","
+                + "\"sizeBytes\":" + pdf.length + ",\"checksum\":\"" + DocumentPolicy.hash(pdf) + "\"}";
     }
 
     // ------------------------------------------------------------------

@@ -98,6 +98,10 @@ class ArchitectureLayeringTest {
         assertThat(persistenceViolations(List.of(source(ALLOWED_PORT_ADAPTER,
                 ALLOWED_PORT_IMPORT,
                 "import com.invoicematch.core.review.application.ReviewService;")))).hasSize(1);
+        // A path that only ends with the adapter name must not inherit the allowance.
+        assertThat(persistenceViolations(List.of(source(
+                "another/approval/persistence/ReceiptAllocationCommitmentAdapter.java",
+                ALLOWED_PORT_IMPORT)))).hasSize(1);
         // Indented and static imports are inspected too.
         assertThat(persistenceViolations(List.of(source(
                 "foo/persistence/Foo.java",
@@ -165,7 +169,7 @@ class ArchitectureLayeringTest {
     }
 
     private static boolean isAllowedPortImport(String path, String importLine) {
-        if (!path.replace('\\', '/').endsWith(ALLOWED_PORT_ADAPTER)) {
+        if (!path.replace('\\', '/').equals(ALLOWED_PORT_ADAPTER)) {
             return false;
         }
         return importLine.replaceAll("\\s+", " ").strip().equals(ALLOWED_PORT_IMPORT);

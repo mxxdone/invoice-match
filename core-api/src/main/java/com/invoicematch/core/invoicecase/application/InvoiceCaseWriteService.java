@@ -411,7 +411,7 @@ public class InvoiceCaseWriteService {
         List<EvidenceBundlePayload.DocumentLine> frozen = payload.documents();
         Integer jsonSchema = payload.schemaVersion();
         if (EvidenceBundlePayloadHasher.LEGACY_SCHEMA.equals(schema)) {
-            if (jsonSchema != null || (frozen != null && !frozen.isEmpty())) {
+            if (jsonSchema != null || frozen != null) {
                 throw new CaseStateConflictException(caseId,
                         "the legacy evidence bundle payload carries document evidence fields");
             }
