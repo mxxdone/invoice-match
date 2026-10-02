@@ -20,6 +20,7 @@ import {
 import { useCaseDetail } from './use-case-detail';
 import { useCaseActions } from './use-case-actions';
 import { MutationFailureNotice } from '../mutation-failure-notice';
+import { OriginalDocuments } from './original-documents';
 
 function Detail() {
   const params = useParams<{ id: string }>();
@@ -319,7 +320,7 @@ function Detail() {
         {unsupportedTab ? (
           <SectionMessage tone="forbidden">이 탭은 현재 계정 역할에서 허용되지 않습니다. 서버도 이 계정의 해당 자료 조회를 허용하지 않습니다.</SectionMessage>
         ) : tab === 'compare' ? <ComparePanel data={data} />
-          : tab === 'evidence' ? <EvidencePanel data={data} />
+          : tab === 'evidence' ? <><EvidencePanel data={data} />{credentials && <OriginalDocuments key={`${sessionId}:${caseId}`} credentials={credentials} sessionId={sessionId} caseId={caseId} onUnauthorized={onUnauthorized} />}</>
             : tab === 'decisions' ? <DecisionsPanel data={data} />
               : <AuditPanel data={data} entries={auditEntries} nextCursor={auditNextCursor} loadingMore={auditLoadingMore} error={auditError} onMore={loadMoreAudit} />}
       </section>

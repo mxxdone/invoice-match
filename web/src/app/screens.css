@@ -116,3 +116,10 @@ button.session-link:focus-visible { outline: 2px solid #798769; outline-offset: 
 
 /* Date range validation message, shown only when invalid, below the date group. */
 .list-range-error { margin: 8px 0 0; font-size: 11px; color: #92594c; }
+.original-file-name { overflow-wrap: anywhere; max-width: 28rem; }
+.original-documents { min-width: 0; border-top: 1px solid var(--border); }
+.original-documents .section-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.original-documents .table-scroll { max-width: 100%; overflow-x: auto; }
+.original-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.original-preview { margin-top: 1rem; }
+.original-pdf-frame { display: block; width: 100%; height: min(70vh, 760px); min-height: 320px; border: 1px solid var(--border); border-radius: 6px; }

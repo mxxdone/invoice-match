@@ -284,6 +284,28 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 **의존성:** 로컬 자동 인수된 P2-01. 변경된 원격 CI 확인과 사람 시연 확인은 별도 대기다.
 
+### P2-03 — 권한 있는 원본 조회와 PDF 미리보기·다운로드
+
+**진행 상태:** 구현·자동 검증 인수 완료(2026-10-03). P2-02 통합·push된 `a9df807`에서 분기했다. 장시간 지연된 backend Worker와 변경 없이 실패한 Gemini 실행을 정리하고 사용자 지시에 따라 Head가 구현·통합을 완료했다. PDF 표준 인쇄는 별도 사람 확인 항목이며 실제 인쇄 결과는 미확인이다. Phase 2 전체 완료는 아니다.
+
+**구현 인계(2026-10-03):** 사용자 지시에 따라 장시간 지연된 backend Worker를 중지하고 Head가 현재 변경을 기본 작업공간으로 인계했다. provider 응답 300초 timeout과 MinIO test bootstrap 예외 처리/컴파일 수정 반복을 확인했다. Head는 bootstrap을 재현된 `XMinioServerNotInitialized`에 대한 제한 재시도로 좁히고 checked exception 컴파일 오류를 수정했으며, 반복 검증에서 기존 공통 MinIO 이미지를 재사용하도록 했다. 사용자 수정 AGENTS/Implement는 보존했다.
+
+**Backend 인수(2026-10-03):** Head 직접 수정 후 `node scripts/verify-p2-03.mjs` 전체 backend 571 tests/64 classes, failures/errors/skipped 0 및 bootJar PASS(17분). actual PostgreSQL/MinIO와 문서/승인/권한/불변 회귀가 모두 포함됐으며 전체 suite의 단일 실행으로 성공했다. URL 실제 서명시각+TTL과 DTO expiresAt를 일치시키고 헤더 직렬화는 infrastructure에 두었다. API/application/persistence 책임·의존성 Head 검토 완료. 본인 Java/Gradle 및 Testcontainers 잔류 없음; 기존 사용자 시연 서비스 유지. 증거: ignored `output/p2-03/head-whole-backend.log`, `head-whole-summary.json`. 아래 UI/통합 인수 기록으로 이어진다.
+
+**UI/통합 인수(2026-10-03):** 기존 문서 목록·GET URL 발급 API를 제출 이력 탭에 연결하고 프록시는 검증된 UUID의 두 read 경로만 추가했다. 목록 페이지 추가 조회, PDF inline iframe·새 탭 fallback, PDF/XLSX attachment, 2분 만료 제거·재발급, 사건/세션 교체·logout 및 오래된 응답 폐기를 구현했다. frontend lint 오류/경고 0, 기존 포함 214 tests/0 failures 및 최종 build PASS. 현재 bootJar·실제 PostgreSQL/MinIO·최종 Next 빌드의 격리 브라우저 검증에서 PDF 렌더링, PDF/XLSX 실제 다운로드 SHA-256 동일·한글 파일명, 실제 120초 경과 후 iframe 제거·새 URL 성공, logout 제거, 다른 제출자 403, URL 영구 저장 없음과 문서 영역 여백/가로 넘침 없음을 확인했다. 사람의 표준 PDF 인쇄 결과와 원격 CI는 미확인이다. 증거는 ignored `output/p2-03/`, `output/playwright/p2-03/original-pdf-final.png`에 보존한다. 테스트용 서버·컨테이너/volume·브라우저와 두 위임 worktree는 정리하고 기존 사용자 서비스는 유지했다. 실제 책임·의존성 Head 검토 및 기존 architecture guard PASS; 신규 린트/분석 프레임워크는 추가하지 않았다.
+
+**범위/계약:** 기존 완료 문서 목록 API와 `GET /api/invoice-cases/{caseId}/documents/{documentId}/download-url?disposition=attachment|inline`을 사용한다. 기본 attachment, inline은 PDF만 허용하고 XLSX inline 또는 잘못된 disposition은 400이다. 기존 사건 읽기 권한을 그대로 적용한다(소유 제출자 및 기존 허용 검토/운영 역할). 다른 사건 문서나 미완료 예약은 404, 인증/권한 거부는 기존 정책이다. DRAFT·제출·과거 보완 원본도 완료 Document이면 조회 가능하다. 클라이언트가 object key·filename·mediaType을 지정할 수 없다.
+
+성공 DTO는 `documentId`, `fileName`, `mediaType`, `url`, `method: GET`, `expiresAt`이다. 만료는 서버 시각 기준 120초이며 불변 확정 object만 서버가 presigned GET으로 서명한다. 내부 endpoint가 아닌 브라우저용 endpoint를 사용한다. 다운로드 URL 자체에는 서명된 object 경로가 필요하지만 별도 objectKey·credential 필드는 제공하지 않고 로그·감사·DB·브라우저 영구 저장에 URL을 남기지 않는다. URL은 만료까지 사용 가능한 권한이므로 요청마다 인증하고 `Cache-Control: no-store`를 적용한다. API는 URL 발급을 위해 원본 byte를 읽거나 변경하지 않는다. 저장소가 비활성인 경우 기존 generic 503, 서명 오류도 secret 없이 503이다. 서명된 응답 Content-Type 및 안전한 UTF-8 Content-Disposition으로 이름/inline/attachment를 고정한다. object 원본·EvidenceBundle/hash·case version·idempotency·업무상태는 변경하지 않는다.
+
+**UI 계약:** 실제 case 문서 목록을 제출 이력/근거 영역의 기존 역할·탭 구조에 맞춰 표시한다. PDF는 선택 시 새 inline URL로 화면 안의 표준 브라우저 PDF viewer를 열며 원본 다운로드와 뷰어 표준 인쇄를 제공한다. XLSX는 원본 다운로드만 제공한다. 브라우저별 PDF viewer 지원 한계에 대비해 별도 탭에서 열기/다운로드를 제공하고 화면 전체 인쇄로 대체하지 않는다. 로딩·문서 없음·권한 거부·발급 실패·URL 재발급을 처리하고 사건 전환/로그아웃 시 선택·URL을 제거하며 오래된 응답이 다른 사건에 표시되지 않게 한다. 새로운 업무 상태/허위 문서·파싱 결과·AI 정보·파일 업로드 UI는 포함하지 않는다. 목록이 페이지로 나뉘면 추가 문서를 접근할 수 있어야 한다. PDF viewer 부재를 서비스 완료로 가장하지 않으며 인쇄는 표준 뷰어에서 사람 확인 항목이다.
+
+**3 레이어 필수 계약:** API는 HTTP 입력·응답·오류 매핑, application은 인증/소유권·문서 조회 조정·disposition/만료 정책, persistence는 SQL/JPA 및 domain/persistence 데이터 반환만 담당한다. controller에서 repository/SQL/storage 직접 호출 금지, persistence에서 application/API 타입 참조·HTTP DTO 생성 금지, domain의 상위 계층 의존 금지. 저장소 SDK와 응답 서명 옵션은 기존 infrastructure adapter가 application port를 구현한다. application → repository는 기존 3 레이어 패턴으로 허용한다. Head가 완료 diff의 실제 책임·의존성을 수동 검토하고 위반/개선은 같은 Worker에 하달 후 재검증한다. 기존 ArchitectureLayeringTest는 관련 핵심 규칙만 유지하며 린트/자체 분석 도구 확장을 새 작업으로 만들지 않는다.
+
+**검증/Acceptance Criteria:** 실제 PostgreSQL/MinIO에서 역할·타 사건·미완료 문서 차단, PDF inline 및 PDF/XLSX attachment의 HTTP 응답 header·원본 byte/checksum 동일, URL 만료 설정·path/disposition 변조 거부·익명 원본 403, public endpoint·disabled storage·오류 redaction·URL no-store 검증. 저장소 URL 발급 중 DB write/lock·원본 읽기 없음, 이전 원본·증빙 hash/version·업무 side effect 없음. 관련 backend focused 및 build와 변경 위험에 맞는 회귀 검증; 기존 MinIO 초기화 flake는 bounded readiness를 확인하고 실패를 숨기는 재시도로 인수하지 않는다. UI는 기존 lint/test/build, 실제 API/브라우저로 목록·PDF viewer/원본 다운로드·XLSX 다운로드·권한·오래된 사건 응답 폐기·재발급을 검증한다. 표준 PDF 인쇄는 사람 확인으로 구분한다. 실시간 로그·제한 시간·본인 PID/port/container cleanup·git status/미추적 파일 보고. 성공 검증은 불필요하게 반복하지 않는다.
+
+**의존성/제외:** P2-02 로컬 인수·원격 push 완료(원격 CI 결과 미확인). 파서/OCR·RabbitMQ·AI·문서 교체/삭제·사용자 서비스 종료는 제외한다. Worker는 feature에만 commit하며 main 통합·push는 Head가 맡는다.
+
 ### Phase 2 후속 실행 순서
 
 P2-01 이후에는 아래 순서로 Ticket 계약을 상세화하며, 한 번에 하나씩 인수한다.

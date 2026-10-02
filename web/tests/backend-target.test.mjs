@@ -23,6 +23,16 @@ test('write paths, subresources and unknown routes never resolve', () => {
 
 const CASE = '11111111-2222-3333-4444-555555555555';
 
+test('original reads validate both UUIDs and keep upload mutations inaccessible', () => {
+  const base = 'http://localhost:8080';
+  const path = ['api', 'invoice-cases', CASE, 'documents'];
+  assert.equal(resolveBackendTarget(base, path, '?page=1&size=20'), `${base}/api/invoice-cases/${CASE}/documents?page=1&size=20`);
+  assert.equal(resolveBackendTarget(base, [...path, CASE, 'download-url'], '?disposition=inline'), `${base}/api/invoice-cases/${CASE}/documents/${CASE}/download-url?disposition=inline`);
+  assert.equal(resolveBackendTarget(base, [...path, 'invalid', 'download-url'], ''), null);
+  assert.equal(resolveBackendTarget(base, [...path, 'presign'], ''), null);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', [...path, 'complete']), null);
+});
+
 test('the live detail read endpoints resolve with a validated case id and number', () => {
   const base = 'http://localhost:8080';
   assert.equal(resolveBackendTarget(base, ['api', 'invoice-cases', CASE], ''), `${base}/api/invoice-cases/${CASE}`);

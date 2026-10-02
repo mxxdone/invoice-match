@@ -4,6 +4,8 @@
 // credentials.
 
 import type {
+  DocumentPage,
+  DocumentDownload,
   ApprovalResult,
   AuditHistoryPage,
   CaseHandoffStatus,
@@ -28,6 +30,15 @@ import {
 } from './transport.ts';
 
 const PROXY_PREFIX = '/backend';
+
+export function fetchDocuments(credentials: Credentials, caseId: string, page = 0, signal?: AbortSignal): Promise<DocumentPage> {
+  return requestJson<DocumentPage>(`/api/invoice-cases/${encodeURIComponent(caseId)}/documents?page=${page}&size=20`, credentials, { signal });
+}
+
+export function fetchDocumentDownload(credentials: Credentials, caseId: string, documentId: string,
+  disposition: 'attachment' | 'inline' = 'attachment', signal?: AbortSignal): Promise<DocumentDownload> {
+  return requestJson<DocumentDownload>(`/api/invoice-cases/${encodeURIComponent(caseId)}/documents/${encodeURIComponent(documentId)}/download-url?disposition=${disposition}`, credentials, { signal });
+}
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';

@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.invoicematch.core.document.application.DocumentPolicy;
 import com.invoicematch.core.document.infrastructure.MinioDocumentStorage;
 import com.invoicematch.core.support.AbstractPostgresIntegrationTest;
+import com.invoicematch.core.support.MinioTestSupport;
 import io.minio.*;
 import java.io.ByteArrayInputStream;
 import java.net.URI;
@@ -51,8 +52,8 @@ class DocumentUploadIntegrationTest extends AbstractPostgresIntegrationTest {
     static {
         MINIO.start();
         CLIENT = MinioClient.builder().endpoint(endpoint()).credentials(ACCESS, SECRET).region("us-east-1").build();
-        try { CLIENT.makeBucket(MakeBucketArgs.builder().bucket("invoice-documents").build()); }
-        catch (Exception e) { MINIO.stop(); throw new ExceptionInInitializerError(e); }
+        try { MinioTestSupport.initializeBucket(CLIENT, "invoice-documents"); }
+        catch (RuntimeException e) { MINIO.stop(); throw e; }
     }
     static String endpoint() { return "http://" + MINIO.getHost() + ":" + MINIO.getMappedPort(9000); }
     @DynamicPropertySource static void storageProperties(DynamicPropertyRegistry r) {

@@ -3,6 +3,7 @@ package com.invoicematch.core.document.api;
 import com.invoicematch.core.document.application.*;
 import com.invoicematch.core.invoicecase.api.ApiError;
 import java.util.UUID;
+import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -30,6 +31,12 @@ public class DocumentController {
     @GetMapping
     public DocumentService.Page list(@PathVariable UUID caseId, @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) { return service.list(caseId, page, size); }
+    @GetMapping("/{documentId}/download-url")
+    public ResponseEntity<DownloadUrlView> downloadUrl(@PathVariable UUID caseId, @PathVariable UUID documentId,
+            @RequestParam(required = false) String disposition) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(service.downloadUrl(caseId, documentId, disposition));
+    }
     @ExceptionHandler(DocumentFailure.class)
     public ResponseEntity<ApiError> documentFailure(DocumentFailure e) {
         return ResponseEntity.status(e.status()).body(new ApiError(e.code(), e.getMessage()));

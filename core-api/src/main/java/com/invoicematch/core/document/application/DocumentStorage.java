@@ -7,4 +7,5 @@ public interface DocumentStorage {
     byte[] readVerified(UploadIntent upload);
     void writeOriginal(String key, byte[] bytes, String mediaType);
     void removeOriginal(String key);
+    SignedDownload presignDownload(DocumentDownloadRequest request);
 }

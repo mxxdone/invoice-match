@@ -607,6 +607,26 @@ JVM Instant의 나노초 정밀도를 PostgreSQL timestamptz가 마이크로초�
 
 실제 MinIO/PostgreSQL에서 동일 requestId와 다른 requestId의 동시 완료가 동일한 성공 JSON을 반환하며 문서·감사·version은 한 번만 생성됨을 확인했다. URL 재사용 후 확정 원본 불변과 감사 실패 시 문서/version/멱등 응답 rollback 및 같은 요청 재시도도 통과했다. focused 16건 및 whole backend 538건, 실패/오류/skip 0과 bootJar PASS. 멱등성은 side effect 수뿐 아니라 저장·조회 경로의 응답 표현까지 검증해야 한다. 원격 CI는 확인 대기다.
 
+## P2-03 — 스토리지 health와 S3 초기화 완료 시점의 차이
+
+### 문제
+
+MinIO 컨테이너 health가 통과한 직후 bucket을 만드는 통합 테스트에서 `XMinioServerNotInitialized`가 발생했다. static 초기화 실패가 문서 테스트 전체로 전파돼 기능 회귀와 인프라 준비 실패를 구분하기 어려웠다.
+
+### 위험 또는 원인
+
+HTTP health 성공이 실제 S3 API의 초기화 완료까지 보장하지 않았다. 전체 suite를 반복 실행하거나 모든 오류를 재시도하면 실제 설정·권한 오류도 가려질 수 있다.
+
+### 해결
+
+공통 테스트 bootstrap은 이 초기화 오류만 30초 한도에서 기다린다. 이미 소유한 bucket만 성공으로 처리하고 다른 오류·인터럽트는 즉시 실패시킨다. 업무 assertion·전체 테스트 재시도나 skip은 추가하지 않았다. 기존 MinIO 이미지는 재사용하고 저장소 호출과 업무 DB 트랜잭션 경계 검증을 유지했다.
+
+### 검증과 교훈
+
+실제 PostgreSQL/MinIO를 사용하는 backend 전체 단일 실행에서 571 tests/64 classes, failures/errors/skipped 0 및 bootJar가 통과했다. 실제 API/브라우저에서도 PDF/XLSX 원본 byte/checksum, 권한·URL 만료·재발급을 확인했다. 준비 확인은 해당 자원이 실제로 제공해야 할 연산까지 검증하고, transient 오류를 좁혀 업무 실패를 숨기지 않아야 한다.
+
+관련 backend 커밋: `cd8f690`
+
 ## 앞으로 추가할 때의 형식
 
 새 사례는 아래 항목을 중심으로 짧게 추가한다.

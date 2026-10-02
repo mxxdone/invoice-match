@@ -12,13 +12,14 @@ summary conflicts with either the implementation or `Spec.md`, do not silently
 adopt one side: report the conflict and confirm consistency against the
 DTO/controller for the wire and `Spec.md` for the rules.
 
-## Document intake (P2-01) and submitted document evidence (P2-02)
+## Document intake (P2-01), submitted document evidence (P2-02) and authorized original access (P2-03)
 
 | Method | Endpoint | Roles | Purpose |
 | --- | --- | --- | --- |
 | `POST` | `/api/invoice-cases/{id}/documents/presign` | owner SUBMITTER | Reserve a file in the current open draft and return a PUT URL |
 | `POST` | `/api/invoice-cases/{id}/documents/complete` | owner SUBMITTER | Verify storage bytes and register an immutable original |
 | `GET` | `/api/invoice-cases/{id}/documents?page=0&size=20` | case read policy | Completed document metadata, across revisions |
+| `GET` | `/api/invoice-cases/{id}/documents/{documentId}/download-url?disposition=attachment\|inline` | case read policy | Issue a 120-second signed GET for a registered immutable original |
 
 Presign JSON: `{requestId, expectedCaseVersion, draftRevisionId, fileName, mediaType, sizeBytes, checksum}`.
 Accepts `.pdf`/`application/pdf` or `.xlsx`/`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`;
@@ -39,6 +40,17 @@ Repeating a completed document with its checksum returns the original registrati
 including after reservation expiry or draft sealing. Exact requestId replay is actor-scoped; a changed payload conflicts.
 
 List response: `{items, page, size, hasNext}`; size 1..50, page 0..100000. Object keys and signed URLs are not returned.
+
+Download-url applies the existing case-read policy (owning SUBMITTER, APPROVER, OPERATOR) to every request.
+An omitted `disposition` defaults to `attachment`; `inline` is accepted only for a registered PDF, while XLSX inline,
+an explicit empty/blank value or any other value is `400 INVALID_DISPOSITION`. An unknown or never-completed document
+in another case is `404`.
+The `200` response is `{documentId, fileName, mediaType, url, method: "GET", expiresAt}` with `Cache-Control: no-store`;
+`url` is a browser-endpoint signed GET valid for 120 seconds that binds the server-derived `Content-Type` and a safe
+UTF-8 `Content-Disposition` into the signature. The object key is only inside the signed URL, never a separate field.
+Issuing the URL performs no original read/write, no DB write, no case-version or idempotency change, and is not logged
+or audited. Disabled or failed storage returns `503 DOCUMENT_STORAGE_UNAVAILABLE` without credentials.
+
 Document failures: `400 DOCUMENT_CONTENT_MISMATCH`, `404 DOCUMENT_NOT_FOUND`,
 `409 DOCUMENT_NOT_UPLOADED / DOCUMENT_UPLOAD_EXPIRED / DOCUMENT_LIMIT_REACHED / DOCUMENT_SUBJECT_CONFLICT`,
 plus existing validation/ownership/stale/draft/idempotency errors. Disabled or failed storage returns `503 DOCUMENT_STORAGE_UNAVAILABLE`.
