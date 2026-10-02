@@ -6,6 +6,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.invoicematch.core.document.domain.DocumentEvidence;
+import com.invoicematch.core.document.persistence.DocumentStore;
 import com.invoicematch.core.invoicecase.application.EvidenceBundlePayload;
 import com.invoicematch.core.invoicecase.application.EvidenceBundlePayloadHasher;
 import com.invoicematch.core.invoicecase.application.InvoiceCaseQueryService;
@@ -63,6 +65,7 @@ public class ApprovalSubjectVerifier {
     private final EvidenceBundleRepository evidenceBundles;
     private final DraftRevisionRepository draftRevisions;
     private final InvoiceLineRepository invoiceLines;
+    private final DocumentStore documentEvidence;
     private final EvidenceBundlePayloadHasher bundleHasher;
     private final MatchEngine matchEngine;
     private final EffectiveMappingResolver mappingResolver;
@@ -75,6 +78,7 @@ public class ApprovalSubjectVerifier {
             EvidenceBundleRepository evidenceBundles,
             DraftRevisionRepository draftRevisions,
             InvoiceLineRepository invoiceLines,
+            DocumentStore documentEvidence,
             EvidenceBundlePayloadHasher bundleHasher,
             MatchEngine matchEngine,
             ObjectProvider<EffectiveMappingResolver> mappingResolvers,
@@ -84,6 +88,7 @@ public class ApprovalSubjectVerifier {
         this.evidenceBundles = evidenceBundles;
         this.draftRevisions = draftRevisions;
         this.invoiceLines = invoiceLines;
+        this.documentEvidence = documentEvidence;
         this.bundleHasher = bundleHasher;
         this.matchEngine = matchEngine;
         this.mappingResolver = mappingResolvers.getIfAvailable(() -> EffectiveMappingResolver.EMPTY);
@@ -168,11 +173,28 @@ public class ApprovalSubjectVerifier {
         if (lines.isEmpty()) {
             throw conflict(caseId, "the sealed draft revision has no invoice lines");
         }
+        // Reconstruct the bundle from its authoritative sources according to the
+        // persisted schema. A document-v2 bundle is rebuilt from the sealed
+        // revision's immutable references and document metadata; a legacy
+        // bundle is rebuilt from its lines only and never retroactively gains a
+        // reference. An unknown or missing schema fails closed.
+        String schema = bundle.payloadSchema();
+        List<DocumentEvidence> documents;
+        if (EvidenceBundlePayloadHasher.LEGACY_SCHEMA.equals(schema)) {
+            documents = List.of();
+        } else if (EvidenceBundlePayloadHasher.DOCUMENT_SCHEMA.equals(schema)) {
+            documents = documentEvidence.evidenceForRevision(revision.id());
+            if (documents.isEmpty()) {
+                throw conflict(caseId, "the document-v2 evidence bundle has no authoritative document references");
+            }
+        } else {
+            throw conflict(caseId, "unsupported evidence bundle payload schema " + schema);
+        }
         EvidenceBundlePayloadHasher.CanonicalPayload canonical =
-                bundleHasher.canonicalize(invoiceCase, revision.revisionNumber(), lines);
+                bundleHasher.canonicalize(invoiceCase, revision.revisionNumber(), lines, documents);
         if (!canonical.hash().equals(bundle.payloadHash())
                 || !canonicalEquals(canonical.json(), bundle.payload())) {
-            throw conflict(caseId, "the evidence bundle payload does not match its authoritative sealed lines");
+            throw conflict(caseId, "the evidence bundle payload does not match its authoritative sealed evidence");
         }
         return bundle;
     }

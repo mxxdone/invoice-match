@@ -1,5 +1,6 @@
 package com.invoicematch.core.document.persistence;
 
+import com.invoicematch.core.document.domain.DocumentEvidence;
 import com.invoicematch.core.document.domain.UploadIntent;
 import com.invoicematch.core.document.domain.RegisteredDocument;
 import java.sql.ResultSet;
@@ -27,10 +28,34 @@ public class DocumentStore {
         return jdbc.query("select * from document_upload where invoice_case_id = ? and id = ?",
                 (rs, n) -> uploadRow(rs), caseId, id).stream().findFirst();
     }
+    /**
+     * Occupied document slots of a draft revision: every completed or inherited
+     * reference plus each still-valid, not-yet-completed upload reservation. A
+     * completed document is counted once through its reference, never again
+     * through its upload reservation.
+     */
     public long occupiedSlots(UUID revisionId, Instant now) {
-        return jdbc.queryForObject("select count(*) from document_upload u where draft_revision_id = ?"
-                + " and (expires_at > ? or exists(select 1 from document d where d.id = u.id))",
-                Long.class, revisionId, Timestamp.from(now));
+        return jdbc.queryForObject("select"
+                + " (select count(*) from draft_revision_document where draft_revision_id = ?)"
+                + " + (select count(*) from document_upload u where u.draft_revision_id = ?"
+                + "     and u.expires_at > ? and not exists(select 1 from document d where d.id = u.id))",
+                Long.class, revisionId, revisionId, Timestamp.from(now));
+    }
+    public void reference(UUID revisionId, UUID caseId, UUID documentId, Instant createdAt) {
+        jdbc.update("insert into draft_revision_document"
+                + " (draft_revision_id, document_id, invoice_case_id, created_at) values (?, ?, ?, ?)",
+                revisionId, documentId, caseId, Timestamp.from(createdAt));
+    }
+    public List<DocumentEvidence> evidenceForRevision(UUID revisionId) {
+        return jdbc.query("select d.id as document_id, u.draft_revision_id as source_revision_id, u.file_name,"
+                + " u.media_type, u.size_bytes, u.checksum from draft_revision_document r"
+                + " join document d on d.id = r.document_id"
+                + " join document_upload u on u.id = r.document_id"
+                + " where r.draft_revision_id = ? order by d.id",
+                (rs, n) -> new DocumentEvidence(rs.getObject("document_id", UUID.class),
+                        rs.getObject("source_revision_id", UUID.class), rs.getString("file_name"),
+                        rs.getString("media_type"), rs.getLong("size_bytes"), rs.getString("checksum")),
+                revisionId);
     }
     public void register(RegisteredDocument d) {
         jdbc.update("insert into document (id, object_key, registered_case_version, registered_at) values (?, ?, ?, ?)",

@@ -37,6 +37,15 @@ public class EvidenceBundle {
     @Column(name = "version_number", nullable = false, updatable = false)
     private int versionNumber;
 
+    /**
+     * Persisted canonical payload schema discriminator ({@code legacy-v1} for a
+     * document-less manual payload, {@code document-v2} for a payload that froze
+     * completed documents). It is persisted rather than inferred so a bundle's
+     * verification algorithm can never be silently switched by editing its JSON.
+     */
+    @Column(name = "payload_schema", nullable = false, updatable = false, length = 16)
+    private String payloadSchema;
+
     @Column(name = "payload_hash", nullable = false, updatable = false, length = 128)
     private String payloadHash;
 
@@ -55,11 +64,15 @@ public class EvidenceBundle {
             UUID invoiceCaseId,
             UUID draftRevisionId,
             int versionNumber,
+            String payloadSchema,
             String payloadHash,
             String payload,
             Instant submittedAt) {
         if (versionNumber <= 0) {
             throw new DomainValidationException("Evidence bundle version must be positive: " + versionNumber);
+        }
+        if (payloadSchema == null || payloadSchema.isBlank()) {
+            throw new DomainValidationException("payloadSchema must not be blank");
         }
         if (payloadHash == null || payloadHash.isBlank()) {
             throw new DomainValidationException("payloadHash must not be blank");
@@ -68,11 +81,35 @@ public class EvidenceBundle {
         this.invoiceCaseId = Objects.requireNonNull(invoiceCaseId, "invoiceCaseId");
         this.draftRevisionId = Objects.requireNonNull(draftRevisionId, "draftRevisionId");
         this.versionNumber = versionNumber;
+        this.payloadSchema = payloadSchema;
         this.payloadHash = payloadHash;
         this.payload = Objects.requireNonNull(payload, "payload");
         this.submittedAt = Objects.requireNonNull(submittedAt, "submittedAt");
     }
 
+    /**
+     * Freezes a bundle with an explicit persisted canonical schema. New
+     * submissions state the schema so a document-bearing payload is never
+     * confused with a legacy, document-less one.
+     */
+    public static EvidenceBundle freeze(
+            UUID id,
+            UUID invoiceCaseId,
+            UUID draftRevisionId,
+            int versionNumber,
+            String payloadSchema,
+            String payloadHash,
+            String payload,
+            Instant submittedAt) {
+        return new EvidenceBundle(
+                id, invoiceCaseId, draftRevisionId, versionNumber, payloadSchema, payloadHash, payload, submittedAt);
+    }
+
+    /**
+     * Freezes a legacy, document-less bundle. Retained for existing callers and
+     * fixtures; the stored payload bytes and hash are the unchanged legacy
+     * algorithm.
+     */
     public static EvidenceBundle freeze(
             UUID id,
             UUID invoiceCaseId,
@@ -82,7 +119,7 @@ public class EvidenceBundle {
             String payload,
             Instant submittedAt) {
         return new EvidenceBundle(
-                id, invoiceCaseId, draftRevisionId, versionNumber, payloadHash, payload, submittedAt);
+                id, invoiceCaseId, draftRevisionId, versionNumber, "legacy-v1", payloadHash, payload, submittedAt);
     }
 
     public UUID id() {
@@ -99,6 +136,10 @@ public class EvidenceBundle {
 
     public int versionNumber() {
         return versionNumber;
+    }
+
+    public String payloadSchema() {
+        return payloadSchema;
     }
 
     public String payloadHash() {
