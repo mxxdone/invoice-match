@@ -262,7 +262,11 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 ### P2-02 — 제출 문서 증빙 동결과 보완 참조 보존
 
-**진행 상태:** 착수(2026-10-02). P2-01을 로컬 main에 통합한 기준에서 전용 Paseo worktree의 Implementation Worker가 구현하고 Head가 계약·통합·인수를 담당한다.
+**진행 상태:** 구현·로컬 자동 인수 완료(2026-10-02, Worker 최종 `4e46b27`). P2-01을 로컬 main에 통합한 기준에서 전용 Paseo worktree의 Implementation Worker가 구현했고 Head가 계약·사후 diff·3 레이어 책임/의존성·검증 증거를 검토해 인수했다. 원격 push/CI와 사람 시연은 별도 대기다.
+
+**검증 근거:** 최초 구현 `db2427a`에서 whole backend `clean test bootJar` 559 tests/0 failures/errors/skipped PASS. 후속 보완 검증·검사 guard 수정 후 최종 `4e46b27`에서 `node scripts/verify-p2-02.mjs --focused` 74 tests/0 failures/errors/skipped 및 bootJar PASS. 실제 PostgreSQL/MinIO에서 문서 동결·보완 참조·과거 legacy 비소급·승인 재구성·DB 불변·경합·rollback·schema/중복 거부 검증. Head 검토로 보완 계승 범위, schema 검사, 중복 테스트의 실제 원인 분리, 광범위 Adapter 예외를 수정했다. Controller 직접 persistence/저장소 접근 및 새 역방향 의존 없음; application은 정책/트랜잭션, persistence는 조회/저장, domain은 증빙 데이터 책임을 유지한다. 문자열 기반 guard는 제한된 자동 안전장치이고 책임 배치 검토를 대체하지 않는다. 증거는 ignored `output/p2-02/`에 보존했다.
+
+**남은 검증 위험:** 최종 focused 첫 실행에서 기존 P2-01 MinIO 초기화가 `XMinioServerNotInitialized`로 실패했다. 해당 클래스 단독 실행과 focused 재실행은 통과했고 assertion 완화/skip은 없다. 초기화 readiness의 반복 가능성은 미해소이며 이번 인수를 무조건 안정성 보장으로 해석하지 않는다. 테스트 Java/Gradle·임시 container는 종료했고 기존 사용자 `im-demo-*`는 유지했다.
 
 **목적과 범위:** 열린 작성 차수의 완료 문서를 제출 EvidenceBundle에 동결하고, 보완 차수에 이전 증빙의 문서 참조를 계승한다. 기존 수동 청구 및 문서 없는 제출의 canonical JSON/hash는 byte 단위로 유지한다. 원본 다운로드/UI·파서·분석 작업·메시징은 포함하지 않는다.
 
