@@ -41,6 +41,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -398,20 +399,31 @@ public class InvoiceCaseWriteService {
      * The document ids a supplement inherits from the immediately prior
      * submission. A legacy, document-less bundle inherits nothing (the V11
      * backfilled references on its sealed revision are historical and are not
-     * retroactively promoted). A document-v2 bundle must freeze the exact
-     * authoritative reference set of its sealed revision, and that set is
-     * inherited. An unknown schema fails explicitly rather than guessing.
+     * retroactively promoted). A document-v2 bundle must carry an explicit
+     * {@code schemaVersion: 2} and freeze exactly the authoritative reference
+     * set of its sealed revision, with no duplicate ids, and that set is
+     * inherited. A missing/unknown JSON schema or a legacy payload carrying
+     * document fields is rejected rather than guessed.
      */
     private List<UUID> inheritedDocumentIds(
             UUID caseId, EvidenceBundle bundle, EvidenceBundlePayload payload) {
         String schema = bundle.payloadSchema();
+        List<EvidenceBundlePayload.DocumentLine> frozen = payload.documents();
+        Integer jsonSchema = payload.schemaVersion();
         if (EvidenceBundlePayloadHasher.LEGACY_SCHEMA.equals(schema)) {
+            if (jsonSchema != null || (frozen != null && !frozen.isEmpty())) {
+                throw new CaseStateConflictException(caseId,
+                        "the legacy evidence bundle payload carries document evidence fields");
+            }
             return List.of();
         }
         if (!EvidenceBundlePayloadHasher.DOCUMENT_SCHEMA.equals(schema)) {
             throw new CaseStateConflictException(caseId, "unsupported evidence bundle schema " + schema);
         }
-        List<EvidenceBundlePayload.DocumentLine> frozen = payload.documents();
+        if (jsonSchema == null || jsonSchema != EvidenceBundlePayloadHasher.DOCUMENT_SCHEMA_VERSION) {
+            throw new CaseStateConflictException(caseId,
+                    "the document-v2 evidence bundle payload has a missing or unsupported schemaVersion");
+        }
         if (frozen == null || frozen.isEmpty()) {
             throw new CaseStateConflictException(caseId, "document-v2 evidence bundle has no frozen documents");
         }
@@ -419,17 +431,16 @@ public class InvoiceCaseWriteService {
         for (DocumentEvidence evidence : documentEvidence.evidenceForRevision(bundle.draftRevisionId())) {
             authoritative.put(evidence.documentId(), evidence);
         }
-        if (authoritative.size() != frozen.size()) {
-            throw new CaseStateConflictException(caseId,
-                    "the frozen document set does not match the sealed revision references");
-        }
-        List<UUID> inherited = new ArrayList<>(frozen.size());
+        Set<UUID> frozenIds = new LinkedHashSet<>();
         for (EvidenceBundlePayload.DocumentLine line : frozen) {
             UUID documentId;
             try {
                 documentId = UUID.fromString(line.documentId());
             } catch (RuntimeException e) {
                 throw new CaseStateConflictException(caseId, "the frozen document id is not a UUID");
+            }
+            if (!frozenIds.add(documentId)) {
+                throw new CaseStateConflictException(caseId, "the frozen document set contains a duplicate id");
             }
             DocumentEvidence evidence = authoritative.get(documentId);
             if (evidence == null
@@ -441,9 +452,12 @@ public class InvoiceCaseWriteService {
                 throw new CaseStateConflictException(caseId,
                         "the frozen document metadata does not match the sealed revision references");
             }
-            inherited.add(documentId);
         }
-        return inherited;
+        if (frozenIds.size() != authoritative.size() || !frozenIds.equals(authoritative.keySet())) {
+            throw new CaseStateConflictException(caseId,
+                    "the frozen document set does not match the sealed revision references");
+        }
+        return new ArrayList<>(frozenIds);
     }
 
     private List<InvoiceLine> replaceLines(

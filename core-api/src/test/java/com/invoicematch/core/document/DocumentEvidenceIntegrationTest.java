@@ -709,6 +709,83 @@ class DocumentEvidenceIntegrationTest extends AbstractPostgresIntegrationTest {
                 Long.class, revision)).isEqualTo(1L);
     }
 
+    @Test
+    void supplementRejectsForgedV2SchemaAndLegacyDisguiseWithoutEffects() throws Exception {
+        UUID badSchema = forgedSupplementCase("bad1", "document-v2",
+                id -> "{\"schemaVersion\":999,\"lines\":[]}");
+        assertSupplementRejected(badSchema, "bad1");
+
+        UUID missingDocuments = forgedSupplementCase("bad2", "document-v2",
+                id -> "{\"schemaVersion\":2,\"lines\":[]}");
+        assertSupplementRejected(missingDocuments, "bad2");
+
+        UUID duplicated = forgedSupplementCase("bad3", "document-v2",
+                id -> "{\"schemaVersion\":2,\"lines\":[],\"documents\":["
+                        + documentJson(id) + "," + documentJson(id) + "]}");
+        assertSupplementRejected(duplicated, "bad3");
+
+        UUID legacyDisguise = forgedSupplementCase("bad4", "legacy-v1",
+                id -> "{\"schemaVersion\":2,\"lines\":[],\"documents\":[" + documentJson(id) + "]}");
+        assertSupplementRejected(legacyDisguise, "bad4");
+    }
+
+    private UUID forgedSupplementCase(
+            String suffix, String payloadSchema, java.util.function.Function<UUID, String> payloadBuilder)
+            throws Exception {
+        JsonNode created = createCase("c-" + suffix, "INV-" + suffix);
+        UUID caseId = UUID.fromString(created.get("id").asText());
+        UUID revision = UUID.fromString(created.get("currentRevision").get("id").asText());
+        replaceDraft(caseId, "d-" + suffix, created.get("version").asLong(), 1, 60, 2500, ITEM_A);
+        JsonNode document = completeDocument(caseId, revision, "doc-" + suffix, currentCaseVersion(caseId), pdf,
+                "a.pdf", DocumentPolicy.PDF);
+        String payload = payloadBuilder.apply(UUID.fromString(document.get("documentId").asText()));
+
+        boolean legacy = "legacy-v1".equals(payloadSchema);
+        if (legacy) {
+            jdbc.execute("alter table evidence_bundle disable trigger trg_evidence_bundle_payload_schema");
+        }
+        try {
+            jdbc.update("update draft_revision set status = 'SEALED', sealed_at = now() where id = ?", revision);
+            jdbc.update("insert into evidence_bundle (id, invoice_case_id, draft_revision_id, version_number,"
+                            + " payload_schema, payload_hash, payload, submitted_at)"
+                            + " values (?, ?, ?, 1, ?, 'forged-hash', cast(? as jsonb), now())",
+                    UUID.randomUUID(), caseId, revision, payloadSchema, payload);
+        } finally {
+            if (legacy) {
+                jdbc.execute("alter table evidence_bundle enable trigger trg_evidence_bundle_payload_schema");
+            }
+        }
+        jdbc.update("update invoice_case set status = 'SUPPLEMENT_REQUIRED', current_draft_revision_id = null,"
+                + " version = version + 1, submitted_at = now(), updated_at = now() where id = ?", caseId);
+        return caseId;
+    }
+
+    private void assertSupplementRejected(UUID caseId, String suffix) throws Exception {
+        MvcResult result = openRevisionRaw(caseId, "r-" + suffix, currentCaseVersion(caseId));
+        assertThat(result.getResponse().getStatus())
+                .as(result.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                .isEqualTo(409);
+        assertThat(jdbc.queryForObject("select count(*) from draft_revision where invoice_case_id = ?",
+                Long.class, caseId)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("select count(*) from draft_revision_document where invoice_case_id = ?",
+                Long.class, caseId)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("select status from invoice_case where id = ?", String.class, caseId))
+                .isEqualTo("SUPPLEMENT_REQUIRED");
+        assertThat(jdbc.queryForObject("select count(*) from audit_entry"
+                + " where invoice_case_id = ? and action = 'SUPPLEMENT_REVISION_OPENED'", Long.class, caseId))
+                .isZero();
+        assertThat(jdbc.queryForObject("select count(*) from idempotency_record"
+                + " where scope = 'invoice-case:revision:open' and resource_key = ?", Long.class, caseId.toString()))
+                .isZero();
+    }
+
+    private static String documentJson(UUID documentId) {
+        return "{\"documentId\":\"" + documentId + "\","
+                + "\"sourceDraftRevisionId\":\"00000000-0000-0000-0000-0000000000bb\","
+                + "\"fileName\":\"a.pdf\",\"mediaType\":\"application/pdf\",\"sizeBytes\":1,"
+                + "\"checksum\":\"" + "0".repeat(64) + "\"}";
+    }
+
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
@@ -861,14 +938,18 @@ class DocumentEvidenceIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     private JsonNode openRevision(UUID caseId, String requestId) throws Exception {
-        ObjectNode body = json.createObjectNode();
-        body.put("requestId", requestId);
-        body.put("expectedCaseVersion", currentCaseVersion(caseId));
-        MvcResult result = perform(post("/api/invoice-cases/{id}/revisions", caseId)
-                .with(user("submitter").roles("SUBMITTER"))
-                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(body)));
+        MvcResult result = openRevisionRaw(caseId, requestId, currentCaseVersion(caseId));
         assertThat(result.getResponse().getStatus()).isEqualTo(201);
         return body(result);
+    }
+
+    private MvcResult openRevisionRaw(UUID caseId, String requestId, long version) throws Exception {
+        ObjectNode body = json.createObjectNode();
+        body.put("requestId", requestId);
+        body.put("expectedCaseVersion", version);
+        return perform(post("/api/invoice-cases/{id}/revisions", caseId)
+                .with(user("submitter").roles("SUBMITTER"))
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(body)));
     }
 
     private MvcResult approve(UUID caseId, String requestId, long version, String snapshotId, String payloadHash)
