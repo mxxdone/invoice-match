@@ -260,6 +260,24 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 **의존성/검증 방향:** P2-00. 실제 MinIO + PostgreSQL로 다른 사건 접근 거부, checksum/크기 불일치, 완료 중복·payload 충돌, 업로드 URL 재사용 후 원본 불변, 동시 완료를 검증한다. 한도·URL TTL·revision 결합·API DTO는 착수 시 관련 Spec/CONTEXT와 함께 고정한다.
 
+### P2-02 — 제출 문서 증빙 동결과 보완 참조 보존
+
+**진행 상태:** 착수(2026-10-02). P2-01을 로컬 main에 통합한 기준에서 전용 Paseo worktree의 Implementation Worker가 구현하고 Head가 계약·통합·인수를 담당한다.
+
+**목적과 범위:** 열린 작성 차수의 완료 문서를 제출 EvidenceBundle에 동결하고, 보완 차수에 이전 증빙의 문서 참조를 계승한다. 기존 수동 청구 및 문서 없는 제출의 canonical JSON/hash는 byte 단위로 유지한다. 원본 다운로드/UI·파서·분석 작업·메시징은 포함하지 않는다.
+
+**확정 계약:** 작성 차수와 immutable Document 사이에 사건 소유권이 검증되는 참조를 둔다. 최초 완료는 해당 열린 차수에 참조를 함께 등록한다. 보완 차수는 직전 제출의 문서 ID를 중복 없이 계승하며 파일·Document·과거 차수·bundle을 복제하거나 수정하지 않는다. 삭제/교체 API는 이번 범위가 아니며 새 파일은 새 ID다. 계승된 참조도 현재 차수의 최대 10개 한도에 포함한다. 예약 한도는 계승/완료 참조와 아직 유효한 미완료 예약의 합계로 검사하고 이중 집계하지 않는다. 기존 접수 문서에는 migration으로 원래 차수의 참조를 채운다. 과거 문서 없는 bundle에는 문서를 소급 편입하지 않는다.
+
+제출은 사건 → 현재 작성 차수 잠금 아래 완료 참조만 읽는다. 미완료 예약은 증빙에 포함하지 않고 제출을 막지 않는다. 완료가 먼저 commit하면 이전 expectedCaseVersion 제출은 충돌하며, 제출이 먼저 commit하면 늦은 최초 완료는 sealed/stale로 실패하고 후보 object는 기존 정책으로 정리한다. 제출·seal·bundle·상태·감사·멱등 응답은 단일 DB 트랜잭션이고 저장소 호출은 없다.
+
+문서가 있는 payload만 명시적 `schemaVersion: 2`와 `documents` 배열을 갖는다. 문서는 documentId UUID 문자열 오름차순이고 각 항목은 documentId, 원래 sourceDraftRevisionId, fileName, mediaType, sizeBytes, checksum을 고정 순서로 기록한다. object key·upload URL·credential은 payload/API/감사에 노출하지 않는다. 문서 없는 legacy payload는 schemaVersion/documents 필드 없이 기존 알고리즘을 그대로 사용한다. 저장된 schema별 단일 알고리즘이며 unknown schema 또는 문서 포함 payload의 legacy 위장은 거부하고 hash fallback은 없다. 승인 재구성은 해당 sealed 차수의 권위 있는 참조·immutable metadata로 canonical을 재생성해 bundle 내용/hash를 검증한다. 기존 ReviewSnapshot v1/v2 및 match-result-v3 알고리즘은 바꾸지 않는다.
+
+**Acceptance Criteria:** (1) 문서 0개 legacy canonical 고정 fixture와 기존 승인 회귀 PASS. (2) PDF/XLSX 문서 ID·metadata·checksum이 순서와 무관하게 동일하게 동결되고 metadata 변경은 hash 변경. (3) 보완 재제출이 기존 ID를 계승하고 추가 문서를 포함하며 과거 bundle/hash/원본은 불변. (4) 실제 PostgreSQL에서 사건 간 참조, sealed 차수 참조 삽입 및 참조 UPDATE/DELETE 차단; 보완 한도·멱등 replay·payload 충돌 검증. (5) barrier 기반 완료↔제출 경합 양방향, 감사 실패 rollback 및 재시도 검증. (6) 문서 포함 실제 검토/승인 성공과 bundle 문서 누락/변조/unknown schema 승인 거부 시 업무 side effect 0을 검증. (7) backend whole suite와 bootJar PASS, 제한 시간·실시간 로그·자신이 만든 프로세스/컨테이너 정리 보고.
+
+**검증/인수:** Worker는 focused 및 전체 검증 증거를 보고한다. Head는 승인 증빙 경계와 migration을 독립 검토하고 필요 시 독립 통합 검증을 추가한다. 기존 완료한 결정론적 검증은 근거 없이 반복하지 않는다. 코드/문서 충돌 시 보고하고 멈춘다.
+
+**의존성:** 로컬 자동 인수된 P2-01. 변경된 원격 CI 확인과 사람 시연 확인은 별도 대기다.
+
 ### Phase 2 후속 실행 순서
 
 P2-01 이후에는 아래 순서로 Ticket 계약을 상세화하며, 한 번에 하나씩 인수한다.

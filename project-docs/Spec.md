@@ -348,6 +348,8 @@ NOT_SENT → SENDING
 | PaymentRequest | 외부 key, 승인 snapshot, 금액, 인계상태 | ERP 인계 단위 |
 | OutboxEvent | event ID, aggregate ID, type, payload, publish status | DB commit과 메시지 발행 사이 유실 방지 |
 
+P2-02부터 제출은 현재 작성 차수의 완료 문서 ID·원래 작성 차수 ID·이름·media type·크기·SHA-256을 증빙 payload에 동결한다. 미완료 업로드 예약은 제출을 막지 않고 증빙에서 제외되며 제출 후 최초 완료는 허용하지 않는다. 보완 작성 차수는 직전 증빙의 immutable 문서 참조를 계승하고 새 원본만 새 ID로 추가한다. 계승 문서도 차수당 10개 상한에 포함하며 이번 범위에는 참조 삭제/교체가 없다. 과거 증빙과 원본은 보존한다. 문서 없는 기존 payload/hash는 유지하고 문서 포함 payload는 schemaVersion 2로 구분한다. 승인 시 sealed 차수의 문서 참조·metadata까지 재구성해 증빙 hash를 검증한다.
+
 ## 12. 불변식과 정합성 규칙
 
 1. 승인된 모든 청구 라인의 합계는 지급요청 금액과 일치해야 한다.
