@@ -12,7 +12,7 @@ summary conflicts with either the implementation or `Spec.md`, do not silently
 adopt one side: report the conflict and confirm consistency against the
 DTO/controller for the wire and `Spec.md` for the rules.
 
-## Document intake (P2-01)
+## Document intake (P2-01) and submitted document evidence (P2-02)
 
 | Method | Endpoint | Roles | Purpose |
 | --- | --- | --- | --- |
@@ -42,7 +42,16 @@ List response: `{items, page, size, hasNext}`; size 1..50, page 0..100000. Objec
 Document failures: `400 DOCUMENT_CONTENT_MISMATCH`, `404 DOCUMENT_NOT_FOUND`,
 `409 DOCUMENT_NOT_UPLOADED / DOCUMENT_UPLOAD_EXPIRED / DOCUMENT_LIMIT_REACHED / DOCUMENT_SUBJECT_CONFLICT`,
 plus existing validation/ownership/stale/draft/idempotency errors. Disabled or failed storage returns `503 DOCUMENT_STORAGE_UNAVAILABLE`.
-Documents are not yet included in EvidenceBundle or approval inputs; that is the following Ticket.
+Submission freezes the current open revision's completed documents into the new `EvidenceBundle`.
+A bundle with documents stores an explicit `schemaVersion: 2` and a `documents` array sorted by
+document id; each item carries `documentId`, `sourceDraftRevisionId`, `fileName`, `mediaType`, `sizeBytes`
+and `checksum` in a fixed order. Object keys, upload URLs and credentials are never part of the payload.
+A document-less bundle keeps the unchanged legacy payload bytes and hash. A supplement revision inherits
+the prior submission's document references (without copying files or documents) and they count toward the
+per-draft 10-document limit together with completed references and active reservations. Unfinished
+reservations are excluded from the bundle and never block submission.
+Approval reconstructs the sealed revision's authoritative references and immutable document metadata and
+rejects a missing, tampered or unknown-schema bundle with `409` and no payment/allocation/outbox effects.
 Treat upload URLs as temporary bearer capabilities. They are stored only in the actor-scoped replay response,
 never in audit summaries or application logs. Storage credentials are supplied through server environment variables.
 

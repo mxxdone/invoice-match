@@ -124,6 +124,9 @@ public class DocumentCommands {
             var doc = new RegisteredDocument(intent, originalKey, invoice.version(),
                     clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS));
             documents.register(doc);
+            // The revision-scoped reference is written in the same transaction
+            // as the immutable document, before submission can seal the draft.
+            documents.reference(c.draftRevisionId(), c.caseId(), intent.id(), doc.registeredAt());
             view = DocumentView.from(doc);
             audit.record(new AuditEvent(c.caseId(), authorization.actor(), AuditAction.DOCUMENT_REGISTERED,
                     AuditTargetType.DRAFT_REVISION, c.draftRevisionId().toString(), invoice.version(), null,

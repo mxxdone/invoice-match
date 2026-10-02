@@ -4,6 +4,8 @@ import com.invoicematch.core.audit.application.AuditEvent;
 import com.invoicematch.core.audit.application.AuditRecorder;
 import com.invoicematch.core.audit.domain.AuditAction;
 import com.invoicematch.core.audit.domain.AuditTargetType;
+import com.invoicematch.core.document.domain.DocumentEvidence;
+import com.invoicematch.core.document.persistence.DocumentStore;
 import com.invoicematch.core.invoicecase.domain.CaseStateConflictException;
 import com.invoicematch.core.invoicecase.domain.DraftNotEditableException;
 import com.invoicematch.core.invoicecase.domain.DraftRevision;
@@ -83,6 +85,7 @@ public class InvoiceCaseWriteService {
     private final DraftRevisionRepository draftRevisions;
     private final InvoiceLineRepository invoiceLines;
     private final EvidenceBundleRepository evidenceBundles;
+    private final DocumentStore documentEvidence;
     private final PurchaseOrderSnapshotReader purchaseOrderSnapshots;
     private final PurchasingReferenceService purchasingReferenceService;
     private final RequestIdempotencyStore idempotency;
@@ -98,6 +101,7 @@ public class InvoiceCaseWriteService {
             DraftRevisionRepository draftRevisions,
             InvoiceLineRepository invoiceLines,
             EvidenceBundleRepository evidenceBundles,
+            DocumentStore documentEvidence,
             PurchaseOrderSnapshotReader purchaseOrderSnapshots,
             PurchasingReferenceService purchasingReferenceService,
             RequestIdempotencyStore idempotency,
@@ -111,6 +115,7 @@ public class InvoiceCaseWriteService {
         this.draftRevisions = draftRevisions;
         this.invoiceLines = invoiceLines;
         this.evidenceBundles = evidenceBundles;
+        this.documentEvidence = documentEvidence;
         this.purchaseOrderSnapshots = purchaseOrderSnapshots;
         this.purchasingReferenceService = purchasingReferenceService;
         this.idempotency = idempotency;
@@ -254,15 +259,22 @@ public class InvoiceCaseWriteService {
         }
 
         Instant now = clock.instant();
+        // Only completed document references are part of the frozen evidence.
+        // Unfinished upload reservations are deliberately ignored and never
+        // block submission; they are not evidence until completion commits.
+        List<DocumentEvidence> documents = documentEvidence.evidenceForRevision(revision.id());
+        String payloadSchema = documents.isEmpty()
+                ? EvidenceBundlePayloadHasher.LEGACY_SCHEMA
+                : EvidenceBundlePayloadHasher.DOCUMENT_SCHEMA;
         EvidenceBundlePayloadHasher.CanonicalPayload canonical =
-                payloadHasher.canonicalize(invoiceCase, revision.revisionNumber(), lines);
+                payloadHasher.canonicalize(invoiceCase, revision.revisionNumber(), lines, documents);
         int nextVersion = evidenceBundles.maxVersionNumber(command.caseId()) + 1;
 
         revision.seal(now);
         draftRevisions.saveAndFlush(revision);
 
-        EvidenceBundle bundle = EvidenceBundle.freeze(
-                UUID.randomUUID(), command.caseId(), revision.id(), nextVersion, canonical.hash(), canonical.json(), now);
+        EvidenceBundle bundle = EvidenceBundle.freeze(UUID.randomUUID(), command.caseId(), revision.id(), nextVersion,
+                payloadSchema, canonical.hash(), canonical.json(), now);
         evidenceBundles.saveAndFlush(bundle);
 
         invoiceCase.transitionTo(InvoiceCaseStatus.SUBMITTED, now);
@@ -283,7 +295,8 @@ public class InvoiceCaseWriteService {
                 Map.of(
                         "status", invoiceCase.status().name(),
                         "evidenceBundleVersion", bundle.versionNumber(),
-                        "evidencePayloadHash", bundle.payloadHash()),
+                        "evidencePayloadHash", bundle.payloadHash(),
+                        "documentCount", documents.size()),
                 command.requestId(),
                 now));
         idempotency.recordResponse(SCOPE_SUBMIT, resourceKey, actor.username(), command.requestId(), 200, result);
@@ -349,6 +362,15 @@ public class InvoiceCaseWriteService {
         invoiceCase.attachDraftRevision(draft.id(), now);
         invoiceCase = invoiceCases.saveAndFlush(invoiceCase);
 
+        // Inherit exactly the document set of the prior submission into the new
+        // revision; files, documents and the prior bundle are never copied or
+        // modified. The prior draft must be the current one first, because the
+        // reference guard requires the new revision to be the current open draft.
+        List<UUID> inherited = inheritedDocumentIds(command.caseId(), latestBundle, payload);
+        for (UUID documentId : inherited) {
+            documentEvidence.reference(draft.id(), command.caseId(), documentId, now);
+        }
+
         InvoiceCaseDetail detail = InvoiceCaseDetail.from(invoiceCase, draft, copies);
         audit.record(new AuditEvent(
                 command.caseId(),
@@ -363,12 +385,65 @@ public class InvoiceCaseWriteService {
                 Map.of(
                         "status", invoiceCase.status().name(),
                         "revisionNumber", draft.revisionNumber(),
-                        "copiedLineCount", copies.size()),
+                        "copiedLineCount", copies.size(),
+                        "inheritedDocumentCount", inherited.size()),
                 command.requestId(),
                 now));
         idempotency.recordResponse(
                 SCOPE_OPEN_REVISION, resourceKey, actor.username(), command.requestId(), 201, detail);
         return CommandResult.created(detail);
+    }
+
+    /**
+     * The document ids a supplement inherits from the immediately prior
+     * submission. A legacy, document-less bundle inherits nothing (the V11
+     * backfilled references on its sealed revision are historical and are not
+     * retroactively promoted). A document-v2 bundle must freeze the exact
+     * authoritative reference set of its sealed revision, and that set is
+     * inherited. An unknown schema fails explicitly rather than guessing.
+     */
+    private List<UUID> inheritedDocumentIds(
+            UUID caseId, EvidenceBundle bundle, EvidenceBundlePayload payload) {
+        String schema = bundle.payloadSchema();
+        if (EvidenceBundlePayloadHasher.LEGACY_SCHEMA.equals(schema)) {
+            return List.of();
+        }
+        if (!EvidenceBundlePayloadHasher.DOCUMENT_SCHEMA.equals(schema)) {
+            throw new CaseStateConflictException(caseId, "unsupported evidence bundle schema " + schema);
+        }
+        List<EvidenceBundlePayload.DocumentLine> frozen = payload.documents();
+        if (frozen == null || frozen.isEmpty()) {
+            throw new CaseStateConflictException(caseId, "document-v2 evidence bundle has no frozen documents");
+        }
+        Map<UUID, DocumentEvidence> authoritative = new LinkedHashMap<>();
+        for (DocumentEvidence evidence : documentEvidence.evidenceForRevision(bundle.draftRevisionId())) {
+            authoritative.put(evidence.documentId(), evidence);
+        }
+        if (authoritative.size() != frozen.size()) {
+            throw new CaseStateConflictException(caseId,
+                    "the frozen document set does not match the sealed revision references");
+        }
+        List<UUID> inherited = new ArrayList<>(frozen.size());
+        for (EvidenceBundlePayload.DocumentLine line : frozen) {
+            UUID documentId;
+            try {
+                documentId = UUID.fromString(line.documentId());
+            } catch (RuntimeException e) {
+                throw new CaseStateConflictException(caseId, "the frozen document id is not a UUID");
+            }
+            DocumentEvidence evidence = authoritative.get(documentId);
+            if (evidence == null
+                    || !evidence.sourceDraftRevisionId().toString().equals(line.sourceDraftRevisionId())
+                    || !evidence.fileName().equals(line.fileName())
+                    || !evidence.mediaType().equals(line.mediaType())
+                    || evidence.sizeBytes() != line.sizeBytes()
+                    || !evidence.checksum().equals(line.checksum())) {
+                throw new CaseStateConflictException(caseId,
+                        "the frozen document metadata does not match the sealed revision references");
+            }
+            inherited.add(documentId);
+        }
+        return inherited;
     }
 
     private List<InvoiceLine> replaceLines(
