@@ -15,9 +15,17 @@ payment-export:
 # P2-05 reservations stay fail-closed by default; the enabled integration test
 # overrides this with a dynamic property. The disabled test asserts the default
 # reserves nothing.
+#
+# P2-06 relay also stays fail-closed by default in tests. Integration tests that
+# need the real RabbitMQ adapter override enabled and the broker properties with
+# dynamic properties; the scheduler never runs in tests.
 analysis:
   request:
     enabled: false
+  relay:
+    enabled: false
+    lease-duration: 60s
+    retry-delay: 30s
 
 # P1-09 webhook contract for tests. The integration tests sign with this secret;
 # production/local must supply MOCK_ERP_WEBHOOK_SECRET or the endpoint fails closed.

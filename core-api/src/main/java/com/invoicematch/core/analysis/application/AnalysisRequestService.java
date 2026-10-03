@@ -4,6 +4,7 @@ import com.invoicematch.core.analysis.domain.AnalysisRequestOutbox;
 import com.invoicematch.core.analysis.domain.AnalysisRun;
 import com.invoicematch.core.analysis.domain.AnalysisRunStatus;
 import com.invoicematch.core.analysis.domain.AnalysisWorkflow;
+import com.invoicematch.core.analysis.persistence.AnalysisOutboxStore;
 import com.invoicematch.core.analysis.persistence.AnalysisRequestOutboxRepository;
 import com.invoicematch.core.analysis.persistence.AnalysisRunRepository;
 import java.time.Clock;
@@ -35,6 +36,7 @@ public class AnalysisRequestService {
 
     private final AnalysisRunRepository runs;
     private final AnalysisRequestOutboxRepository outboxes;
+    private final AnalysisOutboxStore outboxStore;
     private final AnalysisRequestPayloadFactory payloads;
     private final AnalysisRequestProperties properties;
     private final Clock clock;
@@ -42,11 +44,13 @@ public class AnalysisRequestService {
     public AnalysisRequestService(
             AnalysisRunRepository runs,
             AnalysisRequestOutboxRepository outboxes,
+            AnalysisOutboxStore outboxStore,
             AnalysisRequestPayloadFactory payloads,
             AnalysisRequestProperties properties,
             Clock clock) {
         this.runs = runs;
         this.outboxes = outboxes;
+        this.outboxStore = outboxStore;
         this.payloads = payloads;
         this.properties = properties;
         this.clock = clock;
@@ -62,10 +66,10 @@ public class AnalysisRequestService {
         for (AnalysisRun run : superseded) {
             run.markStale(now);
             runs.save(run);
-            outboxes.findByAnalysisRunId(run.id()).ifPresent(outbox -> {
-                outbox.cancel();
-                outboxes.save(outbox);
-            });
+            // Conditional cancel, never entity dirty checking: this can only
+            // move READY/CLAIMED to CANCELLED and can never overwrite a claim
+            // or a terminal PUBLISHED row the relay owns.
+            outboxStore.cancelSuperseded(run.id());
         }
         if (!superseded.isEmpty()) {
             runs.flush();

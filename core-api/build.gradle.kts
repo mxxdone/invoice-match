@@ -25,6 +25,7 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-security")
     implementation("org.flywaydb:flyway-core")
     implementation("io.minio:minio:8.5.17")
+    implementation("com.rabbitmq:amqp-client:5.36.0")
     runtimeOnly("org.flywaydb:flyway-database-postgresql")
     runtimeOnly("org.postgresql:postgresql")
 
