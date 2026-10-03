@@ -28,6 +28,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
@@ -119,9 +120,12 @@ class RabbitAnalysisRequestRelayIntegrationTest extends AbstractAnalysisRelayInt
 
         RabbitAnalysisRequestPublisher publisher =
                 applicationContext.getBean(RabbitAnalysisRequestPublisher.class);
-        publisher.hooks = connection -> {
-            try (Channel channel = connection.createChannel()) {
-                channel.queueUnbind(QUEUE, EXCHANGE, ROUTING_KEY);
+        publisher.hooks = new RabbitAnalysisRequestPublisher.AnalysisPublishHooks() {
+            @Override
+            public void afterTopology(Connection connection) throws Exception {
+                try (Channel channel = connection.createChannel()) {
+                    channel.queueUnbind(QUEUE, EXCHANGE, ROUTING_KEY);
+                }
             }
         };
         try {
@@ -173,9 +177,12 @@ class RabbitAnalysisRequestRelayIntegrationTest extends AbstractAnalysisRelayInt
         RabbitAnalysisRequestPublisher publisher = new RabbitAnalysisRequestPublisher(realBrokerProperties());
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
-        publisher.hooks = connection -> {
-            entered.countDown();
-            release.await();
+        publisher.hooks = new RabbitAnalysisRequestPublisher.AnalysisPublishHooks() {
+            @Override
+            public void afterTopology(Connection connection) throws Exception {
+                entered.countDown();
+                release.await();
+            }
         };
         ExecutorService pool = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "outer-deadline-probe");
@@ -267,6 +274,61 @@ class RabbitAnalysisRequestRelayIntegrationTest extends AbstractAnalysisRelayInt
             assertThat(new String(first.getBody(), StandardCharsets.UTF_8)).isEqualTo(payload);
             assertThat(new String(second.getBody(), StandardCharsets.UTF_8)).isEqualTo(payload);
             assertThat(channel.basicGet(QUEUE, true)).isNull();
+        }
+    }
+
+    @Test
+    void closeRacingConnectionRegistrationAbortsTheLateHandleWithoutIo() throws Exception {
+        purgeQueue();
+        RabbitAnalysisRequestPublisher publisher = new RabbitAnalysisRequestPublisher(realBrokerProperties());
+        CountDownLatch created = new CountDownLatch(1);
+        AtomicReference<Connection> lateHandle = new AtomicReference<>();
+        publisher.hooks = new RabbitAnalysisRequestPublisher.AnalysisPublishHooks() {
+            @Override
+            public void afterConnectionCreated(Connection connection) throws Exception {
+                lateHandle.set(connection);
+                created.countDown();
+                // Held here while the caller closes, i.e. after the connection is
+                // owned/registered but before any channel or topology I/O.
+                Thread.sleep(3000);
+            }
+        };
+        ExecutorService pool = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "registration-race-probe");
+            thread.setDaemon(true);
+            return thread;
+        });
+        try {
+            Future<AnalysisPublishResult> pending = pool.submit(() ->
+                    publisher.publish(new AnalysisPublishCommand(UUID.randomUUID(), "{\"race\":1}")));
+            assertThat(created.await(10, TimeUnit.SECONDS)).isTrue();
+
+            publisher.close();
+
+            AnalysisPublishResult result = pending.get(15, TimeUnit.SECONDS);
+            assertThat(result).isInstanceOf(AnalysisPublishResult.Failed.class);
+
+            Connection handle = lateHandle.get();
+            assertThat(handle).as("the late connection handle was captured").isNotNull();
+            long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (handle.isOpen() && System.nanoTime() < deadline) {
+                Thread.sleep(25);
+            }
+            assertThat(handle.isOpen()).as("the late handle must be aborted, not left open").isFalse();
+
+            // No topology/publish happened: the queue is still empty.
+            try (Connection connection = rawFactory().newConnection();
+                    Channel channel = connection.createChannel()) {
+                channel.queueDeclare(QUEUE, true, false, false, null);
+                assertThat(channel.basicGet(QUEUE, true)).isNull();
+            }
+            // A closed publisher refuses new work without touching the slot.
+            assertThat(failureOf(publisher.publish(
+                            new AnalysisPublishCommand(UUID.randomUUID(), "{\"after-close\":1}"))))
+                    .isEqualTo(AnalysisPublishError.RELAY_CLOSED);
+        } finally {
+            pool.shutdownNow();
+            publisher.close();
         }
     }
 

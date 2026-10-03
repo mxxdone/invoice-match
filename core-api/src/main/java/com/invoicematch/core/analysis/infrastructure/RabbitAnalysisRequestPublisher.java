@@ -36,24 +36,32 @@ import org.slf4j.LoggerFactory;
  * can never touch a later one; the slot is released only when the attempt's
  * worker actually finishes.
  *
- * <p>An attempt creates and tears down its own connection and channel, declares
- * the durable exchange/queue/binding, publishes a persistent UTF-8 JSON message
- * with {@code mandatory=true} and {@code messageId=eventId}, and reports success
- * only on a publisher confirm ACK with no mandatory return. The whole attempt
+ * <p>An attempt creates and tears down its own connection. The connection is
+ * registered immediately after creation and re-checked for
+ * cancellation/close/deadline before any channel or topology I/O, so a caller
+ * that times out or closes while the connection is being created can never let
+ * the late handle start broker I/O. The durable exchange/queue/binding are then
+ * declared and a persistent UTF-8 JSON message is published with
+ * {@code mandatory=true} and {@code messageId=eventId}; success is only reported
+ * on a publisher confirm ACK with no mandatory return. The whole attempt
  * (connect, declare, publish, confirm) is bounded by a monotonic deadline; on
- * deadline the attempt flag is set and its connection aborted to break the I/O,
- * and a connection that completes after the deadline is closed by that same
- * flag. The Java client processes {@code basic.return} and the following
+ * deadline the attempt flag is set and its connection aborted to break the I/O.
+ * The Java client processes {@code basic.return} and the following
  * {@code basic.ack} synchronously in wire order on the connection reader thread,
  * so a confirm ACK guarantees any preceding mandatory return was already
  * observed — no sleep-based settle is used.
  *
- * <p>Teardown uses the SDK's bounded {@code abort(int,...)}/{@code close(...,
- * timeout)} overloads under a small cleanup budget, and executor shutdown is
- * bounded. A cleanup that does not complete is surfaced as a fixed
- * {@code CLEANUP_FAILED}. Automatic connection/topology recovery is disabled, so
- * only the relay republishes. No payload, credential or SDK exception message is
- * logged or returned.
+ * <p>Teardown is one path: the owned connection is torn down with the SDK's
+ * bounded {@code abort(code,message,timeout)} and a {@code shutdownExecutor} is
+ * configured so the final socket flush is bounded by the SDK's close timeout
+ * rather than a synchronous flush. The SDK's abort timeout only bounds the wait
+ * for {@code connection.close-ok}; the preceding close-frame write and the final
+ * flush are what the {@code shutdownExecutor} bounds, while the caller is
+ * already bounded by the outer deadline and the slot is held until the worker
+ * finishes (busy attempts are rejected, never queued). A teardown that does not
+ * complete is surfaced as a fixed {@code CLEANUP_FAILED}. Automatic
+ * connection/topology recovery is disabled, so only the relay republishes. No
+ * payload, credential or SDK exception message is logged or returned.
  */
 public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher, AutoCloseable {
 
@@ -71,6 +79,16 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
         thread.setDaemon(true);
         return thread;
     });
+    /**
+     * Bounds the SDK's final socket flush during teardown (rabbitmq-java-client
+     * issue #194); without it {@code SocketFrameHandler.close()} flushes
+     * synchronously.
+     */
+    private final ExecutorService cleanupFlushes = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "analysis-relay-cleanup");
+        thread.setDaemon(true);
+        return thread;
+    });
     /** Admission guard: at most one live attempt; never released on caller timeout. */
     private final AtomicBoolean busy = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -81,9 +99,10 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
     }
 
     /**
-     * Test seam: runs after a real connection is owned and before topology is
-     * declared. Production leaves it a no-op; package-private so it is not part
-     * of the adapter's public surface.
+     * Test seam: {@code afterConnectionCreated} runs after a real connection is
+     * registered and re-checked, {@code afterTopology} runs after the topology is
+     * declared/bound, both before the publish. Production leaves them no-ops;
+     * package-private so they are not part of the adapter's public surface.
      */
     AnalysisPublishHooks hooks = AnalysisPublishHooks.NONE;
 
@@ -142,6 +161,7 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
         factory.setConnectionTimeout(RPC_TIMEOUT_MILLIS);
         factory.setHandshakeTimeout(RPC_TIMEOUT_MILLIS);
         factory.setChannelRpcTimeout(RPC_TIMEOUT_MILLIS);
+        factory.setShutdownExecutor(cleanupFlushes);
         factory.setAutomaticRecoveryEnabled(false);
         factory.setTopologyRecoveryEnabled(false);
         return factory;
@@ -158,8 +178,14 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
             attempt.cancelAndAbort();
         }
         attempts.shutdownNow();
+        cleanupFlushes.shutdownNow();
+        awaitTermination(attempts);
+        awaitTermination(cleanupFlushes);
+    }
+
+    private void awaitTermination(ExecutorService executor) {
         try {
-            if (!attempts.awaitTermination(EXECUTOR_SHUTDOWN_MILLIS, TimeUnit.MILLISECONDS)) {
+            if (!executor.awaitTermination(EXECUTOR_SHUTDOWN_MILLIS, TimeUnit.MILLISECONDS)) {
                 log.warn("analysis relay publisher executor did not terminate within {}ms",
                         EXECUTOR_SHUTDOWN_MILLIS);
             }
@@ -188,9 +214,8 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
     }
 
     /**
-     * Independent per-attempt state: its own cancellation flag, its own
-     * connection handle and its own channel. Aborting an attempt can never affect
-     * another attempt.
+     * Independent per-attempt state: its own cancellation flag and its own
+     * connection handle. Aborting an attempt can never affect another attempt.
      */
     private final class Attempt {
 
@@ -198,7 +223,6 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
         private final AtomicReference<Connection> connection = new AtomicReference<>();
         private final long start = System.nanoTime();
-        private Channel channel;
 
         private Attempt(AnalysisPublishCommand command) {
             this.command = command;
@@ -225,6 +249,8 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
                         ? new AnalysisPublishResult.Failed(AnalysisPublishError.PUBLISH_TIMEOUT)
                         : new AnalysisPublishResult.Failed(classify(e));
             }
+            // One teardown path: the owned connection is torn down once, with the
+            // bounded SDK abort; closing the connection also closes its channel.
             if (!cleanup()) {
                 return new AnalysisPublishResult.Failed(AnalysisPublishError.CLEANUP_FAILED);
             }
@@ -232,25 +258,41 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
         }
 
         private AnalysisPublishResult doPublish() throws Exception {
-            if (pastDeadline()) {
+            if (closed.get()) {
+                return new AnalysisPublishResult.Failed(AnalysisPublishError.RELAY_CLOSED);
+            }
+            if (cancelled.get() || pastDeadline()) {
                 return new AnalysisPublishResult.Failed(AnalysisPublishError.PUBLISH_TIMEOUT);
             }
             AnalysisRelayProperties.Rabbit rabbit = properties.rabbit();
-            Connection live = connectionFactory().newConnection();
-            if (cancelled.get() || pastDeadline()) {
-                safeAbort(live);
-                return new AnalysisPublishResult.Failed(AnalysisPublishError.PUBLISH_TIMEOUT);
+            Connection candidate = connectionFactory().newConnection();
+            // Register immediately, then re-check: a cancel/close that raced the
+            // connection creation is seen here and the live handle is aborted
+            // before any channel or topology I/O begins.
+            connection.set(candidate);
+            if (closed.get() || cancelled.get() || pastDeadline()) {
+                abortConnection();
+                return closed.get()
+                        ? new AnalysisPublishResult.Failed(AnalysisPublishError.RELAY_CLOSED)
+                        : new AnalysisPublishResult.Failed(AnalysisPublishError.PUBLISH_TIMEOUT);
             }
-            connection.set(live);
 
-            channel = live.createChannel();
+            hooks.afterConnectionCreated(candidate);
+            if (closed.get() || cancelled.get() || pastDeadline()) {
+                abortConnection();
+                return closed.get()
+                        ? new AnalysisPublishResult.Failed(AnalysisPublishError.RELAY_CLOSED)
+                        : new AnalysisPublishResult.Failed(AnalysisPublishError.PUBLISH_TIMEOUT);
+            }
+
+            Channel channel = candidate.createChannel();
             channel.confirmSelect();
             channel.exchangeDeclare(rabbit.exchange(), EXCHANGE_TYPE, true);
             channel.queueDeclare(rabbit.queue(), true, false, false, null);
             channel.queueBind(rabbit.queue(), rabbit.exchange(), rabbit.routingKey());
 
-            hooks.afterTopology(live);
-            if (cancelled.get() || pastDeadline()) {
+            hooks.afterTopology(candidate);
+            if (closed.get() || cancelled.get() || pastDeadline()) {
                 return new AnalysisPublishResult.Failed(AnalysisPublishError.PUBLISH_TIMEOUT);
             }
 
@@ -301,31 +343,16 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
         }
 
         private boolean cleanup() {
-            boolean ok = true;
-            if (channel != null) {
-                try {
-                    channel.abort(AMQP.REPLY_SUCCESS, CLEANUP_MESSAGE);
-                } catch (Exception e) {
-                    ok = false;
-                }
-            }
             Connection live = connection.getAndSet(null);
-            if (live != null) {
-                ok = closeConnection(live) && ok;
+            if (live == null) {
+                return true;
             }
-            return ok;
-        }
-
-        private boolean closeConnection(Connection connection) {
             try {
-                if (cancelled.get()) {
-                    connection.abort(AMQP.REPLY_SUCCESS, CLEANUP_MESSAGE, CLEANUP_BUDGET_MILLIS);
-                } else {
-                    connection.close(AMQP.REPLY_SUCCESS, CLEANUP_MESSAGE, CLEANUP_BUDGET_MILLIS);
-                }
+                live.abort(AMQP.REPLY_SUCCESS, CLEANUP_MESSAGE, CLEANUP_BUDGET_MILLIS);
+                return true;
+            } catch (com.rabbitmq.client.AlreadyClosedException e) {
                 return true;
             } catch (Exception e) {
-                safeAbort(connection);
                 return false;
             }
         }
@@ -344,15 +371,21 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
     }
 
     /**
-     * Package-private test seam invoked after a real connection is owned and the
-     * topology is declared/bound and before the publish, so a test can hold an
-     * attempt past the outer deadline or unbind the routing key to force an
-     * ACK+return.
+     * Package-private test seam. {@code afterConnectionCreated} is invoked after
+     * a real connection is registered and re-checked (so a test can race a
+     * cancel/close exactly at registration); {@code afterTopology} is invoked
+     * after the topology is declared/bound and before the publish (so a test can
+     * unbind the routing key or hold the attempt past the outer deadline).
      */
     interface AnalysisPublishHooks {
-        AnalysisPublishHooks NONE = connection -> {
+
+        AnalysisPublishHooks NONE = new AnalysisPublishHooks() {
         };
 
-        void afterTopology(Connection connection) throws Exception;
+        default void afterConnectionCreated(Connection connection) throws Exception {
+        }
+
+        default void afterTopology(Connection connection) throws Exception {
+        }
     }
 }
