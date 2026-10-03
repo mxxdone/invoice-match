@@ -2,6 +2,8 @@
 import { createServer } from 'node:http';
 let dropRun = null;
 let failSource = null;
+let holdSource = null;
+let sourceHeld = false;
 const server = createServer(async (request, response) => {
   try {
     if (request.url === '/health') { response.end('ready'); return; }
@@ -13,6 +15,12 @@ const server = createServer(async (request, response) => {
       parts.push(chunk);
     }
     const body = Buffer.concat(parts);
+    if (request.url === '/control/state' && request.headers['x-verification-control'] === process.env.CONTROL_TOKEN) {
+      response.setHeader('content-type','application/json');response.end(JSON.stringify({ sourceHeld }));return;
+    }
+    if (request.url === '/control/hold-source' && request.headers['x-verification-control'] === process.env.CONTROL_TOKEN) {
+      holdSource=JSON.parse(body).runId;sourceHeld=false;response.end('configured');return;
+    }
     if (request.url === '/control/fail-source' && request.headers['x-verification-control'] === process.env.CONTROL_TOKEN) {
       failSource = JSON.parse(body).runId;
       response.end('configured'); return;
@@ -26,6 +34,10 @@ const server = createServer(async (request, response) => {
     if (failSource && request.url.startsWith(`/internal/analysis-runs/${failSource}/documents/`) && request.url.endsWith('/source')) {
       response.writeHead(503, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       response.end('{"code":"SOURCE_UNAVAILABLE"}'); return;
+    }
+    if (holdSource && request.url.startsWith(`/internal/analysis-runs/${holdSource}/documents/`) && request.url.endsWith('/source')) {
+      sourceHeld=true;const deadline=Date.now()+25000;
+      while(holdSource && Date.now()<deadline) await new Promise(done=>setTimeout(done,100));
     }
     const upstream = await fetch(process.env.CORE_API_URL + request.url, {
       method: request.method, body, redirect: 'error', signal: AbortSignal.timeout(30000),

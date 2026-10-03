@@ -67,6 +67,8 @@ node scripts/verify-p1-11.mjs --browser
 node scripts/compose-smoke-p1-11.mjs
 ```
 
+실제 분석 흐름 인수는 최신 `bootJar`와 worker 이미지 빌드 후 `WORKER_RUNTIME_IMAGE=<이미지> node scripts/verify-p2-08.mjs`로 실행한다.
+
 스크립트는 자기 검증 자원만 생성·회수하고 결과를 ignored `output/`에 남긴다. Compose smoke는 자체 빌드한다. 저장소 검증은 `node scripts/verify-p2-00.mjs`, 문서 API focused 검증은 `node scripts/verify-p2-01.mjs --focused`를 사용한다. 필요한 서비스만 실행하고 사용자 DB·volume은 초기화하지 않는다.
 
 ## 프로젝트 문서

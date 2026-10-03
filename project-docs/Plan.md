@@ -1,6 +1,6 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 진행 중 · 현재 Ticket P2-12**
+문서 상태: **Phase 2 완료 · Phase 3 착수 · 현재 Ticket P3-00**
 작성일: **2026-09-25**
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
 실행 방법: [`Implement.md`](./Implement.md)
@@ -17,7 +17,7 @@
 | 4 — Human-in-the-loop | 사람 대기와 재개를 안전하게 모델링 | LangGraph checkpoint, mapping interrupt, 새 증빙 재분석, resume 멱등성, stale 차단 | worker/message 점유 없이 정확한 version만 재개·반영 |
 | 5 — 최적화·장애 시연·포트폴리오 | 측정 가능한 개선과 재현 가능한 설명 완성 | 조회·인덱스 실험, 부하·경합·장애 주입, ERP 대사, 관측성, README/ERD/보고서 | 5~7분 시연, Docker Compose 재현, 성능·AI 평가 결과와 trade-off 설명 |
 
-Phase 2는 사용자 착수 지시(2026-10-02)에 따라 아래 Ticket 순서로 진행한다. Phase 1 자동 인수와 CI는 통과했으며, 사람의 5~7분 시연 미실측은 별도 확인 항목으로 유지한다. Phase 3~5의 Ticket은 직전 Phase 완료 검토 후 상세화한다.
+Phase 2는 사용자 착수 지시(2026-10-02)에 따라 아래 Ticket 순서로 진행한다. Phase 1 자동 인수와 CI는 통과했으며, 사람의 5~7분 시연 미실측은 별도 확인 항목으로 유지한다. Phase 3의 Ticket은 아래 계약으로 구체화했다. Phase 4~5는 직전 Phase 완료 검토 후 상세화한다.
 
 ### 후속 설계 결정·보류 (2026-10-01)
 
@@ -144,27 +144,85 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 ### P2-12 — 페이즈2 통합 인수
 
-**상태: 진행 중.** 기존 검증 경로를 확장하고 필요한 기존 문서만 갱신한다. 새 제품 기능·검증 프레임워크는 추가하지 않는다.
+**상태: 완료.** 전체 회귀와 실제 broker 중단·worker 강제 종료·lease 복구·중복·부분 결과·DLQ·운영 재처리를 인수했다. 후속 진입점은 `scripts/verify-p2-08.mjs`다. 임시 검증 자원은 회수했다.
 
-- 전체 backend `test bootJar`, Web lint/test/build, 실제 Linux parser/wheel/CLI와 실제 서비스 분석 인수를 통과한다. 성공한 국소 검증은 그대로 계승하며 새 변경이나 우려가 있는 범위만 반복한다.
-- 기존 분석 인수에 broker 중단 중 제출→Outbox 보존→복구 전달과 실행 중 worker 강제 종료→lease/defer→같은 eventId 완료를 추가한다. 정상·중복·부분 결과/응답 유실·typed failure·3회 소진/DLQ·운영 재처리·STALE 회귀를 유지한다. 업무 승인·지급 전이는 분석 재시도로 바뀌지 않는다.
-- Head가 실제 production 의존성과 책임을 검수한다. 새 architecture scanner를 만들지 않는다. 자신이 만든 임시 자원만 정리하고 기존 서버·DB·volume을 보존한다.
-- Spec/Plan/README에서 구현 결과와 충돌하는 문구를 정정하고 EngineeringNotes에는 코드만으로 설명하기 어려운 설계 이유만 남긴다. 원격 CI와 PC 인쇄 미리보기는 사용자의 별도 확인 항목으로 유지한다.
+원격 CI 결과와 PDF 인쇄 버튼→PC 인쇄 미리보기는 사용자 요청에 따라 별도 일괄 확인한다. 프린터 출력은 인수 조건이 아니다. Azure 스캔 OCR·AI 추출/매핑·근거는 Phase 3에서 다룬다.
 
-### Phase 2 남은 Ticket
+## 4. Phase 3 Backlog
 
-Phase 2는 P2-12에서 마무리한다. 현재 Ticket 인수 뒤 다음 계약을 구체화하며 Head가 순차 구현한다.
+Phase 3는 **P3-00~P3-09**를 Head가 순차 구현한다. Spec 8·9·18·24.3절과 아래 계약을 따른다. 구현 세부 목록·실행 로그는 복제하지 않는다.
 
-| Ticket | 남은 범위 |
-|---|---|
-| P2-09 | 제한 재시도·backoff/jitter·DLQ와 실패 이력의 영속화 |
-| P2-10 | 운영자 권한의 작업 조회·재처리와 운영 화면 |
-| P2-11 | 만료 임시 upload 정리; 확정 원본·동결 참조 보존 |
-| P2-12 | 중단·중복·장애·재처리 통합 인수와 필요한 기존 문서 갱신 |
+### 공통 계약
 
-원격 CI 결과와 PDF 인쇄 버튼→PC 인쇄 미리보기는 사용자 요청에 따라 별도 일괄 확인한다. 프린터 출력은 인수 조건이 아니다. Azure 스캔 OCR·AI 추출/매핑·근거는 Phase 3 계약에서 다룬다.
+- AI는 처리 제안이다. 원본·수동 입력·P2 파서 결과·대사 결과를 변경하지 않으며 매핑 확정·승인·배분·지급 Tool을 제공하지 않는다. 사람의 기존 업무 action만 업무 효력을 갖는다.
+- 현재 증빙의 파서 성공과 사람이 실행한 최신 대사 결과가 준비된 뒤 OPERATOR가 분석을 예약한다. 같은 증빙이라도 새 대사·매핑·구매 snapshot은 새 입력이다. 제안은 증빙/대사/구매 hash와 매핑 watermark에 묶고, 현재성과 저장된 출처를 서버가 검증한다.
+- P2의 `document-parser-v1` wire/결과와 승인 API는 보존한다. AI 실행은 별도 `ai-review-v1` 작업과 RabbitMQ routing으로 격리한다. DB 예약·실행 lease·단계 결과·호출 예산을 보존하고 중복 전달에는 동일 결과를 재생한다. 외부 모델 호출 exactly-once는 주장하지 않는다.
+- application은 권한·검증·예산·transaction orchestration, persistence는 SQL·잠금·조건부 저장, infrastructure는 SDK/HTTP/broker/process를 맡는다. domain은 바깥 계층에 의존하지 않는다. Head가 실제 diff를 검수하고 새 architecture scanner는 만들지 않는다.
+- AI는 기본 비활성화다. 모델/provider/인증/요금 단가는 환경 설정이며 특정 모델이나 유료 전환을 가정하지 않는다. live OCR/LLM 평가는 사용자가 준비한 설정과 비용 한도에서만 실행한다. mock/offline 통과를 실제 AI 정확도로 보고하지 않는다.
+- 단일 시연 회사의 정책 scope를 서버에서 고정한다. 계약과 발주 연결, 공급사, 문서 version, 유효 기간, 읽기 권한을 검색 전에 적용한다. 청구서에서 추출한 계약번호·날짜만으로 scope를 넓히지 않는다. 적용일은 동결 제출일이며 실제 계약 적용 기준이 다른 경우 확정된 계약 metadata로 바꾼다.
+- 반복·도구·입출력 토큰·응답 크기·전체 wall time은 유한하다. 성공한 단계는 immutable checkpoint로 재사용하고, 불확실한 외부 호출도 예약 예산을 소비한다. 초과/근거 부족/충돌은 검토 필요 상태로 끝낸다.
 
-## 4. Ticket 의존성
+### P3-00 — AI 실행과 immutable 처리 제안 계약
+
+**상태: 진행 중.** 현재 parser run + 특정 최신 MatchResult를 입력으로 하는 AI 예약·context hash·lease·실행 예산·단계 checkpoint·최종 Proposal 저장을 추가한다. OPERATOR 예약은 actor-scoped idempotency/audit와 같은 transaction이다. parser 실패·구버전·다른 사건·변경된 context는 거부한다. 새 대사/보완은 옛 제안을 조회 이력으로만 보존한다.
+
+인수: 실제 PostgreSQL에서 예약 replay/동시성/audit rollback, 입력 composite FK/identity·결과 immutable, 만료 token fencing, 예산 소진과 stale 결과 무효를 검증한다. 업무 case version/배분/지급 효과는 0이다.
+
+### P3-01 — Azure 스캔 OCR adapter
+
+**상태: 예정.** `prebuilt-invoice`의 고정 REST version으로 빈 text layer PDF를 처리한다. Core가 실행 권한과 frozen metadata를 검사하여 제공한 원본만 전송한다. F0의 4 MB·2페이지를 넘으면 유료 전환이나 조용한 잘림 없이 검토 필요로 처리한다. operation URL은 설정한 HTTPS origin/경로만 허용하고 polling·429/5xx·timeout·응답 크기를 제한한다. OCR text/field/page/span/좌표와 provider version은 별도 checkpoint이며 기존 parser 결과를 덮어쓰지 않는다.
+
+인수: 실제 local HTTP fixture로 submit/poll/정상·제한·실패·다른 origin·redirect·과대 응답과 위치 검증. 실제 Azure 품질은 설정 제공 후 평가셋에서 별도로 측정한다.
+
+### P3-02 — Document Agent와 구조·숫자·출처 검증
+
+**상태: 예정.** PDF text layer/XLSX cell/OCR의 출처를 유지한 header·line 후보를 구조화한다. 모델 출력은 strict schema로 받고 원문에서 찾을 수 있는 page/span 또는 sheet/cell을 요구한다. 날짜·통화·수량·단가 normalization과 산술 검사는 일반 코드다. 잘못된 출력 repair는 전체 예산 안에서 최대 한 번이며, 후보를 수동 청구 입력에 자동 반영하지 않는다.
+
+인수: 한국어, 숫자 구분자·통화·날짜, 잘못된 page/cell/quote, 중복/unknown field, injection·과대 출력·timeout·repair 소진 회귀. 원문 부재는 추측으로 채우지 않는다.
+
+### P3-03 — 사건 범위 읽기 전용 Tool
+
+**상태: 예정.** 사건에 연결된 발주·확정 검수·품목 후보·동일 공급사의 확정 매핑·계약 metadata를 제공한다. scope는 서버 context에서 파생하고 모델이 전달한 임의 사건/발주/공급사로 바꾸지 않는다. 결과 개수·문자 수·호출 수를 제한하고 사용자·비밀·저장소 key를 제외한다. deterministic matching 실행·승인·지급 쓰기는 노출하지 않는다.
+
+인수: 기계 인증/사람 권한 분리, 다른 사건/공급사 차단, stale context 차단, bounded 결과와 쓰기 Tool 부재.
+
+### P3-04 — 정책 catalog와 exact pgvector hybrid 검색
+
+**상태: 예정.** 가상 계약/지침의 immutable 문서 version·유효 기간·페이지/문단과 계약 연결을 저장한다. 권한 있는 ingestion에서 chunk와 embedding model/version/dimension을 기록하고 검색 model과 일치시킨다. scope 필터 후 lexical + exact vector를 결합한다. 기존 일반 PostgreSQL/P2 실행은 AI 비활성 상태로 계속 동작하며 pgvector는 opt-in 구성과 실제 vector DB 검증을 둔다. HNSW/reranker/Redis는 측정 근거 없이 추가하지 않는다.
+
+인수: 실제 pgvector에서 회사·공급사·계약·유효일·version 필터, model/dimension 불일치, 동률 순서, top-k 제한, lexical/vector/hybrid 기준선. 근거 없음과 충돌을 별도로 반환한다.
+
+### P3-05 — Item Mapping Agent
+
+**상태: 예정.** 원문 품목과 읽기 전용 품목/과거 확정 매핑을 사용해 최대 3개 후보·이유·출처를 제시한다. 반환 ID는 서버가 제공한 후보에 속해야 하며 A3/A4·규격 차이와 복수 후보는 검토를 요구한다. confidence를 확정 권한으로 사용하지 않는다.
+
+인수: 별칭·한국어·규격 혼동·없는 품목·과거 공급사 범위·모호함·후보 없음과 Recall@1/3 evaluator.
+
+### P3-06 — Evidence/Resolution Agent
+
+**상태: 예정.** 검증된 대사 예외와 검색 근거로 보완요청·승인검토·거절검토 초안을 만든다. 근거 ID/version/page/paragraph/quote를 저장된 적용 문단과 대조한다. 무근거·충돌에는 `INSUFFICIENT_EVIDENCE`/`REVIEW_REQUIRED`를 요구하고 금액·잔량은 코어 사실을 인용한다. 결론을 업무 상태로 반영하지 않는다.
+
+인수: 가짜 citation, 구버전 정책, 잘못된 수치, 근거 없음/충돌, prompt injection과 무단 Tool 거부. 동일 입력의 canonical hash/replay 보존.
+
+### P3-07 — AI consumer와 복구·예산 연결
+
+**상태: 예정.** 위 단계들을 제한된 실행 순서로 연결하고 별도 RabbitMQ queue의 prefetch=1/manual ACK를 사용한다. 단계마다 lease/currentness를 재확인하고 성공 checkpoint는 재사용한다. 요청 예약이 전달 전 장애에도 보존되고, 중단·응답 유실·중복·외부 실패는 제한 실행 예산과 durable checkpoint로 수렴한다. 장시간 사람 대기/graph resume는 P4다.
+
+인수: 실제 broker/Core/설치 worker에서 checkpoint 후 종료, 모델 응답/최종 저장 응답 유실, lease reclaim, 429/timeout/소진, 중복 완료와 stale 차단. 외부 호출·tool/token budget은 재claim에도 초기화하지 않는다.
+
+### P3-08 — AI 검토 화면과 선택적 freeze
+
+**상태: 예정.** 기존 사건 상세에 추출 후보·품목 후보·근거·초안·분석 상태/실행 출처를 보여준다. 예약은 OPERATOR만 가능하고 기존 사람 action을 사용한다. 현재 제안만 새 ReviewSnapshot의 선택적 근거로 동결하며 승인 검증은 snapshot에 들어간 정확한 Proposal/hash를 재구성한다. 제안이 없는 기존 v1/v2 snapshot과 승인 API의 동작/hash를 보존한다.
+
+인수: 실제 서비스/브라우저에서 정상·없는 제안·실패·stale·보완/새 매핑, 늦은 응답/세션 교체. 실제 PostgreSQL 승인 forged proposal/다른 사건/hash 변조 거부와 legacy 승인 회귀. 인쇄/remote CI는 기존 사용자 확인 항목이다.
+
+### P3-09 — 평가와 Phase 3 통합 인수
+
+**상태: 예정.** 사람이 작성·수정한 표현과 프로그램으로 만든 layout/noise/구버전/무근거 사례를 포함한 고정 60~100건 평가셋을 유지한다. text/cell/OCR·품목·검색·처리 제안의 gold를 분리하고 동일 사례에 비-AI 기준선과 configured AI를 비교한다. field/numeric/location 정확도, Recall@1/3/k·version, 기대 분기·무근거 주장, 호출/토큰/재시도·latency/요금 단가 기반 비용을 측정한다. 설정 미제공이면 live 미측정을 명시하고 offline contract/기준선만 공개한다. 사람 검토시간은 실제 측정 전 작성하지 않는다.
+
+인수: backend 전체 test/bootJar, Web lint/test/build, 실제 Linux worker/wheel/CLI, 실제 pgvector/broker 연결 및 AI 오류 회귀. code-verifiable 설명을 늘리지 않고 기존 Spec/Plan/README와 의미 있는 EngineeringNotes만 갱신한다. 실제 AI 품질이 채택 기준을 충족하기 전 기본 활성화하지 않는다.
+
+## 5. Ticket 의존성
 
 ```mermaid
 flowchart TD
@@ -186,7 +244,7 @@ flowchart TD
     P110 --> P111[P1-11 통합 인수]
 ```
 
-## 5. 유지보수 Ticket
+## 6. 유지보수 Ticket
 
 ### R1-01 — 백엔드 3계층/클린코드 정리
 

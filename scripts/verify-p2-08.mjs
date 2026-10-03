@@ -104,8 +104,8 @@ async function makeCase(kinds = ['pdf', 'xlsx']) {
   const runId = await sql(`select id from analysis_run where invoice_case_id='${id}' and input_version=1`);
   return { id, runId, caseStatus: submitted.status, caseVersion: submitted.version };
 }
-async function finished(runId, status = 'COMPLETED') {
-  await wait(status, async () => (await sql(`select status from analysis_run where id='${runId}'`)) === status);
+async function finished(runId, status = 'COMPLETED', timeoutMs = 120000) {
+  await wait(status, async () => (await sql(`select status from analysis_run where id='${runId}'`)) === status, timeoutMs);
 }
 async function rabbitCommand(args) {
   // A root CLI during first boot can create a root-owned .erlang.cookie before
@@ -169,7 +169,8 @@ try {
       { RABBITMQ_DEFAULT_USER: rabbitUser, RABBITMQ_DEFAULT_PASS: rabbitPassword });
   await wait('rabbit', async () => {
     assert.equal(await command(['inspect', '--format', '{{.State.Running}}', rabbit]), 'true', 'RabbitMQ exited');
-    return (await rabbitCommand(['rabbitmq-diagnostics', '-q', 'ping'])).code === 0;
+    return (await rabbitCommand(['rabbitmq-diagnostics', '-q', 'check_running'])).code === 0
+        && (await rabbitCommand(['rabbitmq-diagnostics', '-q', 'check_port_connectivity'])).code === 0;
   });
   const nodeImage = process.env.NODE_RUNTIME_IMAGE ?? 'invoice-match-mock-erp:latest';
   await container('purchasing', nodeImage, ['--entrypoint', 'node', '-v', join(repo, 'mock-purchasing', 'server.js') + ':/verify/server.cjs:ro'],
@@ -277,6 +278,46 @@ try {
   assert.equal(await sql(`select status from analysis_run where id='${stale.runId}'`), 'STALE');
   assert.equal(await sql(`select count(*) from analysis_document_result where run_id='${stale.runId}'`), '0');
   record('real supplement makes old input STALE before consumer reads source');
+  await command(['stop','-t','60',worker]);
+  await command(['stop','-t','10',rabbit]);
+  const brokerInterrupted=await makeCase(['pdf']);
+  const originalEvent=await sql(`select id from analysis_request_outbox where analysis_run_id='${brokerInterrupted.runId}'`);
+  await wait('bounded failed publish recorded',async()=>Number(await sql(`select attempt_count from analysis_request_outbox where analysis_run_id='${brokerInterrupted.runId}'`))>=1
+      && await sql(`select status from analysis_request_outbox where analysis_run_id='${brokerInterrupted.runId}'`)==='READY',30000);
+  assert.equal(await sql(`select count(*) from analysis_run where id='${brokerInterrupted.runId}' and status='QUEUED'`),'1');
+  await command(['start',rabbit]);
+  await wait('restarted broker',async()=>(await rabbitCommand(['rabbitmq-diagnostics','-q','check_running'])).code===0
+      && (await rabbitCommand(['rabbitmq-diagnostics','-q','check_port_connectivity'])).code===0);
+  await startWorker();await finished(brokerInterrupted.runId);await queueEmpty();
+  assert.equal(await sql(`select id from analysis_request_outbox where analysis_run_id='${brokerInterrupted.runId}'`),originalEvent);
+  assert.equal(await sql(`select execution_attempt from analysis_run where id='${brokerInterrupted.runId}'`),'1');
+  assert.equal(await sql(`select version from invoice_case where id='${brokerInterrupted.id}'`),String(brokerInterrupted.caseVersion));
+  record('broker stop during submission: durable outbox, bounded failed publish and same event after restart');
+  await command(['stop','-t','60',worker]);
+  const interrupted=await makeCase(['pdf']);
+  const hold=await fetch(`http://127.0.0.1:${ports.proxy}/control/hold-source`,{method:'POST',
+    headers:{'x-verification-control':controlToken},body:JSON.stringify({runId:interrupted.runId}),signal:AbortSignal.timeout(5000)});
+  assert(hold.ok);await startWorker();
+  await wait('worker holds a real execution/source request',async()=>{
+    const state=await fetch(`http://127.0.0.1:${ports.proxy}/control/state`,{
+      headers:{'x-verification-control':controlToken},signal:AbortSignal.timeout(5000)});
+    return state.ok && (await state.json()).sourceHeld;
+  });
+  const abandonedToken=await sql(`select execution_token from analysis_run where id='${interrupted.runId}'`);
+  await command(['kill',worker]);
+  assert.equal(await sql(`select count(*) from analysis_document_result where run_id='${interrupted.runId}'`),'0');
+  const unhold=await fetch(`http://127.0.0.1:${ports.proxy}/control/hold-source`,{method:'POST',
+    headers:{'x-verification-control':controlToken},body:JSON.stringify({runId:null}),signal:AbortSignal.timeout(5000)});
+  assert(unhold.ok);await startWorker();
+  await wait('busy redelivery checkpoint',async()=>await sql(`select count(*) from analysis_recovery_dispatch where analysis_run_id='${interrupted.runId}' and dedup_key like 'defer:%'`)==='1');
+  assert.equal(await sql(`select execution_token from analysis_run where id='${interrupted.runId}'`),abandonedToken);
+  await finished(interrupted.runId,'COMPLETED',180000);await queueEmpty();
+  assert.equal(await sql(`select execution_attempt from analysis_run where id='${interrupted.runId}'`),'2');
+  assert.equal(await sql(`select count(*) from analysis_document_result where run_id='${interrupted.runId}'`),'1');
+  assert.equal(await sql(`select count(*) from analysis_request_outbox where analysis_run_id='${interrupted.runId}'`),'1');
+  assert.equal(await sql(`select version from invoice_case where id='${interrupted.id}'`),String(interrupted.caseVersion));
+  record('worker killed during source I/O: unacked redelivery, durable defer, lease reclaim and one result');
+
   if (process.env.VERIFY_UI_HOLD_SECONDS) {
     const seconds=Number(process.env.VERIFY_UI_HOLD_SECONDS);
     assert(Number.isInteger(seconds) && seconds>0 && seconds<=300);

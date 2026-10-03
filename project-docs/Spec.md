@@ -378,7 +378,7 @@ P2-02부터 제출은 현재 작성 차수의 완료 문서 ID·원래 작성 �
 5. 모든 라인을 배분할 수 있으면 ReceiptAllocation과 ReviewDecision을 생성한다. 일부 라인만 배분하지 않는다.
 6. PaymentRequest와 OutboxEvent를 같은 DB 트랜잭션에 저장한다.
 7. 사건을 `EXPORT_PENDING`으로 변경한다.
-8. commit 후 relay가 OutboxEvent를 인계한다. Phase 1은 Mock ERP HTTP adapter를 직접 호출하고 Phase 2부터 RabbitMQ를 사용한다.
+8. commit 후 지급 Outbox relay가 Mock ERP HTTP adapter로 인계한다. Phase 2의 RabbitMQ relay는 별도 분석 요청에 사용하며 지급 인계 계약을 변경하지 않는다.
 
 AI 분석 또는 외부 API 호출 중에는 DB 잠금을 유지하지 않는다.
 
@@ -405,7 +405,7 @@ Redis 분산락은 사용하지 않는다. V1의 핵심 공유 자원은 단일 
 | `PaymentRequestExportRequested` | Spring integration | ERP adapter | 지급요청 인계 |
 | `PaymentExportResultReceived` | Webhook controller | Spring integration | 외부 결과 반영 |
 
-Phase 1은 지급요청 인계 유실을 막기 위한 최소 transactional Outbox와 인프로세스 relay만 사용한다. Phase 2에서 RabbitMQ, 제한 재시도, DLQ와 운영자 재처리를 추가한다.
+지급요청은 기존 HTTP Outbox relay를 유지한다. 분석 요청은 별도 transactional Outbox·RabbitMQ relay·제한 실행 재시도·DLQ·운영자 재처리를 사용한다. broker 발행 예약은 연결 복구까지 보존하고 개별 발행 시도에는 제한 시간을 둔다.
 
 ### 14.2 멱등 key
 
@@ -413,7 +413,7 @@ Phase 1은 지급요청 인계 유실을 막기 위한 최소 transactional Outb
 |---|---|
 | 업로드 완료 | `invoiceCaseId + documentId + checksum` |
 | 분석 실행 | `invoiceCaseId + evidenceBundleVersion + workflowVersion` |
-| 분석 결과 반영 | `analysisRunId + inputVersion` |
+| 문서 파싱 결과 반영 | `analysisRunId + documentId` (같은 원본·parser version·결과 hash의 replay만 허용) |
 | Human interrupt 재개 | `analysisRunId + interruptId + reviewVersion` |
 | 지급요청 생성 | `invoiceCaseId + reviewSnapshotId` |
 | ERP 인계 | `paymentRequestId + exportVersion` |
@@ -426,7 +426,7 @@ Phase 1은 지급요청 인계 유실을 막기 위한 최소 transactional Outb
 - 네트워크 timeout, 429, 일시적 5xx는 exponential backoff와 jitter로 제한 재시도한다.
 - 필수 필드 누락, 잘못된 파일, 지원하지 않는 포맷은 자동 재시도하지 않는다.
 - 재시도 횟수 소진 후 DLQ로 이동시키고 운영자가 원인을 확인한다.
-- 운영자 재처리는 새 업무 사건을 만들지 않고 기존 idempotency key와 실행 이력을 사용한다.
+- 운영자 재처리는 현재 DEAD_LETTERED 실행에 추가 3회 예산을 예약하고 최초 eventId·동결 입력·부분 결과·실패 이력을 보존한다. 운영 요청 자체는 actor와 requestId로 멱등 처리하고 기대 실행 횟수·원인 수정 사유·감사를 같은 transaction에 저장한다. 파싱 FAILED는 보완 제출 대상이다.
 - worker는 결과 또는 checkpoint를 영속화한 뒤 메시지를 ack한다.
 - 외부 LLM 호출 성공 후 결과 저장 전에 worker가 종료되면 LLM 호출과 비용은 중복될 수 있다. 업무 결과의 중복 반영 방지와 외부 호출 exactly-once는 별개의 보장이다.
 
@@ -437,13 +437,13 @@ P2-01 접수 기준선은 PDF/XLSX 파일당 10MiB, 작성 차수당 완료 문�
 1. Spring이 사건 권한과 파일 조건을 확인하고 짧은 수명의 presigned upload URL을 발급한다.
 2. 브라우저가 S3 또는 MinIO로 직접 업로드한다.
 3. 업로드 완료 API가 object 크기·media type·checksum·소유 사건을 확인한다.
-4. 같은 object key를 덮어쓰지 않고 새 Document version을 만든다.
-5. PDF text layer를 먼저 읽고 스캔 페이지만 OCR한다.
+4. 임시 객체를 별도의 불변 원본 키로 복사하고 Document를 등록한다. 새 파일은 새 식별자를 사용한다.
+5. PDF text layer를 먼저 읽는다. Phase 2는 빈 페이지를 경고로 남기고, 스캔 OCR은 Phase 3에서 추가한다.
 6. Excel은 셀·행·시트 구조를 직접 파싱한다.
 7. 파일 수, 크기, PDF 페이지 수, 압축 해제 크기에 상한을 둔다.
-8. 제출되지 않은 임시 object는 유예기간 후 배치로 정리한다.
+8. opt-in 배치가 예약 만료 후 기본 24시간(최소 1시간)을 지난 정확한 임시 업로드 사본만 정리한다. 등록 원본·metadata·동결 참조는 보존한다.
 
-P2-04는 Python worker에서 PDF text layer·XLSX 원시 구조를 읽고 Document ID/checksum·parser version·페이지 또는 시트/행/셀 위치를 보존한다. 파싱 산출물은 청구/승인 데이터를 자동 수정하지 않는다. 빈 PDF text는 페이지별 경고이며 OCR·AI 처리는 별도다. 기본 한도는 PDF 100페이지, XLSX 20시트·시트당 10,000행/256열·전체 100,000 non-empty 셀, ZIP 1,000 entries·실제 해제 총 50MiB/entry 10MiB·압축비 100:1, 추출 text/value 1MiB·JSON 4MiB, 문서별 20초/별도 process 512MiB이다. 과도하거나 잘못된 파일은 부분 성공으로 가장하지 않는다. 상세 산출물·실행/검증 계약은 Plan P2-04에서 고정한다.
+Python 파서는 Document ID/checksum·parser version·페이지 또는 시트/행/셀 위치를 보존한다. 잘못되거나 한도를 넘은 파일은 부분 성공으로 가장하지 않으며, 파싱 결과는 청구·승인 데이터를 자동 수정하지 않는다. 실행/구조 한도와 설치 검증 방법은 [worker README](../ai-worker/README.md) 및 구현이 기준이다.
 
 ## 16. 시스템 아키텍처
 
@@ -455,12 +455,13 @@ flowchart LR
     S --> X[Outbox Relay]
     X --> R[RabbitMQ]
     R --> W[Python AI Worker]
-    W --> O
-    W --> L[External LLM]
-    W --> V[(pgvector)]
+    S --> O
+    W -->|실행 권한 기반 원본 API| S
+    W -.-> L[External LLM · Phase 3]
+    S -.-> V[(pgvector · Phase 3)]
     W -->|Read-only Tools| S
     W -->|분석 결과 API| S
-    R --> E[ERP Adapter]
+    S --> E[지급 HTTP Outbox Relay]
     E --> M[Mock ERP]
     M -->|Webhook| S
 ```
@@ -470,12 +471,12 @@ flowchart LR
 | 영역 | 선택 |
 |---|---|
 | 업무 백엔드 | Java 21, Spring Boot 3, Spring Data JPA, Spring Security |
-| AI worker | Python 3.12, FastAPI, LangGraph, Pydantic |
-| 데이터베이스 | PostgreSQL, pgvector |
+| Worker | Python 3.12 격리 parser·RabbitMQ consumer; LangGraph는 Phase 4 |
+| 데이터베이스 | PostgreSQL; pgvector는 Phase 3 |
 | 메시징 | RabbitMQ |
 | 파일 | S3 호환 저장소, 로컬 개발은 MinIO |
 | 프런트엔드 | Next.js + TypeScript |
-| 관측성 | OpenTelemetry trace ID, Prometheus metrics, 구조화 로그 |
+| 관측성 | 현재 request trace ID; OpenTelemetry·Prometheus 확장은 Phase 5 |
 | 테스트 | JUnit 5, Testcontainers, Pytest, WireMock/MockServer, k6 또는 Gatling |
 | 배포 | Docker Compose, GitHub Actions, 단일 VM 또는 소형 cloud 환경 |
 
@@ -483,7 +484,7 @@ flowchart LR
 
 - `web`: 업무 화면
 - `core-api`: Spring 업무 코어와 integration API
-- `ai-worker`: 문서·RAG·LangGraph 실행
+- `ai-worker`: 문서 파싱 consumer; AI/RAG는 Phase 3, LangGraph는 Phase 4 확장
 - `outbox-relay`: 초기에는 Spring process 내부 scheduler로 시작 가능
 - `postgres`
 - `rabbitmq`
@@ -559,7 +560,7 @@ HTTP 경로와 DTO는 controller 코드가 기준이다. 미구현 기능의 end
 
 - 실행중·재시도·실패·DLQ 작업
 - 재처리 버튼과 실패 원인
-- queue backlog와 평균 대기시간
+- queue backlog와 평균 대기시간은 Phase 5 관측성에서 추가한다.
 - ERP 인계 실패·결과불명 사건
 
 ## 20. 조회 성능과 데이터 접근
