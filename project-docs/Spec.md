@@ -443,6 +443,8 @@ P2-01 접수 기준선은 PDF/XLSX 파일당 10MiB, 작성 차수당 완료 문�
 7. 파일 수, 크기, PDF 페이지 수, 압축 해제 크기에 상한을 둔다.
 8. 제출되지 않은 임시 object는 유예기간 후 배치로 정리한다.
 
+P2-04는 Python worker에서 PDF text layer·XLSX 원시 구조를 읽고 Document ID/checksum·parser version·페이지 또는 시트/행/셀 위치를 보존한다. 파싱 산출물은 청구/승인 데이터를 자동 수정하지 않는다. 빈 PDF text는 페이지별 경고이며 OCR·AI 처리는 별도다. 기본 한도는 PDF 100페이지, XLSX 20시트·시트당 10,000행/256열·전체 100,000 non-empty 셀, ZIP 1,000 entries·실제 해제 총 50MiB/entry 10MiB·압축비 100:1, 추출 text/value 1MiB·JSON 4MiB, 문서별 20초/별도 process 512MiB이다. 과도하거나 잘못된 파일은 부분 성공으로 가장하지 않는다. 상세 산출물·실행/검증 계약은 Plan P2-04에서 고정한다.
+
 ## 16. 시스템 아키텍처
 
 ```mermaid

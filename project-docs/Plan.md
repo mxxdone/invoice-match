@@ -306,6 +306,28 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 **의존성/제외:** P2-02 로컬 인수·원격 push 완료(원격 CI 결과 미확인). 파서/OCR·RabbitMQ·AI·문서 교체/삭제·사용자 서비스 종료는 제외한다. Worker는 feature에만 commit하며 main 통합·push는 Head가 맡는다.
 
+### P2-04 — 제한된 자원의 PDF text layer·XLSX 구조 파서
+
+**진행 상태:** 착수(2026-10-03). P2-03 통합·push된 `010f583`에서 분기한다. 사용자는 P2-03 PDF 실제 인쇄와 원격 CI 결과를 후속 일괄 확인으로 명시적으로 미뤘으므로 두 사람 확인 항목은 이번 착수를 막지 않는다. Head가 계약·인수와 3 레이어 검토를 맡고, 설정된 Implementation Worker에 격리 worktree의 파서 구현을 위임한다. 이번 Ticket 인수 후 AnalysisRun·분석 Outbox·RabbitMQ 연결 Ticket으로 이어간다.
+
+**목적/범위:** `Spec.md` 15·16의 Python 3.12 `ai-worker` 실행 단위에 PDF text layer와 XLSX 원문 구조를 읽는 파서 기반을 만든다. 아직 public HTTP 파싱 endpoint나 분석 요청 API·DB 결과 저장·broker를 열지 않는다. 내부 호출/CLI로 검증 가능한 parser library와 process runner, 최소 Python 패키지/테스트·재현 실행 방법 및 parser 전용 CI job만 포함한다. core-api·web·기존 Compose의 제품 동작을 변경하지 않는다.
+
+**입력/산출물 계약:** 서버가 확정한 Document의 `documentId`, `mediaType`, `sizeBytes`, SHA-256과 원본 byte를 받는다. 네트워크 URL이나 클라이언트 object key를 처리하지 않는다. byte의 실제 크기·checksum·포맷을 파싱 전에 확인한다. 결과는 `schemaVersion: document-parse-v1`, 고정 `parserVersion`(engine/library 버전 포함), documentId·원본 checksum·mediaType·경고를 포함한다. 같은 byte/metadata/parser version은 같은 결과를 낸다(실행 시각·random ID 제외). PDF는 1-based 페이지 번호와 페이지별 추출 text, XLSX는 문서 순서의 시트명·1-based 시트/행/열·셀 좌표·원시 값과 타입을 보존한다. numeric 원문은 float 반올림으로 바꾸지 않고 수식은 수식 표현으로 남긴다. 날짜/수식 cache 등은 원시값과 구분하며 계산·외부 링크 실행을 하지 않는다. 파싱 결과를 청구 header/line 또는 승인 근거로 자동 반영하지 않는다.
+
+**빈 text/OCR:** 빈 PDF text layer는 해당 페이지의 `EMPTY_TEXT_LAYER` 경고로 남긴다. 빈 페이지를 스캔으로 확정하거나 OCR 완료/추출 금액처럼 가장하지 않는다. mixed PDF의 정상 text 페이지는 유지한다. Azure OCR·외부 문서 전송·AI·품목 매핑은 제외한다.
+
+**자원 한도(상향은 계약 변경):** 입력 파일 10MiB, PDF 100페이지, XLSX 20시트·시트당 10,000행/256열·문서 전체 비어 있지 않은 셀 100,000개, ZIP entry 1,000개·실제 압축 해제 총합 50MiB·개별 entry 10MiB·최대 압축비 100:1, 추출 text/value UTF-8 합계 1MiB, 최종 JSON 4MiB, 문서별 wall time 20초·별도 parser process 메모리 512MiB. 한도 위반은 결과를 잘라 성공하지 않고 typed failure를 반환한다. SDK 호출·압축 해제도 child process 경계 안에 둔다. parent는 timeout/output limit에서 child를 종료·회수하고 temp를 정리한다. Linux Python 3.12가 production parser runtime이며 hard memory 한도를 적용한다. 해당 OS의 메모리 제한을 제공하지 못하면 production entry는 fail-closed한다. Windows 호스트의 library 테스트만으로 Linux 자원 한도를 검증했다고 보고하지 않는다.
+
+**파일 검증:** 암호화/깨진 PDF·XLSX, ZIP 경로 traversal·중복 entry·암호화 entry·DTD/entity 확장·거짓 dimension 또는 실제 초과 좌표·압축 bomb을 거부한다. ZIP metadata의 크기만 믿지 않고 읽으면서 실제 해제 byte를 센다. workbook 순서/relationship을 검증하고, 셀/시트 한도 검사는 dimension이 누락되거나 실제보다 작아도 우회되지 않는다. 원본을 다시 저장하거나 수정하지 않는다. 오류에는 안정적인 원인 code를 반환하며 원문·내부 파일 경로·SDK exception·credential을 결과/로그에 노출하지 않는다.
+
+**3 레이어 필수 계약:** Spring의 API → application → persistence 규칙은 유지하고 controller의 repository/SQL/storage 직접 호출, persistence의 application/API 역의존, domain의 상위 의존을 금지한다. Python에서도 API/CLI/향후 consumer는 입력·출력만, application은 parser 실행 조정·입력 검증·한도/실패 정책, infrastructure는 파일/SDK·process/OS adapter만 담당한다. domain의 순수 산출물/원문 위치 타입은 상위 계층·parser SDK를 참조하지 않는다. composition root에서 port와 adapter를 연결하며 application이 SDK를 직접 import하지 않는다. 이번 범위에는 DB가 없으므로 빈 persistence 모듈이나 자체 lint/architecture 분석 프레임워크를 만들지 않는다. Head는 실제 책임·의존성을 직접 검토하고 개선은 같은 Worker에 하달한다.
+
+**VERIFY/Acceptance Criteria:** 실제 유효한 다중 페이지 PDF(한글/빈/mixed 페이지 포함)와 다중 시트 XLSX(한글·공백·숫자 정밀도·날짜·수식·sparse 셀)에서 값·위치·순서·버전·결정적 결과·원본 byte 불변을 검증한다. 유효 baseline에서 결함 하나를 넣어 checksum/format/암호화/구조/각 한도 위반을 분리한다. 실제 Linux child로 wall timeout·메모리 초과·출력 초과 후 종료/회수·다음 정상 요청 성공을 검증하며 assertion skip/재실행으로 실패를 숨기지 않는다. parser 전체 pytest, 패키지 import/CLI smoke와 명시적 dependency pin/설치 재현이 통과해야 한다. 기존 backend/web 제품 소스를 바꾸지 않았다면 이미 성공한 전체 테스트를 이유 없이 반복하지 않는다. CI job 구성은 추가하되 원격 결과 확인은 사용자 요청대로 후속 항목이다.
+
+**실행/정리:** 현재 root의 사용자 수정 AGENTS/Implement를 worktree에 전달하고 Worker는 해당 두 파일을 stage/commit하지 않는다. cache·venv·TEMP·검증 산출물은 가능한 D 드라이브의 ignored 경로에 두며 실시간 로그·명령 deadline·본인 PID/container/temp 기록·성공/실패 cleanup을 지킨다. C 여유 5GiB 미만에서 큰 Docker 빌드를 시작하지 않는다. Linux 검증에 필요한 작은 공식 Python runtime의 다운로드도 사전 여유/사용량을 확인하고 분리해서 기록하며 서비스 전체 rebuild는 하지 않는다. 진행이 막히면 원인과 실패 명령을 바로 보고하고 무관한 파일/반복 test를 늘리지 않는다. main merge/push는 Head만 수행한다.
+
+**선행/제외:** P2-03. AnalysisRun·RabbitMQ·재시도/DLQ·OCR·LLM/LangGraph·UI·DB migration·기존 업무 상태/증빙/hash 변경은 후속 Ticket이다.
+
 ### Phase 2 후속 실행 순서
 
 P2-01 이후에는 아래 순서로 Ticket 계약을 상세화하며, 한 번에 하나씩 인수한다.
