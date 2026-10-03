@@ -316,6 +316,8 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 **빈 text/OCR:** 빈 PDF text layer는 해당 페이지의 `EMPTY_TEXT_LAYER` 경고로 남긴다. 빈 페이지를 스캔으로 확정하거나 OCR 완료/추출 금액처럼 가장하지 않는다. mixed PDF의 정상 text 페이지는 유지한다. Azure OCR·외부 문서 전송·AI·품목 매핑은 제외한다.
 
+**구현 결정:** PDF는 pinned pypdf adapter, XLSX는 defusedxml 기반의 제한된 OOXML reader를 사용한다. OOXML reader는 numeric lexeme 보존을 위한 선택이며 구조가 잘못된 입력을 정상 빈 문서로 처리하지 않는다. 배포 CLI는 격리된 `parse`와 `version`만 제공한다. in-process 호출은 library 단위 검증용으로 유지하며 운영 우회 명령으로 노출하지 않는다. CLI도 확정된 size/checksum을 명시적으로 받아 검증한다. OS 메모리 제한은 child bootstrap에서 SDK import 전에 적용하고, 멀티스레드 parent에서 `preexec_fn`을 사용하지 않는다. wall deadline은 프로세스 시작·입력 전달을 포함하며 stdin/stdout/stderr를 동시에 처리한다. 종료·실패·중단 시 자신이 만든 process group과 I/O 자원을 회수하고 비정상 exit나 잘못된 응답 envelope를 성공으로 받아들이지 않는다.
+
 **자원 한도(상향은 계약 변경):** 입력 파일 10MiB, PDF 100페이지, XLSX 20시트·시트당 10,000행/256열·문서 전체 비어 있지 않은 셀 100,000개, ZIP entry 1,000개·실제 압축 해제 총합 50MiB·개별 entry 10MiB·최대 압축비 100:1, 추출 text/value UTF-8 합계 1MiB, 최종 JSON 4MiB, 문서별 wall time 20초·별도 parser process 메모리 512MiB. 한도 위반은 결과를 잘라 성공하지 않고 typed failure를 반환한다. SDK 호출·압축 해제도 child process 경계 안에 둔다. parent는 timeout/output limit에서 child를 종료·회수하고 temp를 정리한다. Linux Python 3.12가 production parser runtime이며 hard memory 한도를 적용한다. 해당 OS의 메모리 제한을 제공하지 못하면 production entry는 fail-closed한다. Windows 호스트의 library 테스트만으로 Linux 자원 한도를 검증했다고 보고하지 않는다.
 
 **파일 검증:** 암호화/깨진 PDF·XLSX, ZIP 경로 traversal·중복 entry·암호화 entry·DTD/entity 확장·거짓 dimension 또는 실제 초과 좌표·압축 bomb을 거부한다. ZIP metadata의 크기만 믿지 않고 읽으면서 실제 해제 byte를 센다. workbook 순서/relationship을 검증하고, 셀/시트 한도 검사는 dimension이 누락되거나 실제보다 작아도 우회되지 않는다. 원본을 다시 저장하거나 수정하지 않는다. 오류에는 안정적인 원인 code를 반환하며 원문·내부 파일 경로·SDK exception·credential을 결과/로그에 노출하지 않는다.
