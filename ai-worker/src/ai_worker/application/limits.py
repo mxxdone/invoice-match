@@ -26,10 +26,8 @@ class ParseLimits:
     max_zip_entries: int = 1_000
     max_zip_total_uncompressed_bytes: int = 50 * MIB
     max_zip_entry_uncompressed_bytes: int = 10 * MIB
+    # Applied to every non-empty entry, regardless of size.
     max_compression_ratio: int = 100
-    # Ratio is only meaningful for entries large enough to matter; below this
-    # floor tiny files with harmless high ratios are accepted.
-    ratio_check_min_bytes: int = 1 * MIB
     max_text_value_bytes: int = 1 * MIB
     max_result_json_bytes: int = 4 * MIB
     wall_seconds: float = 20.0

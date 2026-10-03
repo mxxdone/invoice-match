@@ -1,4 +1,5 @@
 import hashlib
+import zipfile
 
 import pytest
 from fixtures import (
@@ -7,6 +8,7 @@ from fixtures import (
     SheetSpec,
     build_xlsx,
     raw_zip,
+    set_zip_entry_compress_size_zero,
     set_zip_entry_flag,
 )
 
@@ -79,8 +81,15 @@ def test_zip_entry_size_limit_streamed():
 
 
 def test_zip_total_size_limit_streamed():
+    # Stored (not deflated) so the total-size branch fires instead of ratio.
     limits = ParseLimits(max_zip_total_uncompressed_bytes=1 * MIB)
-    data = _minimal_workbook(extra_entries=[("junk/a.bin", b"\x00" * (700 * 1024)), ("junk/b.bin", b"\x00" * (700 * 1024))])
+    data = _minimal_workbook(
+        compression=zipfile.ZIP_STORED,
+        extra_entries=[
+            ("junk/a.bin", b"a" * (700 * 1024)),
+            ("junk/b.bin", b"b" * (700 * 1024)),
+        ],
+    )
     with pytest.raises(errors.ParseFailure) as excinfo:
         _parse(data, limits)
     assert excinfo.value.code == errors.ZIP_TOTAL_TOO_LARGE
@@ -91,6 +100,39 @@ def test_compression_ratio_bomb_rejected():
     with pytest.raises(errors.ParseFailure) as excinfo:
         _parse(data)
     assert excinfo.value.code == errors.ZIP_COMPRESSION_RATIO
+
+
+def test_sub_mib_compression_ratio_rejected():
+    # Previously exempted below 1 MiB; the exception is removed.
+    data = _minimal_workbook(extra_entries=[("junk/small.bin", b"\x00" * (256 * 1024))])
+    with pytest.raises(errors.ParseFailure) as excinfo:
+        _parse(data)
+    assert excinfo.value.code == errors.ZIP_COMPRESSION_RATIO
+
+
+def test_nonempty_entry_with_zero_compressed_size_rejected():
+    data = set_zip_entry_compress_size_zero(
+        _minimal_workbook(compression=zipfile.ZIP_STORED), "xl/workbook.xml"
+    )
+    with pytest.raises(errors.ParseFailure) as excinfo:
+        _parse(data)
+    assert excinfo.value.code == errors.ZIP_COMPRESSION_RATIO
+
+
+def test_plain_dtd_rejected():
+    data = _minimal_workbook(
+        entries_override={
+            "xl/worksheets/sheet1.xml": (
+                '<?xml version="1.0"?>'
+                "<!DOCTYPE worksheet>"
+                '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                "<sheetData/></worksheet>"
+            ).encode("utf-8")
+        }
+    )
+    with pytest.raises(errors.ParseFailure) as excinfo:
+        _parse(data)
+    assert excinfo.value.code == errors.XML_UNSAFE
 
 
 def test_entity_expansion_rejected():

@@ -257,6 +257,7 @@ def build_xlsx(
     style_custom_formats: dict[int, str] | None = None,
     extra_entries: list[tuple[str, bytes]] | None = None,
     entries_override: dict[str, bytes] | None = None,
+    compression: int = zipfile.ZIP_DEFLATED,
 ) -> bytes:
     shared_strings = shared_strings or []
     style_num_format_ids = style_num_format_ids or [0]
@@ -332,19 +333,22 @@ def build_xlsx(
     entries.update(entries_override)
 
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(buffer, "w", compression=compression) as archive:
         for name, content in entries.items():
             archive.writestr(name, content)
     return buffer.getvalue()
 
 
-def raw_zip(entries: list[tuple[str, bytes]]) -> bytes:
+def raw_zip(
+    entries: list[tuple[str, bytes]],
+    compression: int = zipfile.ZIP_DEFLATED,
+) -> bytes:
     """Write a ZIP preserving duplicate names exactly as given."""
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(buffer, "w", compression=compression) as archive:
         for name, content in entries:
             info = zipfile.ZipInfo(name)
-            info.compress_type = zipfile.ZIP_DEFLATED
+            info.compress_type = compression
             with _suppress_duplicate_warning():
                 archive.writestr(info, content)
     return buffer.getvalue()
@@ -387,6 +391,34 @@ def set_zip_entry_flag(data: bytes, name: str, bits: int) -> bytes:
                 buffer[index + flag_offset : index + flag_offset + 2] = bits.to_bytes(
                     2, "little"
                 )
+            index += 4
+    return bytes(buffer)
+
+
+def set_zip_entry_compress_size_zero(data: bytes, name: str) -> bytes:
+    """Declare zero compressed bytes for a non-empty entry in both headers."""
+    buffer = bytearray(data)
+    target = name.encode("utf-8")
+    for signature, compressed_size_offset, name_length_offset, name_offset in (
+        (b"PK\x03\x04", 18, 26, 30),
+        (b"PK\x01\x02", 20, 28, 46),
+    ):
+        index = 0
+        while True:
+            index = bytes(buffer).find(signature, index)
+            if index < 0:
+                break
+            name_length = int.from_bytes(
+                buffer[index + name_length_offset : index + name_length_offset + 2],
+                "little",
+            )
+            entry_name = bytes(
+                buffer[index + name_offset : index + name_offset + name_length]
+            )
+            if entry_name == target:
+                buffer[
+                    index + compressed_size_offset : index + compressed_size_offset + 4
+                ] = (0).to_bytes(4, "little")
             index += 4
     return bytes(buffer)
 

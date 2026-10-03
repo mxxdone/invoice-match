@@ -62,7 +62,14 @@ class ParseDocumentService:
     def limits(self) -> ParseLimits:
         return self._limits
 
-    def parse(self, request: ParseRequest, data: bytes) -> DocumentParseResult:
+    def verify_source(
+        self, request: ParseRequest, data: bytes
+    ) -> tuple[str, SourceMetadata]:
+        """Validate declared size/checksum/format without parsing the document.
+
+        Shared by the in-process service and the CLI so confirmed metadata is
+        checked before the isolated parser is started.
+        """
         limits = self._limits
 
         if request.size_bytes > limits.max_input_bytes:
@@ -84,11 +91,15 @@ class ParseDocumentService:
         if _base_media_type(request.media_type) != expected_media_type:
             raise errors.ParseFailure(errors.FORMAT_MISMATCH)
 
-        source = SourceMetadata(
+        return kind, SourceMetadata(
             media_type=expected_media_type,
             size_bytes=len(data),
             sha256=actual_sha256.lower(),
         )
+
+    def parse(self, request: ParseRequest, data: bytes) -> DocumentParseResult:
+        kind, source = self.verify_source(request, data)
+        limits = self._limits
 
         if kind == DocumentKind.PDF.value:
             pdf = self._pdf_parser.parse(data, limits)

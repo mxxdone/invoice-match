@@ -3,14 +3,17 @@
 The parent bounds the child on four axes:
 
 * **input** - the declared size is verified, the document is streamed once;
-* **wall time** - the child is killed and reaped after ``wall_seconds``;
+* **wall time** - a single deadline covers process start, input transfer and
+  parsing; the child process group is killed and reaped on expiry;
 * **output** - stdout is read incrementally and the child is killed as soon as
   it exceeds ``max_result_json_bytes`` (no unbounded ``communicate``);
-* **memory** - on Linux the child's address space is limited with
-  ``RLIMIT_AS`` before it starts.
+* **memory** - the child applies ``RLIMIT_AS`` itself before importing any SDK
+  (see :mod:`ai_worker.infrastructure.child`); the parent never uses
+  ``preexec_fn`` in a threaded process.
 
-If the host cannot enforce the OS memory limit, the production entry fails
-closed with ``UNSUPPORTED_HOST`` instead of pretending the limit holds.
+Only Linux/POSIX is a supported production host; other hosts fail closed with
+``UNSUPPORTED_HOST``. All owned processes, pipes and threads are reclaimed in
+``finally``.
 """
 
 from __future__ import annotations
@@ -30,15 +33,12 @@ from ai_worker.infrastructure import protocol
 _IS_POSIX = os.name == "posix"
 _READ_CHUNK = 64 * 1024
 _OUTPUT_SLACK = 256 * 1024
+_STDERR_CAP = 256 * 1024
 _JOIN_TIMEOUT = 5.0
+_PIPE_DRAIN_TIMEOUT = 5.0
+_POLL_INTERVAL = 0.02
 
 _CHILD_MODULE = "ai_worker.infrastructure.child"
-
-
-def _apply_child_memory_limit(memory_bytes: int) -> None:
-    import resource
-
-    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
 
 
 def _child_env() -> dict[str, str]:
@@ -77,78 +77,110 @@ class ProcessSupervisor:
             raise errors.ParseFailure(errors.INPUT_TOO_LARGE)
 
         payload = protocol.encode_request(header, data)
-        command = self._build_command()
-
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-            preexec_fn=lambda: _apply_child_memory_limit(limits.memory_bytes),
-            env=_child_env(),
-        )
-
-        self._pump_stdin(process, payload)
-        reader = _OutputReader(process.stdout, limits.max_result_json_bytes + _OUTPUT_SLACK)
-        reader.start()
-        stderr_drain = _Drain(process.stderr, 64 * 1024)
-        stderr_drain.start()
-
+        max_output = limits.max_result_json_bytes + _OUTPUT_SLACK
         deadline = time.monotonic() + limits.wall_seconds
-        while True:
-            if reader.exceeded:
-                self._terminate(process)
-                reader.join(_JOIN_TIMEOUT)
-                stderr_drain.join(_JOIN_TIMEOUT)
-                raise errors.ParseFailure(errors.OUTPUT_LIMIT_EXCEEDED)
-            if process.poll() is not None:
-                break
-            if time.monotonic() >= deadline:
-                self._terminate(process)
-                reader.join(_JOIN_TIMEOUT)
-                stderr_drain.join(_JOIN_TIMEOUT)
-                raise errors.ParseFailure(errors.TIMEOUT)
-            time.sleep(0.02)
 
-        reader.join(_JOIN_TIMEOUT)
-        stderr_drain.join(_JOIN_TIMEOUT)
-
-        raw_output = reader.data
-        if not raw_output:
-            if process.returncode != 0:
-                raise errors.ParseFailure(errors.PARSER_CRASHED)
-            raise errors.ParseFailure(errors.INTERNAL_ERROR)
-
+        process: subprocess.Popen | None = None
+        threads: list[threading.Thread] = []
         try:
-            envelope = json.loads(raw_output.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError) as exc:
-            if process.returncode != 0:
+            try:
+                process = subprocess.Popen(
+                    self._build_command(),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    start_new_session=True,
+                    env=_child_env(),
+                )
+            except OSError as exc:
                 raise errors.ParseFailure(errors.PARSER_CRASHED) from exc
-            raise errors.ParseFailure(errors.INTERNAL_ERROR) from exc
 
-        if envelope.get("ok") is True and isinstance(envelope.get("result"), dict):
-            return envelope["result"]
-        code = (envelope.get("error") or {}).get("code")
-        raise errors.ParseFailure(code or errors.INTERNAL_ERROR)
+            writer = _StdinWriter(process.stdin, payload)
+            reader = _OutputReader(process.stdout, max_output)
+            drain = _Drain(process.stderr, _STDERR_CAP)
+            threads = [writer, reader, drain]
+            for thread in threads:
+                thread.start()
+
+            failure: str | None = None
+            while True:
+                if reader.exceeded:
+                    failure = errors.OUTPUT_LIMIT_EXCEEDED
+                    break
+                if process.poll() is not None:
+                    break
+                if time.monotonic() >= deadline:
+                    failure = errors.TIMEOUT
+                    break
+                time.sleep(_POLL_INTERVAL)
+
+            if failure is not None:
+                self._terminate(process)
+                raise errors.ParseFailure(failure)
+
+            if not self._join(threads, _PIPE_DRAIN_TIMEOUT):
+                # A descendant still holds a pipe open; kill the group and do
+                # not wait indefinitely.
+                self._terminate(process)
+                raise errors.ParseFailure(errors.PARSER_CRASHED)
+
+            # The child may have exited in the same instant the reader crossed
+            # the cap; re-check the race before interpreting the output.
+            if reader.exceeded:
+                raise errors.ParseFailure(errors.OUTPUT_LIMIT_EXCEEDED)
+
+            return self._interpret(process, reader.data, limits)
+        finally:
+            self._cleanup(process, threads)
 
     @staticmethod
-    def _pump_stdin(process: subprocess.Popen, payload: bytes) -> None:
-        def write() -> None:
+    def _interpret(
+        process: subprocess.Popen, raw_output: bytes, limits: ParseLimits
+    ) -> dict:
+        returncode = process.returncode
+        envelope = None
+        if raw_output:
             try:
-                process.stdin.write(payload)
-                process.stdin.flush()
-            except (BrokenPipeError, OSError):
-                pass
-            finally:
-                try:
-                    process.stdin.close()
-                except (BrokenPipeError, OSError):
-                    pass
+                envelope = json.loads(raw_output.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                envelope = None
 
-        thread = threading.Thread(target=write, name="parser-stdin", daemon=True)
-        thread.start()
-        thread.join(_JOIN_TIMEOUT)
+        if not isinstance(envelope, dict):
+            raise errors.ParseFailure(
+                errors.PARSER_CRASHED if returncode != 0 else errors.INTERNAL_ERROR
+            )
+
+        if envelope.get("ok") is True:
+            # A non-zero exit is never a successful parse, even with valid JSON.
+            if returncode != 0:
+                raise errors.ParseFailure(errors.PARSER_CRASHED)
+            result = envelope.get("result")
+            if not isinstance(result, dict):
+                raise errors.ParseFailure(errors.INTERNAL_ERROR)
+            serialized = json.dumps(
+                result, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+            ).encode("utf-8")
+            if len(serialized) > limits.max_result_json_bytes:
+                raise errors.ParseFailure(errors.RESULT_TOO_LARGE)
+            return result
+
+        error = envelope.get("error")
+        code = error.get("code") if isinstance(error, dict) else None
+        if errors.is_known_code(code):
+            raise errors.ParseFailure(code)
+        raise errors.ParseFailure(
+            errors.PARSER_CRASHED if returncode != 0 else errors.INTERNAL_ERROR
+        )
+
+    @staticmethod
+    def _join(threads: list[threading.Thread], timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        for thread in threads:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(remaining)
+        return all(not thread.is_alive() for thread in threads)
 
     @staticmethod
     def _terminate(process: subprocess.Popen) -> None:
@@ -163,11 +195,42 @@ class ProcessSupervisor:
             process.wait(timeout=_JOIN_TIMEOUT)
         except subprocess.TimeoutExpired:
             pass
+        ProcessSupervisor._close_pipes(process)
+
+    @staticmethod
+    def _close_pipes(process: subprocess.Popen) -> None:
         for stream in (process.stdin, process.stdout, process.stderr):
             try:
                 if stream is not None:
                     stream.close()
             except OSError:
+                pass
+
+    def _cleanup(
+        self, process: subprocess.Popen | None, threads: list[threading.Thread]
+    ) -> None:
+        if process is not None and process.poll() is None:
+            self._terminate(process)
+        self._join(threads, _JOIN_TIMEOUT)
+
+
+class _StdinWriter(threading.Thread):
+    def __init__(self, stream, payload: bytes) -> None:
+        super().__init__(name="parser-stdin", daemon=True)
+        self._stream = stream
+        self._payload = payload
+        self.failed = False
+
+    def run(self) -> None:
+        try:
+            self._stream.write(self._payload)
+            self._stream.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            self.failed = True
+        finally:
+            try:
+                self._stream.close()
+            except (BrokenPipeError, OSError, ValueError):
                 pass
 
 
@@ -199,12 +262,12 @@ class _OutputReader(threading.Thread):
                 self.data = b"".join(chunks)
             try:
                 self._stream.close()
-            except OSError:
+            except (OSError, ValueError):
                 pass
 
 
 class _Drain(threading.Thread):
-    """Consumes stderr so the child never blocks, discarding its content."""
+    """Consumes a bounded amount of stderr and discards its content."""
 
     def __init__(self, stream, cap: int) -> None:
         super().__init__(name="parser-stderr", daemon=True)
@@ -226,5 +289,5 @@ class _Drain(threading.Thread):
         finally:
             try:
                 self._stream.close()
-            except OSError:
+            except (OSError, ValueError):
                 pass

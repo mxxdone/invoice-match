@@ -13,6 +13,7 @@ SIZE_MISMATCH = "SIZE_MISMATCH"
 CHECKSUM_MISMATCH = "CHECKSUM_MISMATCH"
 FORMAT_UNSUPPORTED = "FORMAT_UNSUPPORTED"
 FORMAT_MISMATCH = "FORMAT_MISMATCH"
+INPUT_UNREADABLE = "INPUT_UNREADABLE"
 
 # --- PDF --------------------------------------------------------------------
 PDF_ENCRYPTED = "PDF_ENCRYPTED"
@@ -54,6 +55,7 @@ _SAFE_MESSAGES: dict[str, str] = {
     CHECKSUM_MISMATCH: "Declared SHA-256 does not match the received bytes.",
     FORMAT_UNSUPPORTED: "File format is not supported.",
     FORMAT_MISMATCH: "File signature does not match the declared media type.",
+    INPUT_UNREADABLE: "The input document could not be read.",
     PDF_ENCRYPTED: "Encrypted PDF documents are not supported.",
     PDF_CORRUPT: "The PDF document could not be read.",
     PDF_PAGE_LIMIT: "The PDF exceeds the page limit.",
@@ -93,9 +95,15 @@ class ParseFailure(Exception):
         return {"code": self.code, "message": self.safe_message}
 
 
+def is_known_code(code: object) -> bool:
+    return isinstance(code, str) and code in _SAFE_MESSAGES
+
+
 __all__ = [
     "ParseFailure",
+    "is_known_code",
     "INPUT_TOO_LARGE",
+    "INPUT_UNREADABLE",
     "SIZE_MISMATCH",
     "CHECKSUM_MISMATCH",
     "FORMAT_UNSUPPORTED",

@@ -8,7 +8,9 @@ A small purpose-built reader is used instead of openpyxl so that:
 * ZIP/decompression, cell and sheet bounds are enforced on the actual streamed
   bytes rather than on declared dimensions or ZIP metadata.
 
-XML is parsed with defusedxml, which rejects DTDs and entity expansion.
+XML is parsed with defusedxml with DTDs, entity expansion and external entities
+all forbidden. Structurally invalid workbooks are rejected rather than reported
+as an empty sheet count.
 """
 
 from __future__ import annotations
@@ -45,6 +47,10 @@ _RELS_PART = "xl/_rels/workbook.xml.rels"
 _SHARED_STRINGS_PART = "xl/sharedStrings.xml"
 _STYLES_PART = "xl/styles.xml"
 
+_REL_TYPE_WORKSHEET_SUFFIX = "/worksheet"
+
+_KNOWN_CELL_TYPES = frozenset({"n", "s", "str", "inlineStr", "b", "e", "d"})
+
 # Built-in number format ids that represent dates/times (ECMA-376 18.8.30).
 _BUILTIN_DATE_FORMAT_IDS = frozenset(
     {14, 15, 16, 17, 18, 19, 20, 21, 22, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36}
@@ -53,6 +59,10 @@ _BUILTIN_DATE_FORMAT_IDS = frozenset(
 )
 
 _COLUMN_RE = re.compile(r"([A-Za-z]{1,3})([0-9]{1,9})")
+
+# defusedxml defaults forbid entities and external entities but allow a plain
+# DTD; forbid it explicitly for both parsing paths.
+_DEFUSED_KWARGS = {"forbid_dtd": True, "forbid_entities": True, "forbid_external": True}
 
 
 def _tag(namespace: str, local: str) -> str:
@@ -130,10 +140,14 @@ class SafeOoxmlSpreadsheetParser:
                 counter = _Counter()
                 sheets: list[Sheet] = []
                 for index, sheet_def in enumerate(sheet_defs, start=1):
-                    target = relationships.get(sheet_def["rid"])
-                    if target is None:
+                    relationship = relationships.get(sheet_def["rid"])
+                    if relationship is None:
                         raise errors.ParseFailure(errors.XLSX_CORRUPT)
-                    part = self._resolve_related_part(target)
+                    if not relationship["type"].endswith(_REL_TYPE_WORKSHEET_SUFFIX):
+                        raise errors.ParseFailure(errors.XLSX_CORRUPT)
+                    if relationship["mode"].lower() == "external":
+                        raise errors.ParseFailure(errors.XLSX_CORRUPT)
+                    part = self._resolve_related_part(relationship["target"])
                     if part not in names:
                         raise errors.ParseFailure(errors.XLSX_CORRUPT)
                     rows = self._parse_sheet(
@@ -183,6 +197,10 @@ class SafeOoxmlSpreadsheetParser:
             seen.add(key)
             if info.flag_bits & 0x1:
                 raise errors.ParseFailure(errors.ZIP_ENCRYPTED_ENTRY)
+            # A non-empty entry that declares zero compressed bytes can never
+            # satisfy the ratio bound; reject it from metadata before reading.
+            if info.file_size > 0 and info.compress_size <= 0:
+                raise errors.ParseFailure(errors.ZIP_COMPRESSION_RATIO)
 
             entry_bytes = 0
             try:
@@ -204,20 +222,22 @@ class SafeOoxmlSpreadsheetParser:
             except (zipfile.BadZipFile, zlib.error, EOFError, RuntimeError) as exc:
                 raise errors.ParseFailure(errors.XLSX_CORRUPT) from exc
 
-            compress_size = info.compress_size
-            if (
-                entry_bytes >= limits.ratio_check_min_bytes
-                and compress_size > 0
-                and entry_bytes > compress_size * limits.max_compression_ratio
-            ):
-                raise errors.ParseFailure(errors.ZIP_COMPRESSION_RATIO)
+            # Compression ratio is enforced for every non-empty entry. A
+            # non-empty entry that claims zero compressed bytes is rejected as
+            # well rather than trusted.
+            if entry_bytes > 0:
+                compress_size = info.compress_size
+                if compress_size <= 0:
+                    raise errors.ParseFailure(errors.ZIP_COMPRESSION_RATIO)
+                if entry_bytes > compress_size * limits.max_compression_ratio:
+                    raise errors.ParseFailure(errors.ZIP_COMPRESSION_RATIO)
 
     # -- XML parts -----------------------------------------------------------
 
     @staticmethod
     def _parse_xml(data: bytes):
         try:
-            return DefusedET.fromstring(data)
+            return DefusedET.fromstring(data, **_DEFUSED_KWARGS)
         except DefusedXmlException as exc:
             raise errors.ParseFailure(errors.XML_UNSAFE) from exc
         except ParseError as exc:
@@ -225,7 +245,9 @@ class SafeOoxmlSpreadsheetParser:
 
     def _iter_end(self, stream) -> Iterator:
         try:
-            for _event, element in DefusedET.iterparse(stream, events=("end",)):
+            for _event, element in DefusedET.iterparse(
+                stream, events=("end",), **_DEFUSED_KWARGS
+            ):
                 yield element
         except DefusedXmlException as exc:
             raise errors.ParseFailure(errors.XML_UNSAFE) from exc
@@ -236,30 +258,60 @@ class SafeOoxmlSpreadsheetParser:
         if _WORKBOOK_PART not in set(archive.namelist()):
             raise errors.ParseFailure(errors.XLSX_CORRUPT)
         root = self._parse_xml(archive.read(_WORKBOOK_PART))
+        if root.tag != _tag(_NS_MAIN, "workbook"):
+            raise errors.ParseFailure(errors.XLSX_CORRUPT)
         sheets_element = root.find(_tag(_NS_MAIN, "sheets"))
-        definitions: list[dict[str, str]] = []
         if sheets_element is None:
-            return definitions
+            raise errors.ParseFailure(errors.XLSX_CORRUPT)
+
+        definitions: list[dict[str, str]] = []
+        seen_sheet_ids: set[int] = set()
         for sheet in sheets_element.findall(_tag(_NS_MAIN, "sheet")):
+            name = sheet.get("name") or ""
+            rid = sheet.get(_tag(_NS_REL, "id")) or ""
+            if not name or not rid:
+                raise errors.ParseFailure(errors.XLSX_CORRUPT)
+            sheet_id = sheet.get("sheetId")
+            if sheet_id is not None:
+                try:
+                    numeric_sheet_id = int(sheet_id)
+                except ValueError as exc:
+                    raise errors.ParseFailure(errors.XLSX_CORRUPT) from exc
+                if numeric_sheet_id < 1 or numeric_sheet_id in seen_sheet_ids:
+                    raise errors.ParseFailure(errors.XLSX_CORRUPT)
+                seen_sheet_ids.add(numeric_sheet_id)
             definitions.append(
                 {
-                    "name": sheet.get("name") or "",
-                    "rid": sheet.get(_tag(_NS_REL, "id")) or "",
+                    "name": name,
+                    "rid": rid,
                     "state": sheet.get("state") or "visible",
                 }
             )
+        if not definitions:
+            raise errors.ParseFailure(errors.XLSX_CORRUPT)
         return definitions
 
-    def _read_relationships(self, archive: zipfile.ZipFile) -> dict[str, str]:
+    def _read_relationships(self, archive: zipfile.ZipFile) -> dict[str, dict[str, str]]:
         if _RELS_PART not in set(archive.namelist()):
             raise errors.ParseFailure(errors.XLSX_CORRUPT)
         root = self._parse_xml(archive.read(_RELS_PART))
-        relationships: dict[str, str] = {}
+        if root.tag != _tag(_NS_PKG_REL, "Relationships"):
+            raise errors.ParseFailure(errors.XLSX_CORRUPT)
+
+        relationships: dict[str, dict[str, str]] = {}
         for relationship in root.findall(_tag(_NS_PKG_REL, "Relationship")):
             rel_id = relationship.get("Id")
             target = relationship.get("Target")
-            if rel_id and target:
-                relationships[rel_id] = target
+            rel_type = relationship.get("Type")
+            if not rel_id or not target or not rel_type:
+                raise errors.ParseFailure(errors.XLSX_CORRUPT)
+            if rel_id in relationships:
+                raise errors.ParseFailure(errors.XLSX_CORRUPT)
+            relationships[rel_id] = {
+                "type": rel_type,
+                "target": target,
+                "mode": relationship.get("TargetMode") or "Internal",
+            }
         return relationships
 
     @staticmethod
@@ -330,29 +382,43 @@ class SafeOoxmlSpreadsheetParser:
         date_styles: dict[int, str | None],
     ) -> list[SheetRow]:
         rows: list[SheetRow] = []
-        sequential_row = 0
+        last_row = 0
         with archive.open(part) as stream:
             for element in self._iter_end(stream):
                 if element.tag != _tag(_NS_MAIN, "row"):
                     continue
-                sequential_row += 1
-                row_number = self._int_or(element.get("r"), sequential_row)
+                row_attribute = element.get("r")
+                if row_attribute is not None:
+                    if not row_attribute.isdigit():
+                        raise errors.ParseFailure(errors.XLSX_CORRUPT)
+                    row_number = int(row_attribute)
+                    if row_number < 1 or row_number <= last_row:
+                        raise errors.ParseFailure(errors.XLSX_CORRUPT)
+                else:
+                    row_number = last_row + 1
+                last_row = row_number
+                if row_number > limits.max_rows_per_sheet:
+                    raise errors.ParseFailure(errors.XLSX_DIMENSION_LIMIT)
+
                 cells: list[Cell] = []
-                column_sequence = 0
+                last_column = 0
                 for cell_element in element.findall(_tag(_NS_MAIN, "c")):
-                    column_sequence += 1
                     parsed = self._parse_cell(
                         cell_element,
                         row_number,
-                        column_sequence,
+                        last_column,
                         limits,
                         budget,
                         counter,
                         shared_strings,
                         date_styles,
                     )
-                    if parsed is not None:
-                        cells.append(parsed)
+                    if parsed is None:
+                        continue
+                    if parsed.column <= last_column:
+                        raise errors.ParseFailure(errors.XLSX_CORRUPT)
+                    last_column = parsed.column
+                    cells.append(parsed)
                 if cells:
                     rows.append(SheetRow(row=row_number, cells=tuple(cells)))
                 element.clear()
@@ -362,7 +428,7 @@ class SafeOoxmlSpreadsheetParser:
         self,
         cell_element,
         row_number: int,
-        column_sequence: int,
+        last_column: int,
         limits: ParseLimits,
         budget: Utf8Budget,
         counter: _Counter,
@@ -375,15 +441,17 @@ class SafeOoxmlSpreadsheetParser:
             if match is None:
                 raise errors.ParseFailure(errors.XLSX_CORRUPT)
             column_number = _column_index(match.group(1))
-            row_number = int(match.group(2))
+            reference_row = int(match.group(2))
+            if reference_row != row_number:
+                raise errors.ParseFailure(errors.XLSX_CORRUPT)
         else:
-            column_number = column_sequence
+            column_number = last_column + 1
 
         if (
-            row_number < 1
-            or row_number > limits.max_rows_per_sheet
-            or column_number < 1
+            column_number < 1
             or column_number > limits.max_columns_per_sheet
+            or row_number < 1
+            or row_number > limits.max_rows_per_sheet
         ):
             raise errors.ParseFailure(errors.XLSX_DIMENSION_LIMIT)
 
@@ -391,6 +459,8 @@ class SafeOoxmlSpreadsheetParser:
         value_element = cell_element.find(_tag(_NS_MAIN, "v"))
         inline_element = cell_element.find(_tag(_NS_MAIN, "is"))
         cell_kind = cell_element.get("t") or "n"
+        if cell_kind not in _KNOWN_CELL_TYPES:
+            raise errors.ParseFailure(errors.XLSX_CORRUPT)
 
         if formula_element is None and value_element is None and inline_element is None:
             return None
@@ -433,14 +503,16 @@ class SafeOoxmlSpreadsheetParser:
                 value=text,
             )
 
-        raw_value = value_element.text if value_element is not None else ""
-        raw_value = raw_value or ""
+        raw_value = (value_element.text if value_element is not None else "") or ""
 
         if cell_kind == "s":
             try:
-                text = shared_strings[int(raw_value)]
-            except (ValueError, IndexError) as exc:
+                shared_index = int(raw_value)
+            except ValueError as exc:
                 raise errors.ParseFailure(errors.XLSX_CORRUPT) from exc
+            if shared_index < 0 or shared_index >= len(shared_strings):
+                raise errors.ParseFailure(errors.XLSX_CORRUPT)
+            text = shared_strings[shared_index]
             budget.add(text)
             return Cell(
                 row=row_number,
@@ -450,17 +522,7 @@ class SafeOoxmlSpreadsheetParser:
                 value=text,
             )
 
-        if cell_kind == "inlineStr":
-            budget.add(raw_value)
-            return Cell(
-                row=row_number,
-                column=column_number,
-                coordinate=coordinate,
-                cell_type=CellType.STRING.value,
-                value=raw_value,
-            )
-
-        if cell_kind == "str":
+        if cell_kind in ("str", "inlineStr"):
             budget.add(raw_value)
             return Cell(
                 row=row_number,
@@ -471,6 +533,8 @@ class SafeOoxmlSpreadsheetParser:
             )
 
         if cell_kind == "b":
+            if raw_value not in ("0", "1"):
+                raise errors.ParseFailure(errors.XLSX_CORRUPT)
             return Cell(
                 row=row_number,
                 column=column_number,
@@ -486,6 +550,17 @@ class SafeOoxmlSpreadsheetParser:
                 column=column_number,
                 coordinate=coordinate,
                 cell_type=CellType.ERROR.value,
+                value=raw_value,
+            )
+
+        if cell_kind == "d":
+            # Explicit ISO 8601 date: keep the raw value, do not recompute it.
+            budget.add(raw_value)
+            return Cell(
+                row=row_number,
+                column=column_number,
+                coordinate=coordinate,
+                cell_type=CellType.DATE.value,
                 value=raw_value,
             )
 
@@ -516,6 +591,8 @@ class SafeOoxmlSpreadsheetParser:
             return CellType.STRING.value
         if cell_kind == "e":
             return CellType.ERROR.value
+        if cell_kind == "d":
+            return CellType.DATE.value
         return CellType.NUMBER.value
 
     @staticmethod

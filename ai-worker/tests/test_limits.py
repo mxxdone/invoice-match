@@ -1,4 +1,5 @@
 import hashlib
+import zipfile
 
 import pytest
 from fixtures import (
@@ -89,7 +90,8 @@ def test_nonempty_cell_limit_default():
         if total > DEFAULT_LIMITS.max_nonempty_cells:
             break
     assert total == DEFAULT_LIMITS.max_nonempty_cells + 1
-    data = build_xlsx([SheetSpec(name="S", cells=cells)])
+    # Stored so the cell-count branch fires instead of the compression ratio.
+    data = build_xlsx([SheetSpec(name="S", cells=cells)], compression=zipfile.ZIP_STORED)
     with pytest.raises(errors.ParseFailure) as excinfo:
         composition.parse_in_process(_request(data, XLSX_MEDIA_TYPE), data)
     assert excinfo.value.code == errors.XLSX_CELL_LIMIT

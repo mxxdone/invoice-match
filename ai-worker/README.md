@@ -2,9 +2,12 @@
 
 Python 3.12 parser foundation for the `ai-worker` execution unit. It reads a PDF
 text layer and XLSX raw structure under hard resource bounds and emits the
-deterministic `document-parse-v1` result. It does **not** open a public HTTP
-endpoint, write to a database, call a broker, OCR, use AI, or infer invoice
-fields; those follow in later tickets.
+deterministic `document-parse-v1` result. Contract and limits are fixed by
+[`P2-04`](../project-docs/Plan.md); this README only covers runtime, supported
+input scope and how to run it.
+
+It does **not** open a public HTTP endpoint, write to a database, call a
+broker, OCR, use AI, or infer invoice fields.
 
 ## Layout and layer responsibilities
 
@@ -19,90 +22,61 @@ src/ai_worker/
 
 The application layer never imports `pypdf`, `defusedxml`, `zipfile` or the
 process/OS adapters; it receives them through `application/ports.py`. The
-isolated child process and the parent supervisor live entirely in
-`infrastructure/`.
+isolated child and parent supervisor live entirely in `infrastructure/`.
+`application/service.py` owns size/checksum/format verification and all limit
+policy; `infrastructure` owns SDK execution and OS/process control.
 
-### Engine choice
+## Runtime and supported input
 
-The XLSX reader is a small purpose-built OOXML reader rather than `openpyxl`.
-`openpyxl` converts numbers to Python `int`/`float` (losing the original
-lexeme), resolves styles eagerly, and hides the ZIP/decompression bounds this
-ticket must enforce on the actual streamed bytes. The custom reader:
+* Production runtime: **Linux Python 3.12**. The child applies a hard
+  `RLIMIT_AS` memory cap before importing any parser SDK; other hosts fail
+  closed with `UNSUPPORTED_HOST`.
+* The parent supervisor bounds wall time (including process start and input
+  transfer), child output, and reclaims its own process group, pipes and
+  threads on success, failure, timeout or interruption.
+* PDF: pinned `pypdf`, text layer only. Empty pages are reported with an
+  `EMPTY_TEXT_LAYER` warning and are never reported as a scan or OCRed.
+* XLSX: a bounded OOXML reader (not openpyxl) chosen to preserve exact numeric
+  lexemes and formula expressions, keep cached formula results separate, never
+  evaluate formulas or external links, and enforce ZIP/decompression bounds on
+  the actual streamed bytes. Structurally invalid workbooks are rejected rather
+  than reported as empty. Supported cell types: `n`, `s`, `str`, `inlineStr`,
+  `b`, `e`, `d`; shared/inline strings, styles for date detection, workbook
+  order and relationships are validated.
+* XML is parsed with `defusedxml` with DTDs, entities and external entities all
+  forbidden.
 
-* preserves the exact numeric lexeme (e.g. `12345678901234567890`,
-  `0.30000000000000004`),
-* keeps formulas as `=...` expressions and reports the cached result separately,
-* never evaluates formulas or follows external links,
-* enforces ZIP, sheet, row/column and cell bounds while decompressing, and
-* parses XML with `defusedxml`, rejecting DTDs and entity expansion.
+## Running
 
-Tradeoff: it implements only the OOXML subset needed for reading cell structure
-(shared/inline strings, `t="n|s|str|b|e|inlineStr"`, styles for date detection).
-It is not a general XLSX writer or formula engine.
-
-## Limits (raising any is a contract change)
-
-| Limit | Default |
-|---|---|
-| Input file | 10 MiB |
-| PDF pages | 100 |
-| XLSX sheets | 20 |
-| Rows / columns per sheet | 10,000 / 256 |
-| Non-empty cells (whole document) | 100,000 |
-| ZIP entries | 1,000 |
-| ZIP decompressed total / per entry | 50 MiB / 10 MiB |
-| ZIP compression ratio | 100:1 (checked at/above 1 MiB) |
-| Extracted text/value UTF-8 | 1 MiB |
-| Final result JSON | 4 MiB |
-| Wall time per document | 20 s |
-| Parser child address space | 512 MiB |
-
-Limit violations raise a stable error code; successful results are never
-truncated.
-
-## Running (Windows library tests)
+Windows library tests (use the installed Python executable and a D-drive venv;
+Linux-only process tests are skipped there):
 
 ```powershell
-py -3.12 -m venv .venv          # or an existing D-drive venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+$py = "C:\Users\flash\AppData\Local\Programs\Python\Python312\python.exe"
+$venv = "D:\workspace\invoice-match\output\p2-04\venv"      # ignored, on D
+& $py -m venv $venv
+& "$venv\Scripts\python.exe" -m pip install -r requirements-dev.txt
 $env:PYTHONPATH = "$PWD\src"
-.\.venv\Scripts\python.exe -m pytest tests
+& "$venv\Scripts\python.exe" -m pytest tests
 ```
 
-Windows runs the library tests and CLI library smoke. The Linux process tests
-(`test_process_isolation.py`) are skipped there on purpose: Windows library
-tests are **not** proof of Linux OS limits.
+Linux (real OS limits): reuse the verification script, which installs the
+package as a wheel and runs the full suite plus the installed CLI smoke inside
+a small `python:3.12-slim` runtime with a bounded deadline and cleanup:
 
-## Running (Linux production runtime)
-
-Use a small official Python 3.12 image; the process tests prove wall-timeout,
-memory, output and cleanup behaviour for real.
-
-```bash
-docker run --rm -v "$PWD":/w -w /w python:3.12-slim \
-  sh -c 'pip install --disable-pip-version-check -r requirements-dev.txt &&
-         PYTHONPATH=src python -m pytest tests -v'
+```powershell
+pwsh -File ..\scripts\verify-p2-04-linux.ps1
 ```
 
-CLI smoke:
-
-```bash
-PYTHONPATH=src python -m ai_worker.api.cli version
-PYTHONPATH=src python -m ai_worker.api.cli parse-in-process doc.pdf \
-  --document-id doc --media-type application/pdf
-# isolated production path (Linux only; fails closed elsewhere)
-PYTHONPATH=src python -m ai_worker.api.cli parse doc.pdf \
-  --document-id doc --media-type application/pdf
-```
-
-`python -m ai_worker.api.cli parse` fails closed with `UNSUPPORTED_HOST` on any
-host that cannot enforce the OS memory limit.
+The deployable CLI is ``parse`` (isolated production path) and ``version``; it
+takes the server-confirmed `--size-bytes`/`--sha256`. The in-process library
+entrypoint is for unit tests only and is not exposed as a CLI command.
 
 ## Result contract
 
-`schemaVersion: document-parse-v1`, a fixed `parserVersion` that embeds the
-engine/library versions, the document id, source size/SHA-256/media type, and
-warnings. PDF pages are 1-based and carry extracted text; a page with no text
-gets an `EMPTY_TEXT_LAYER` warning and is **not** reported as a scan or OCRed.
-XLSX sheets follow workbook order and carry 1-based sheet/row/column and the
-cell coordinate, original value and type. No timestamp or random id is emitted.
+`schemaVersion: document-parse-v1`, a fixed `parserVersion` embedding engine
+and library versions, the document id, source size/SHA-256/media type and
+warnings. PDF pages are 1-based with extracted text; XLSX sheets follow
+workbook order with 1-based sheet/row/column and cell coordinate, original
+value and type. No timestamp or random id is emitted, so identical bytes and
+metadata produce identical JSON.

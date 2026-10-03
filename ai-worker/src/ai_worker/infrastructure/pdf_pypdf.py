@@ -22,6 +22,8 @@ class PypdfTextParser:
         try:
             reader = PdfReader(io.BytesIO(data))
             is_encrypted = bool(reader.is_encrypted)
+        except MemoryError:
+            raise
         except Exception as exc:  # noqa: BLE001 - mapped to a stable code
             raise errors.ParseFailure(errors.PDF_CORRUPT) from exc
 
@@ -30,6 +32,8 @@ class PypdfTextParser:
 
         try:
             page_count = len(reader.pages)
+        except MemoryError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise errors.ParseFailure(errors.PDF_CORRUPT) from exc
 
@@ -42,6 +46,8 @@ class PypdfTextParser:
             try:
                 text = page.extract_text() or ""
             except errors.ParseFailure:
+                raise
+            except MemoryError:
                 raise
             except Exception as exc:  # noqa: BLE001
                 raise errors.ParseFailure(errors.PDF_CORRUPT) from exc

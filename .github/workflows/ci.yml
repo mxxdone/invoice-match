@@ -34,24 +34,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install pinned parser dependencies
+      - name: Install pinned parser dependencies and package wheel
         working-directory: ai-worker
-        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements-dev.txt
+          python -m pip install --disable-pip-version-check --no-build-isolation --no-deps .
       - name: Parser tests (real Linux child resource limits)
         working-directory: ai-worker
-        env:
-          PYTHONPATH: src
         run: python -m pytest tests -v
-      - name: Parser CLI smoke
-        working-directory: ai-worker
-        env:
-          PYTHONPATH: src
+      - name: Installed package CLI smoke (no PYTHONPATH)
         run: |
-          python -c "import sys; sys.path.insert(0, 'tests'); from fixtures import build_pdf; open('/tmp/smoke.pdf', 'wb').write(build_pdf(['가나다', None]))"
-          python -m ai_worker.api.cli version
-          python -m ai_worker.api.cli parse /tmp/smoke.pdf --document-id smoke --media-type application/pdf > /tmp/isolated.json
-          python -m ai_worker.api.cli parse-in-process /tmp/smoke.pdf --document-id smoke --media-type application/pdf > /tmp/inprocess.json
-          python -c "import json; a=json.load(open('/tmp/isolated.json')); b=json.load(open('/tmp/inprocess.json')); assert a==b, 'isolated and in-process results differ'; print('cli smoke ok')"
+          python -c "import ai_worker; print('import ok', ai_worker.PARSER_VERSION)"
+          ai-worker version
+          python -c "import sys; sys.path.insert(0, 'ai-worker/tests'); from fixtures import build_pdf; open('/tmp/smoke.pdf', 'wb').write(build_pdf(['가나다', None]))"
+          SIZE=$(stat -c %s /tmp/smoke.pdf)
+          SHA=$(sha256sum /tmp/smoke.pdf | cut -d' ' -f1)
+          ai-worker parse /tmp/smoke.pdf --document-id smoke --media-type application/pdf --size-bytes "$SIZE" --sha256 "$SHA" > /tmp/isolated.json
+          python -c "import json; d=json.load(open('/tmp/isolated.json')); assert d['kind']=='pdf' and d['pdf']['pages'][0]['text']=='가나다'; print('cli smoke ok')"
 
   checks:
     runs-on: ubuntu-latest
