@@ -76,13 +76,35 @@ management:
       exposure:
         include: health,info
 
-# P2-05 analysis reservation. Fail-closed: no AnalysisRun or analysis-request
-# Outbox row is reserved unless an environment explicitly opts in. This only
-# gates new reservations; a newer submission still stales lower evidence
-# versions. The RabbitMQ relay and Python consumer are P2-06.
+# P2-05 analysis reservation and P2-06 RabbitMQ relay.
+#
+# Reservation is fail-closed: no AnalysisRun or analysis-request Outbox row is
+# reserved unless an environment explicitly opts in. This only gates new
+# reservations; a newer submission still stales lower evidence versions.
+#
+# Relay is separately fail-closed: no scheduler, no RabbitMQ connection and no
+# broker health call run unless ANALYSIS_RELAY_ENABLED=true. Broker credentials
+# are environment-only (blank by default) and fail closed when the relay is
+# enabled with an empty username/password. Lease/attempt times use DB time; the
+# lease always exceeds the bounded single-attempt deadline.
 analysis:
   request:
     enabled: ${ANALYSIS_REQUEST_ENABLED:false}
+  relay:
+    enabled: ${ANALYSIS_RELAY_ENABLED:false}
+    lease-duration: ${ANALYSIS_RELAY_LEASE_DURATION:60s}
+    retry-delay: ${ANALYSIS_RELAY_RETRY_DELAY:30s}
+    batch-size: ${ANALYSIS_RELAY_BATCH_SIZE:10}
+    interval: ${ANALYSIS_RELAY_INTERVAL:5s}
+    rabbit:
+      host: ${ANALYSIS_RABBIT_HOST:localhost}
+      port: ${ANALYSIS_RABBIT_PORT:5672}
+      vhost: ${ANALYSIS_RABBIT_VHOST:/}
+      username: ${ANALYSIS_RABBIT_USERNAME:}
+      password: ${ANALYSIS_RABBIT_PASSWORD:}
+      exchange: ${ANALYSIS_RABBIT_EXCHANGE:invoice.analysis}
+      queue: ${ANALYSIS_RABBIT_QUEUE:invoice.analysis.requests}
+      routing-key: ${ANALYSIS_RABBIT_ROUTING_KEY:document-parser-v1}
 
 document-storage:
   enabled: ${DOCUMENT_STORAGE_ENABLED:false}
