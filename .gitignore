@@ -12,3 +12,9 @@ output/
 .playwright-cli/
 .ui-design-review/
 *.tsbuildinfo
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
