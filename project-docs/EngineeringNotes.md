@@ -635,6 +635,26 @@ HTTP health 성공이 실제 S3 API의 초기화 완료까지 보장하지 않�
 
 관련 backend 커밋: `cd8f690`
 
+## P2-06 — SDK 종료 timeout과 실제 I/O 중단 경계
+
+### 문제
+
+발행 Future에 10초 timeout을 적용해도 timeout 처리에서 호출한 RabbitMQ SDK abort의 종료 프레임 쓰기가 멈추면 호출자도 대기할 수 있었다. 종료 응답 대기 timeout만으로 전체 호출 시간을 제한했다고 볼 수 없었다.
+
+### 위험 또는 원인
+
+SDK abort의 timeout은 close-ok 대기를 제한하며 그 앞의 socket write는 별도 경계다. 공유 cancellation/connection 상태나 timeout 직후 슬롯 해제는 이전 시도가 새 연결에 영향을 주거나 작업을 누적시키는 위험도 있었다.
+
+### 해결
+
+단일 admission 슬롯을 실제 작업 finally까지 유지하고 시도별 cancellation·연결·raw TCP socket을 분리했다. 소켓을 connect 이전 등록하고 timeout/interruption/close에서 소유 소켓만 직접 닫아 I/O를 중단한다. SDK 정리는 닫힌 소켓 위에서 worker가 수행하며 호출자는 SDK 종료 요청을 기다리지 않는다. application은 relay 정책/port, persistence는 token 조건부 갱신, infrastructure는 SDK/socket 수명을 맡는다.
+
+### 검증과 교훈
+
+실제 PostgreSQL/RabbitMQ에서 mandatory return·lease fencing·보완 취소 rollback·confirm 후 DB finalize 전 중단 재발행을 검증했다. 실제 handshake 중 close의 소유 소켓 EOF, 등록 경합의 늦은 연결 종료, outer deadline 후 busy 거부와 정상 발행 회복도 확인했다. 전체 baseline 612건과 국소 최종 focused 50건은 실패/오류/skip 0, bootJar 통과. 시간 제한은 timeout API 이름보다 어느 스레드가 어떤 I/O를 실제로 중단하는지로 판단해야 한다. 현재 plain TCP 경계는 TLS 도입 시 재검토한다.
+
+관련 최종 커밋: `17f869d`
+
 ## 앞으로 추가할 때의 형식
 
 새 사례는 아래 항목을 중심으로 짧게 추가한다.

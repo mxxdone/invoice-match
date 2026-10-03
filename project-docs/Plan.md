@@ -350,7 +350,7 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 ### P2-06 — 분석 요청 RabbitMQ publisher relay
 
-**진행 상태:** 착수(2026-10-03), 선행 P2-05 main `330c9fc`. 이번에는 발행 경계만 인수한다. Python consumer·원본 접근·분석 결과 멱등 반영은 P2-07, 제한 재시도/DLQ·운영 재처리는 후속 Ticket이다.
+**진행 상태:** 구현·Head 인수 완료(2026-10-03), 최종 Worker `17f869d`, 선행 P2-05 main `330c9fc`. claim/token fencing·DB-time lease·mandatory return/confirm·보완 취소 rollback·중단 후 동일 eventId 재발행과 3레이어 책임/의존성을 실제 코드로 검수했다. 전체 backend 612건(실패/오류/skip 0, `4d92fb8`)과 bootJar, 이후 adapter 국소 수정의 최종 focused 50건(실패/오류/skip 0, Rabbit 8건 포함)과 bootJar 통과. timeout/close는 시도별 소유 raw TCP socket을 닫아 SDK 종료 쓰기를 기다리지 않으며 실제 handshake EOF·등록 경합·슬롯 복구 회귀로 확인했다. 전체 baseline과 최종 로그/XML은 ignored `output/p2-06/baseline-4d92fb8/`, `output/p2-06/accepted-evidence/`에 보존한다. 현재 adapter는 plain TCP 전용이며 TLS 도입 때 socket 소유 경계를 재검토한다. 원격 CI/PDF 인쇄 미리보기는 별도 대기다. 이번에는 발행 경계만 인수한다. Python consumer·원본 접근·분석 결과 멱등 반영은 P2-07, 제한 재시도/DLQ·운영 재처리는 후속 Ticket이다.
 
 **범위/구현 순서:** `core-api/analysis`에 lease 저장소 → 발행 application port/relay → RabbitMQ infrastructure adapter/조건부 scheduler → V13/설정/테스트를 구현한다. 지급 Outbox/HTTP relay, 업무 사건 상태·승인·증빙/hash, Python/web/HTTP route를 변경하지 않는다. SDK는 `com.rabbitmq:amqp-client:5.36.0`만 추가한다([공식 Java client](https://www.rabbitmq.com/client-libraries/java-client)); AMQP starter/자동 health 연결은 추가하지 않는다. RabbitMQ 실행 구성은 이번에 Compose로 확장하지 않고 실제 broker 통합 테스트로 검증한다.
 
