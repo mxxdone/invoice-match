@@ -413,12 +413,16 @@ class SafeOoxmlSpreadsheetParser:
                         shared_strings,
                         date_styles,
                     )
-                    if parsed is None:
-                        continue
-                    if parsed.column <= last_column:
+                    reference = cell_element.get("r")
+                    column = (
+                        _column_index(_COLUMN_RE.fullmatch(reference).group(1))
+                        if reference else last_column + 1
+                    )
+                    if column <= last_column:
                         raise errors.ParseFailure(errors.XLSX_CORRUPT)
-                    last_column = parsed.column
-                    cells.append(parsed)
+                    last_column = column
+                    if parsed is not None:
+                        cells.append(parsed)
                 if cells:
                     rows.append(SheetRow(row=row_number, cells=tuple(cells)))
                 element.clear()

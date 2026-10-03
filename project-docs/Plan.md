@@ -308,7 +308,7 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 ### P2-04 — 제한된 자원의 PDF text layer·XLSX 구조 파서
 
-**진행 상태:** 착수(2026-10-03). P2-03 통합·push된 `010f583`에서 분기한다. 사용자는 P2-03 PDF 실제 인쇄와 원격 CI 결과를 후속 일괄 확인으로 명시적으로 미뤘으므로 두 사람 확인 항목은 이번 착수를 막지 않는다. Head가 계약·인수와 3 레이어 검토를 맡고, 설정된 Implementation Worker에 격리 worktree의 파서 구현을 위임한다. 이번 Ticket 인수 후 AnalysisRun·분석 Outbox·RabbitMQ 연결 Ticket으로 이어간다.
+**진행 상태:** 구현·Head 인수 완료(2026-10-03). Worker의 `16be1bc`·`ac8db2c`에 Head의 process group 정리, Linux fail-closed, 격리 전 ZIP 접근 제거, 빈 셀 좌표 보존과 검증 스크립트 보완을 통합했다. application의 정책/port, infrastructure의 SDK/OS 실행, 순수 domain을 실제 코드로 검토했다. Linux 89 passed/2 host-guard skips와 설치 wheel/CLI smoke PASS; Windows 78 passed/11 Linux-only skips 후 빈 셀 focused 2건 PASS. Linux script의 8초 deadline 실패와 own client/container cleanup도 검증했다. 근거: ignored `output/p2-04/logs/linux-verify-19144.log`, `linux-verify-28324.log`, `head-windows.log`, `head-empty-cells.log`. P2-03 실제 인쇄와 원격 CI 결과 확인은 사용자 요청대로 후속 일괄 확인 항목이다.
 
 **목적/범위:** `Spec.md` 15·16의 Python 3.12 `ai-worker` 실행 단위에 PDF text layer와 XLSX 원문 구조를 읽는 파서 기반을 만든다. 아직 public HTTP 파싱 endpoint나 분석 요청 API·DB 결과 저장·broker를 열지 않는다. 내부 호출/CLI로 검증 가능한 parser library와 process runner, 최소 Python 패키지/테스트·재현 실행 방법 및 parser 전용 CI job만 포함한다. core-api·web·기존 Compose의 제품 동작을 변경하지 않는다.
 
@@ -329,6 +329,22 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 **실행/정리:** 현재 root의 사용자 수정 AGENTS/Implement를 worktree에 전달하고 Worker는 해당 두 파일을 stage/commit하지 않는다. cache·venv·TEMP·검증 산출물은 가능한 D 드라이브의 ignored 경로에 두며 실시간 로그·명령 deadline·본인 PID/container/temp 기록·성공/실패 cleanup을 지킨다. C 여유 5GiB 미만에서 큰 Docker 빌드를 시작하지 않는다. Linux 검증에 필요한 작은 공식 Python runtime의 다운로드도 사전 여유/사용량을 확인하고 분리해서 기록하며 서비스 전체 rebuild는 하지 않는다. 진행이 막히면 원인과 실패 명령을 바로 보고하고 무관한 파일/반복 test를 늘리지 않는다. main merge/push는 Head만 수행한다.
 
 **선행/제외:** P2-03. AnalysisRun·RabbitMQ·재시도/DLQ·OCR·LLM/LangGraph·UI·DB migration·기존 업무 상태/증빙/hash 변경은 후속 Ticket이다.
+
+### P2-05 — AnalysisRun과 분석 요청 transactional Outbox
+
+**진행 상태:** 착수 준비(2026-10-03). P2-04를 인수한 다음 비동기 실행의 DB 예약부터 구현한다. RabbitMQ relay·Python consumer·결과 반영은 P2-06에서 연결하고 재시도/DLQ·운영 재처리는 그 다음 Ticket으로 분리한다.
+
+**범위/기준:** `core-api`의 새 `analysis` feature, 제출 application 연결, V12 migration, 설정과 backend 테스트/검증 스크립트만 변경한다. 제품 의미는 `Spec.md` 10.2·14.2를 따른다. 이번에는 기존 `InvoiceCaseStatus`와 제출 응답·승인·대사·canonical evidence/hash를 보존하고 parser나 네트워크를 제출 transaction에서 실행하지 않는다. `analysis.request.enabled` 기본값은 false다. true이며 동결 문서가 있는 제출에만 예약하며, 문서 없는 legacy 제출에는 예약하지 않는다. HTTP endpoint·UI·broker·Python 변경·새 dependency는 제외한다.
+
+**저장 계약:** `analysis_run`은 UUID id, invoiceCaseId, evidenceBundleId, inputVersion(묶음 version), evidencePayloadHash, workflowVersion=`document-parser-v1`, status, createdAt/updatedAt를 저장한다. 이번 상태 전이는 생성 `QUEUED`와 새 증빙 제출에 따른 `STALE`만 구현한다. future 상태를 미리 실행하거나 임의 성공으로 처리하지 않는다. 동일 `(invoiceCaseId,inputVersion,workflowVersion)`는 DB unique로 한 실행만 존재한다. `(evidenceBundleId,invoiceCaseId,inputVersion)` 복합 FK로 동일 사건/묶음/version을 보장한다. 입력 identity/hash/workflow는 생성 후 변경하거나 삭제하지 않는다.
+
+**Outbox 계약:** 지급요청 `payment/outbox_event`와 분리한 `analysis_request_outbox`에 UUID id, analysisRunId(unique FK), schemaVersion=`analysis-request-v1`, immutable JSON payload, status=`READY`, createdAt를 저장한다. 이번 상태는 READY와 STALE 예약의 CANCELLED뿐이며 lease/전송 필드와 relay는 P2-06이 맡는다. payload는 eventId/outbox id, analysisRunId, invoiceCaseId, evidenceBundleId, inputVersion, evidencePayloadHash, workflowVersion, documents를 담는다. documents는 동결된 `DocumentEvidence`의 documentId/sourceDraftRevisionId/fileName/mediaType/sizeBytes/checksum을 documentId 순으로 정렬한 배열이다. 원본 byte, object key, URL, credential, 실행 시각은 넣지 않는다. schema와 payload는 생성 후 수정/삭제하지 않는다. 향후 발행은 publisher confirm과 consumer의 영속화 후 ACK를 구분한다([RabbitMQ 계약](https://www.rabbitmq.com/docs/confirms)); 이번에는 발행하지 않는다.
+
+**application 연결:** `AnalysisRequestService.onEvidenceSubmitted(AnalysisInput)`을 제출의 동결 bundle 저장 직후, 감사·멱등 응답 기록 전에 호출한다. `AnalysisInput`은 위 입력 identity와 immutable document metadata를 갖는 application record다. 서비스는 `MANDATORY`로 기존 제출 transaction에 참여한다. 새 묶음 제출에서는 enable 여부·문서 유무와 관계없이 같은 사건의 낮은 inputVersion 예약을 STALE로 만들고 해당 READY Outbox를 CANCELLED로 만든다. enable=true + 문서 있음이면 새 QUEUED 실행과 READY Outbox를 저장한다. replay는 기존 제출 멱등 응답을 그대로 반환하여 추가 예약하지 않는다. 기존 사건 lock을 유지하며 예약·취소·bundle·audit·idempotency가 모두 commit 또는 rollback된다.
+
+**3 레이어:** 순수 domain은 상태/identity 불변식만 갖는다. application은 enable/문서 유무/버전 교체 판단·payload 정규화·transaction 조정을 소유한다. persistence는 SQL/JPA 저장·동일 사건 FK·unique·불변 입력 보호만 맡고 application/API를 import하지 않는다. `InvoiceCaseWriteService`는 analysis application을 호출하며 analysis persistence를 직접 참조하지 않는다. 새 scanner/lint framework나 빈 계층을 만들지 않는다. 기존 선택과 충돌하면 Head에게 보고한다.
+
+**검증/인수:** 실제 PostgreSQL migration과 submission 통합 테스트로 enabled 문서 제출의 run+Outbox 각 1개, disabled/legacy 예약 0개, 동일 request replay 및 다른 request 동시 제출에서도 중복 예약 없음, 감사 실패 rollback 후 예약 0개와 재시도 성공, 보완 제출의 이전 STALE/READY 취소와 새 예약을 검증한다. 새 제출 실패 시 이전 상태도 rollback되는지 확인한다. 복합 FK 교차 사건/version 실패, unique 충돌과 입력/payload UPDATE·DELETE 거부를 실제 DB에서 검증한다. 문서 배열/hash가 frozen evidence와 일치하며 URL/key/secret가 없는지 확인한다. 기존 문서 제출·보완·승인 focused 회귀 후 backend whole suite와 bootJar를 실행한다. Python/web 전체 테스트나 Compose 전체 빌드는 범위 밖이다. 공통 실행/정리는 `Implement.md`, 결과는 ignored `output/p2-05/`에 기록한다. Worker는 feature commit만, Head가 인수·통합·push한다.
 
 ### Phase 2 후속 실행 순서
 

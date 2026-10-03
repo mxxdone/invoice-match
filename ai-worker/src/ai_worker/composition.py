@@ -6,12 +6,9 @@ it receives them through the ports defined in :mod:`ai_worker.application.ports`
 
 from __future__ import annotations
 
-import json
-
 from ai_worker.application.limits import DEFAULT_LIMITS, ParseLimits
 from ai_worker.application.service import ParseDocumentService, ParseRequest
-from ai_worker.application.wire import result_to_wire
-from ai_worker.domain import errors
+from ai_worker.application.wire import bounded_result_to_wire
 from ai_worker.domain.result import DocumentParseResult
 from ai_worker.infrastructure.format_detect import MagicFormatDetector
 from ai_worker.infrastructure.hashing import Sha256Hasher
@@ -59,10 +56,4 @@ def run_child_parse(header: dict, data: bytes) -> dict:
         sha256=header["sha256"],
     )
     result = parse_in_process(request, data, limits)
-    wire = result_to_wire(result)
-    payload = json.dumps(
-        wire, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
-    if len(payload) > limits.max_result_json_bytes:
-        raise errors.ParseFailure(errors.RESULT_TOO_LARGE)
-    return wire
+    return bounded_result_to_wire(result, limits.max_result_json_bytes)

@@ -10,7 +10,6 @@ content, paths and SDK exceptions are never written out.
 
 from __future__ import annotations
 
-import os
 import sys
 
 from ai_worker.domain import errors
@@ -21,8 +20,8 @@ _DEFAULT_MEMORY_BYTES = 512 * 1024 * 1024
 
 
 def apply_process_memory_limit(memory_bytes: int) -> None:
-    """Cap this process's address space. Linux/posix only; fails closed."""
-    if os.name != "posix":
+    """Cap this process's address space. Linux only; fails closed."""
+    if not sys.platform.startswith("linux"):
         raise errors.ParseFailure(errors.UNSUPPORTED_HOST)
     import resource
 
@@ -71,9 +70,9 @@ def main() -> int:
         return 1
 
     # Import the parser stack only after the memory limit is in force.
-    from ai_worker import composition
-
     try:
+        from ai_worker import composition
+
         result = composition.run_child_parse(header, data)
     except errors.ParseFailure as exc:
         _emit({"ok": False, "error": exc.to_wire()})

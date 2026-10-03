@@ -55,6 +55,9 @@ Linux-only process tests are skipped there):
 $py = "C:\Users\flash\AppData\Local\Programs\Python\Python312\python.exe"
 $venv = "D:\workspace\invoice-match\output\p2-04\venv"      # ignored, on D
 & $py -m venv $venv
+$env:TEMP = "D:\workspace\invoice-match\output\p2-04\temp"
+$env:TMP = $env:TEMP
+New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
 & "$venv\Scripts\python.exe" -m pip install -r requirements-dev.txt
 $env:PYTHONPATH = "$PWD\src"
 & "$venv\Scripts\python.exe" -m pytest tests
@@ -62,7 +65,8 @@ $env:PYTHONPATH = "$PWD\src"
 
 Linux (real OS limits): reuse the verification script, which installs the
 package as a wheel and runs the full suite plus the installed CLI smoke inside
-a small `python:3.12-slim` runtime with a bounded deadline and cleanup:
+a small `python:3.12-slim` runtime with a bounded deadline and cleanup. The
+Linux venv uses a bounded RAM mount; pip cache and evidence stay on D:
 
 ```powershell
 pwsh -File ..\scripts\verify-p2-04-linux.ps1

@@ -67,6 +67,25 @@ SHEET_REL = (
 )
 
 
+def test_empty_cell_still_advances_implicit_column():
+    data = _baseline(entries_override={
+        "xl/worksheets/sheet1.xml": _sheet('<row r="1"><c r="B1"/><c><v>9</v></c></row>')
+    })
+    cells = _parse(data).spreadsheet.sheets[0].rows[0].cells
+    assert len(cells) == 1
+    assert cells[0].coordinate == "C1"
+    assert cells[0].column == 3
+
+
+def test_duplicate_empty_cell_is_corrupt():
+    data = _baseline(entries_override={
+        "xl/worksheets/sheet1.xml": _sheet('<row r="1"><c r="A1"/><c r="A1"><v>9</v></c></row>')
+    })
+    with pytest.raises(errors.ParseFailure) as excinfo:
+        _parse(data)
+    assert excinfo.value.code == errors.XLSX_CORRUPT
+
+
 def test_wrong_workbook_root_rejected():
     data = _baseline(
         entries_override={

@@ -7,7 +7,20 @@ metadata produce byte-identical JSON.
 
 from __future__ import annotations
 
+import json
+
+from ai_worker.domain import errors
 from ai_worker.domain.result import DocumentParseResult
+
+
+def bounded_result_to_wire(result: DocumentParseResult, max_bytes: int) -> dict:
+    wire = result_to_wire(result)
+    payload = json.dumps(
+        wire, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    if len(payload) > max_bytes:
+        raise errors.ParseFailure(errors.RESULT_TOO_LARGE)
+    return wire
 
 
 def _cell_to_wire(cell) -> dict:

@@ -51,7 +51,7 @@ def _parse_command(args: argparse.Namespace) -> int:
             size_bytes=args.size_bytes,
             sha256=args.sha256,
         )
-        composition.build_service().verify_source(request, data)
+        composition.build_service().verify_metadata(request, data)
         wire = composition.parse_isolated(request, data)
     except errors.ParseFailure as exc:
         sys.stderr.write(

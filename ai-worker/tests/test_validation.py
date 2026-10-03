@@ -1,5 +1,6 @@
 import hashlib
 import os
+import sys
 
 import pytest
 from fixtures import PDF_MEDIA_TYPE, XLSX_MEDIA_TYPE, build_pdf
@@ -77,9 +78,30 @@ def test_error_messages_do_not_leak_content_or_paths():
     assert data[:8].decode("latin-1") not in serialized
 
 
-@pytest.mark.skipif(os.name == "posix", reason="host guard is for non-Linux hosts")
+@pytest.mark.skipif(sys.platform.startswith("linux"), reason="host guard is for non-Linux hosts")
 def test_production_entry_fails_closed_without_os_memory_limit():
     header = {"sizeBytes": 0}
     with pytest.raises(errors.ParseFailure) as excinfo:
         ProcessSupervisor().run(header, b"", DEFAULT_LIMITS)
+    assert excinfo.value.code == errors.UNSUPPORTED_HOST
+
+
+def test_metadata_verification_does_not_open_a_container(monkeypatch):
+    service = composition.build_service()
+    def fail_if_opened(data):
+        raise AssertionError("format detection must run only inside isolated parser")
+    monkeypatch.setattr(service._detector, "detect", fail_if_opened)
+    data = _valid_pdf()
+    assert service.verify_metadata(_request(data), data) == hashlib.sha256(data).hexdigest()
+
+
+def test_non_linux_posix_host_is_rejected(monkeypatch):
+    from ai_worker.infrastructure import child, process_supervisor
+    monkeypatch.setattr(process_supervisor, "_IS_LINUX", False)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    with pytest.raises(errors.ParseFailure) as excinfo:
+        ProcessSupervisor().run({"sizeBytes": 0}, b"")
+    assert excinfo.value.code == errors.UNSUPPORTED_HOST
+    with pytest.raises(errors.ParseFailure) as excinfo:
+        child.apply_process_memory_limit(DEFAULT_LIMITS.memory_bytes)
     assert excinfo.value.code == errors.UNSUPPORTED_HOST

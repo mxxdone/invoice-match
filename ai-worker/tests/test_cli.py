@@ -83,7 +83,7 @@ def test_cli_metadata_checksum_mismatch(tmp_path):
     assert json.loads(result.stderr)["error"]["code"] == "CHECKSUM_MISMATCH"
 
 
-@pytest.mark.skipif(os.name == "posix", reason="host guard is for non-Linux hosts")
+@pytest.mark.skipif(sys.platform.startswith("linux"), reason="host guard is for non-Linux hosts")
 def test_cli_valid_metadata_fails_closed_on_windows(tmp_path):
     data = build_pdf(["가나다"])
     path = tmp_path / "doc.pdf"
@@ -93,7 +93,7 @@ def test_cli_valid_metadata_fails_closed_on_windows(tmp_path):
     assert json.loads(result.stderr)["error"]["code"] == "UNSUPPORTED_HOST"
 
 
-@pytest.mark.skipif(os.name != "posix", reason="isolated production path is Linux-only")
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="isolated production path is Linux-only")
 def test_cli_isolated_parse_success(tmp_path):
     data = build_pdf(["격리", None])
     path = tmp_path / "doc.pdf"

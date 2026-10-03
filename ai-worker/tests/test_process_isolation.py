@@ -9,6 +9,9 @@ uses; the parent does not set limits via `preexec_fn`.
 import hashlib
 import os
 import sys
+import time
+import threading
+from pathlib import Path
 
 import pytest
 from fixtures import PDF_MEDIA_TYPE, build_pdf
@@ -20,7 +23,7 @@ from ai_worker.domain import errors
 from ai_worker.infrastructure.process_supervisor import ProcessSupervisor
 
 pytestmark = pytest.mark.skipif(
-    os.name != "posix", reason="requires Linux OS resource limits"
+    not sys.platform.startswith("linux"), reason="requires Linux OS resource limits"
 )
 
 
@@ -132,3 +135,31 @@ def test_isolated_parse_succeeds_after_failures():
     result = composition.parse_isolated(_pdf_request(data), data, DEFAULT_LIMITS)
     assert result["kind"] == "pdf"
     assert result["pdf"]["pages"][0]["text"] == "정상"
+
+
+def test_exited_leader_does_not_leave_descendant_pipes_or_threads(tmp_path):
+    pid_file = tmp_path / "descendant.pid"
+    script = (
+        "import subprocess, sys\n"
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "open(sys.argv[1], 'w').write(str(p.pid))\n"
+        "print('{\"ok\": true, \"result\": {}}', flush=True)\n"
+    )
+    started = time.monotonic()
+    result = _run_script(script, ParseLimits(wall_seconds=2.0), script_args=[str(pid_file)])
+    assert result == {}
+    assert time.monotonic() - started < 2.0
+    pid = int(pid_file.read_text())
+    stat = Path(f"/proc/{pid}/stat")
+    # PID 1 may retain an orphan zombie; a zombie holds no pipe or memory.
+    assert not stat.exists() or stat.read_text().split()[2] == "Z"
+    assert not any(t.name.startswith("parser-") for t in threading.enumerate())
+    data = build_pdf(["회복"])
+    assert composition.parse_isolated(_pdf_request(data), data)["kind"] == "pdf"
+
+
+def test_error_envelope_requires_explicit_false():
+    script = "print('{\"error\": {\"code\": \"PDF_CORRUPT\"}}')\n"
+    with pytest.raises(errors.ParseFailure) as excinfo:
+        _run_script(script, ParseLimits(wall_seconds=2.0))
+    assert excinfo.value.code == errors.INTERNAL_ERROR

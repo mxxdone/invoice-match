@@ -11,7 +11,7 @@ The parent bounds the child on four axes:
   (see :mod:`ai_worker.infrastructure.child`); the parent never uses
   ``preexec_fn`` in a threaded process.
 
-Only Linux/POSIX is a supported production host; other hosts fail closed with
+Only Linux is a supported production host; other hosts fail closed with
 ``UNSUPPORTED_HOST``. All owned processes, pipes and threads are reclaimed in
 ``finally``.
 """
@@ -30,7 +30,7 @@ from ai_worker.application.limits import DEFAULT_LIMITS, ParseLimits
 from ai_worker.domain import errors
 from ai_worker.infrastructure import protocol
 
-_IS_POSIX = os.name == "posix"
+_IS_LINUX = sys.platform.startswith("linux")
 _READ_CHUNK = 64 * 1024
 _OUTPUT_SLACK = 256 * 1024
 _STDERR_CAP = 256 * 1024
@@ -69,16 +69,16 @@ class ProcessSupervisor:
     def run(
         self, header: dict, data: bytes, limits: ParseLimits = DEFAULT_LIMITS
     ) -> dict:
-        if not _IS_POSIX:
+        if not _IS_LINUX:
             raise errors.ParseFailure(errors.UNSUPPORTED_HOST)
         if header.get("sizeBytes") != len(data):
             raise errors.ParseFailure(errors.SIZE_MISMATCH)
         if len(data) > limits.max_input_bytes:
             raise errors.ParseFailure(errors.INPUT_TOO_LARGE)
 
+        deadline = time.monotonic() + limits.wall_seconds
         payload = protocol.encode_request(header, data)
         max_output = limits.max_result_json_bytes + _OUTPUT_SLACK
-        deadline = time.monotonic() + limits.wall_seconds
 
         process: subprocess.Popen | None = None
         threads: list[threading.Thread] = []
@@ -118,11 +118,17 @@ class ProcessSupervisor:
                 self._terminate(process)
                 raise errors.ParseFailure(failure)
 
-            if not self._join(threads, _PIPE_DRAIN_TIMEOUT):
+            # The group id is the pid assigned by start_new_session. Its leader
+            # may already be reaped, so getpgid(pid) cannot find descendants.
+            self._kill_group(process)
+            remaining = max(0.0, deadline - time.monotonic())
+            if not self._join(threads, min(_PIPE_DRAIN_TIMEOUT, remaining)):
                 # A descendant still holds a pipe open; kill the group and do
                 # not wait indefinitely.
                 self._terminate(process)
-                raise errors.ParseFailure(errors.PARSER_CRASHED)
+                raise errors.ParseFailure(
+                    errors.TIMEOUT if time.monotonic() >= deadline else errors.PARSER_CRASHED
+                )
 
             # The child may have exited in the same instant the reader crossed
             # the cap; re-check the race before interpreting the output.
@@ -164,7 +170,7 @@ class ProcessSupervisor:
                 raise errors.ParseFailure(errors.RESULT_TOO_LARGE)
             return result
 
-        error = envelope.get("error")
+        error = envelope.get("error") if envelope.get("ok") is False else None
         code = error.get("code") if isinstance(error, dict) else None
         if errors.is_known_code(code):
             raise errors.ParseFailure(code)
@@ -183,19 +189,21 @@ class ProcessSupervisor:
         return all(not thread.is_alive() for thread in threads)
 
     @staticmethod
-    def _terminate(process: subprocess.Popen) -> None:
+    def _kill_group(process: subprocess.Popen) -> None:
         try:
-            if _IS_POSIX:
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            if _IS_LINUX:
+                os.killpg(process.pid, signal.SIGKILL)
             else:
                 process.kill()
         except (ProcessLookupError, PermissionError, OSError):
             pass
+    @staticmethod
+    def _terminate(process: subprocess.Popen) -> None:
+        ProcessSupervisor._kill_group(process)
         try:
             process.wait(timeout=_JOIN_TIMEOUT)
         except subprocess.TimeoutExpired:
             pass
-        ProcessSupervisor._close_pipes(process)
 
     @staticmethod
     def _close_pipes(process: subprocess.Popen) -> None:
@@ -209,9 +217,12 @@ class ProcessSupervisor:
     def _cleanup(
         self, process: subprocess.Popen | None, threads: list[threading.Thread]
     ) -> None:
-        if process is not None and process.poll() is None:
+        if process is not None:
             self._terminate(process)
-        self._join(threads, _JOIN_TIMEOUT)
+        # Closing a buffered pipe while a reader/writer owns its lock can block
+        # indefinitely. Kill the owned group first and let I/O threads finish.
+        if self._join(threads, _JOIN_TIMEOUT) and process is not None:
+            self._close_pipes(process)
 
 
 class _StdinWriter(threading.Thread):

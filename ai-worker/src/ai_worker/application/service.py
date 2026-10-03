@@ -62,14 +62,8 @@ class ParseDocumentService:
     def limits(self) -> ParseLimits:
         return self._limits
 
-    def verify_source(
-        self, request: ParseRequest, data: bytes
-    ) -> tuple[str, SourceMetadata]:
-        """Validate declared size/checksum/format without parsing the document.
-
-        Shared by the in-process service and the CLI so confirmed metadata is
-        checked before the isolated parser is started.
-        """
+    def verify_metadata(self, request: ParseRequest, data: bytes) -> str:
+        """Verify byte metadata without opening an untrusted file container."""
         limits = self._limits
 
         if request.size_bytes > limits.max_input_bytes:
@@ -82,6 +76,13 @@ class ParseDocumentService:
         actual_sha256 = self._hasher.digest(data)
         if actual_sha256.lower() != request.sha256.strip().lower():
             raise errors.ParseFailure(errors.CHECKSUM_MISMATCH)
+        return actual_sha256.lower()
+
+    def verify_source(
+        self, request: ParseRequest, data: bytes
+    ) -> tuple[str, SourceMetadata]:
+        """Verify metadata and detect the format inside the isolated parser."""
+        actual_sha256 = self.verify_metadata(request, data)
 
         kind = self._detector.detect(data)
         if kind is None:
