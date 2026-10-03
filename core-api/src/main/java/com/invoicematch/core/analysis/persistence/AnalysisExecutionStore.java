@@ -51,7 +51,7 @@ public class AnalysisExecutionStore {
                 (rs, n) -> rs.getObject("id", UUID.class), caseIds.get(0));
         return jdbc.query(
                 "select id, invoice_case_id, evidence_bundle_id, input_version, evidence_payload_hash,"
-                        + " workflow_version, status, execution_token, lease_until, execution_attempt,"
+                        + " workflow_version, status, execution_token, lease_until, execution_attempt, attempt_limit,"
                         + " (lease_until is not null and lease_until > clock_timestamp()) as lease_active"
                         + " from analysis_run where id = ? for update",
                 (rs, n) -> new AnalysisRunSnapshot(
@@ -65,7 +65,7 @@ public class AnalysisExecutionStore {
                         rs.getObject("execution_token", UUID.class),
                         rs.getTimestamp("lease_until") == null ? null : rs.getTimestamp("lease_until").toInstant(),
                         rs.getInt("execution_attempt"),
-                        rs.getBoolean("lease_active")),
+                        rs.getBoolean("lease_active"), rs.getInt("attempt_limit")),
                 runId).stream().findFirst();
     }
 
@@ -89,7 +89,7 @@ public class AnalysisExecutionStore {
                         + " set status = 'RUNNING', execution_token = ?,"
                         + " lease_until = clock_timestamp() + (cast(? as double precision) * interval '1 second'),"
                         + " execution_attempt = execution_attempt + 1, updated_at = clock_timestamp()"
-                        + " where id = ? and (status = 'QUEUED'"
+                        + " where id = ? and (status in ('QUEUED', 'RETRY_SCHEDULED')"
                         + " or (status = 'RUNNING' and lease_until <= clock_timestamp()))"
                         + " returning lease_until",
                 (rs, n) -> rs.getTimestamp("lease_until").toInstant(),

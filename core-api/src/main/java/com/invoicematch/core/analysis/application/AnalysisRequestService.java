@@ -43,7 +43,9 @@ public class AnalysisRequestService {
             AnalysisRunStatus.QUEUED,
             AnalysisRunStatus.RUNNING,
             AnalysisRunStatus.COMPLETED,
-            AnalysisRunStatus.FAILED);
+            AnalysisRunStatus.FAILED,
+            AnalysisRunStatus.RETRY_SCHEDULED,
+            AnalysisRunStatus.DEAD_LETTERED);
 
     private final AnalysisRunRepository runs;
     private final AnalysisRequestOutboxRepository outboxes;

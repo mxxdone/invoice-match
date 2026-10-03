@@ -137,6 +137,8 @@ class Core(Protocol):
     def heartbeat(self, request: Request, token: str) -> dict: ...
     def source(self, request: Request, token: str, document: Document) -> bytes: ...
     def result(self, request: Request, token: str, document: Document, payload: dict) -> dict: ...
+    def failure(self, request: Request, token: str, code: str) -> dict: ...
+    def defer(self, request: Request) -> dict: ...
 
 
 class Parser(Protocol):
@@ -171,7 +173,8 @@ class ProcessDelivery:
             return
         if disposition == "BUSY":
             keys(claim, {"disposition", "leaseUntil"})
-            raise WorkerFailure("RUN_BUSY")
+            self._checkpoint(self.core.defer(request))
+            return
         keys(claim, {"disposition", "claimToken", "leaseUntil", "invoiceCaseId", "evidenceBundleId",
                      "inputVersion", "evidencePayloadHash", "workflowVersion", "documents"})
         if disposition != "CLAIMED" or (claim["invoiceCaseId"], claim["evidenceBundleId"],
@@ -183,7 +186,22 @@ class ProcessDelivery:
         if frozen != request.documents:
             raise WorkerFailure("CLAIM_MISMATCH")
         token = uuid(claim["claimToken"])
-        require_lease(claim["leaseUntil"])
+        try:
+            self._documents(request, frozen, token, claim["leaseUntil"], active)
+        except WorkerFailure as exc:
+            if exc.code == "SHUTTING_DOWN":
+                raise
+            active()
+            self._checkpoint(self.core.failure(request, token, exc.code))
+
+    def _checkpoint(self, reply: dict) -> None:
+        keys(reply, {"disposition", "runStatus"})
+        if reply["disposition"] != "CHECKPOINTED" or reply["runStatus"] not in {
+                "QUEUED", "RUNNING", "RETRY_SCHEDULED", "DEAD_LETTERED", "STALE", "COMPLETED", "FAILED"}:
+            raise WorkerFailure("INVALID_PROTOCOL")
+
+    def _documents(self, request, frozen, token, lease, active):
+        require_lease(lease)
         for index, document in enumerate(frozen):
             active()
             heartbeat = keys(self.core.heartbeat(request, token), {"leaseUntil"})

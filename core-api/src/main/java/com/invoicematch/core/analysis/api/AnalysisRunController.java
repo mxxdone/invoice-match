@@ -1,5 +1,7 @@
 package com.invoicematch.core.analysis.api;
 
+import com.invoicematch.core.analysis.application.AnalysisFailureCommand;
+import com.invoicematch.core.analysis.application.AnalysisRecoveryService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -56,8 +58,10 @@ public class AnalysisRunController {
     private final AnalysisExecutionService service;
     private final ObjectMapper mapper;
     private final AnalysisSourceService sources;
+    private final AnalysisRecoveryService recovery;
 
-    public AnalysisRunController(AnalysisExecutionService service, ObjectMapper mapper, AnalysisSourceService sources) {
+    public AnalysisRunController(AnalysisExecutionService service, ObjectMapper mapper, AnalysisSourceService sources, AnalysisRecoveryService recovery) {
+        this.recovery=recovery;
         this.service = service;
         this.mapper = mapper;
         this.sources = sources;
@@ -91,6 +95,21 @@ public class AnalysisRunController {
             case ClaimOutcome.AlreadyFinished ignored -> noStore(DispositionResponse.alreadyFinished());
             case ClaimOutcome.Stale ignored -> noStore(DispositionResponse.stale());
         };
+    }
+
+    public record FailureRequest(UUID claimToken, Integer inputVersion, String evidencePayloadHash, String errorCode) {}
+
+    @PostMapping("/{id}/failures")
+    public ResponseEntity<Object> failure(@PathVariable UUID id, @RequestBody JsonNode body) {
+        var r=readEnvelope(body,Set.of("claimToken","inputVersion","evidencePayloadHash","errorCode"),FailureRequest.class);
+        return noStore(recovery.failure(id,new AnalysisFailureCommand(
+                r.claimToken(),r.inputVersion(),r.evidencePayloadHash(),r.errorCode())));
+    }
+
+    @PostMapping("/{id}/defer")
+    public ResponseEntity<Object> defer(@PathVariable UUID id,@RequestBody JsonNode body) {
+        var r=readEnvelope(body,CLAIM_KEYS,ClaimRequest.class);
+        return noStore(recovery.defer(id,new AnalysisClaimCommand(r.eventId(),r.inputVersion(),r.evidencePayloadHash(),r.workflowVersion())));
     }
 
     @PostMapping("/{id}/heartbeat")

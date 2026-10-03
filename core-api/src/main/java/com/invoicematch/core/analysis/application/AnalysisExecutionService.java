@@ -1,5 +1,6 @@
 package com.invoicematch.core.analysis.application;
 
+import com.invoicematch.core.analysis.persistence.AnalysisRecoveryStore;
 import com.invoicematch.core.analysis.domain.AnalysisRunStatus;
 import com.invoicematch.core.analysis.persistence.AnalysisDocumentResultStore;
 import com.invoicematch.core.analysis.persistence.AnalysisExecutionStore;
@@ -40,6 +41,8 @@ public class AnalysisExecutionService {
     private final AnalysisExecutionProperties properties;
     private final Clock clock;
     private final DocumentStore documents;
+    private final AnalysisRecoveryService recovery;
+    private final AnalysisRecoveryStore recoveryStore;
 
     public AnalysisExecutionService(
             AnalysisExecutionStore execution,
@@ -47,7 +50,9 @@ public class AnalysisExecutionService {
             AnalysisManifestVerifier manifestVerifier,
             AnalysisResultValidator validator,
             AnalysisExecutionProperties properties,
-            Clock clock, DocumentStore documents) {
+            Clock clock, DocumentStore documents, AnalysisRecoveryService recovery,
+            AnalysisRecoveryStore recoveryStore) {
+        this.recovery=recovery; this.recoveryStore=recoveryStore;
         this.execution = execution;
         this.results = results;
         this.manifestVerifier = manifestVerifier;
@@ -76,8 +81,21 @@ public class AnalysisExecutionService {
 
         return switch (run.status()) {
             case STALE -> new ClaimOutcome.Stale();
-            case COMPLETED, FAILED -> new ClaimOutcome.AlreadyFinished(run.status());
-            case RUNNING -> run.leaseActive() ? new ClaimOutcome.Busy(run.leaseUntil()) : claim(run);
+            case COMPLETED, FAILED, DEAD_LETTERED -> new ClaimOutcome.AlreadyFinished(run.status());
+            case RUNNING -> {
+                if (run.leaseActive()) yield new ClaimOutcome.Busy(run.leaseUntil());
+                if (run.executionAttempt() >= run.attemptLimit()) {
+                    recovery.exhausted(run);
+                    yield new ClaimOutcome.AlreadyFinished(AnalysisRunStatus.DEAD_LETTERED);
+                }
+                yield claim(run);
+            }
+            case RETRY_SCHEDULED -> {
+                var due=recoveryStore.pendingDeadline(runId);
+                if (due.isEmpty()) throw conflict("LEASE_CONFLICT", "missing durable recovery checkpoint");
+                if (due.isPresent() && !recoveryStore.retryDue(runId)) yield new ClaimOutcome.Busy(due.get());
+                yield claim(run);
+            }
             case QUEUED -> claim(run);
         };
     }

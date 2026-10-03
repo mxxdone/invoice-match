@@ -55,6 +55,8 @@ public class AnalysisWorkerSecurityConfiguration {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST, "/internal/analysis-runs/*/claim")
                         .hasAuthority(AnalysisWorkerAuthenticator.AUTHORITY)
+                        .requestMatchers(HttpMethod.POST, "/internal/analysis-runs/*/failures", "/internal/analysis-runs/*/defer")
+                        .hasAuthority(AnalysisWorkerAuthenticator.AUTHORITY)
                         .requestMatchers(HttpMethod.POST, "/internal/analysis-runs/*/heartbeat")
                         .hasAuthority(AnalysisWorkerAuthenticator.AUTHORITY)
                         .requestMatchers(HttpMethod.POST, "/internal/analysis-runs/*/results")

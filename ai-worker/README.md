@@ -14,9 +14,12 @@ invoice field inference are later work.
 Use `ai-worker consume` on Linux with `CORE_API_URL`, `ANALYSIS_WORKER_TOKEN`
 and `ANALYSIS_RABBIT_HOST/USERNAME/PASSWORD` set. Optional broker port/vhost and
 topology use the same defaults as the core relay. The root README describes
-the opt-in Compose configuration. The worker acknowledges only durable terminal
-results; transport errors preserve the delivery and stop this process. Restart
-after resolving the cause. Automatic retry/DLQ is not connected yet.
+the opt-in Compose configuration. ACK requires a durable terminal result or a
+core recovery checkpoint. Transient failures use DB-scheduled backoff/jitter,
+at most three execution attempts, and then the durable `.dlq` queue. Parser
+failures remain immutable results. Core/authentication outages without a saved
+checkpoint preserve the delivery and stop this process. Malformed messages are
+quarantined only after a confirm; the DLQ stores hash/size/code instead of raw input.
 
 ## Layout and layer responsibilities
 

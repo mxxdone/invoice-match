@@ -293,8 +293,7 @@ pgvector의 exact search를 기준선으로 시작한다. 데이터 규모와 �
 ```text
 DRAFT
   → SUBMITTED
-  ├─ Phase 1: REVIEW_PENDING
-  └─ Phase 2+: ANALYZING → REVIEW_PENDING
+  → REVIEW_PENDING
       ├─ SUPPLEMENT_REQUIRED → SUBMITTED
       ├─ REJECTED
       └─ EXPORT_PENDING → EXPORTED
@@ -302,7 +301,7 @@ DRAFT
 
 승인 성공 사실은 사건의 중간 `APPROVED` 상태가 아니라 수정 불가능한 `ReviewDecision(APPROVED)`으로 기록한다. 승인 트랜잭션은 사건을 `REVIEW_PENDING`에서 `EXPORT_PENDING`으로 직접 전환한다.
 
-분석 실패는 청구 사건을 거절로 만들지 않는다. 사건은 `ANALYZING` 또는 `REVIEW_PENDING`에 유지하면서 별도 분석 실행의 실패 상태를 표시하고 수동 검토를 허용한다.
+Phase 2는 제출 후 기존 `REVIEW_PENDING` 전이를 유지하고 분석을 별도 실행 상태로 표시한다. 분석 실패·재시도는 청구 사건을 거절하거나 수동 검토를 막지 않는다. 향후 사람 대기 상태도 분석 실행에 두며 사건의 승인·지급 전이는 이와 분리한다.
 
 ### 10.2 분석 실행 상태
 
@@ -312,6 +311,7 @@ QUEUED → RUNNING
   ├─ RETRY_SCHEDULED → RUNNING
   ├─ COMPLETED
   ├─ FAILED
+  ├─ DEAD_LETTERED → QUEUED (운영자 재처리)
   └─ STALE
 ```
 

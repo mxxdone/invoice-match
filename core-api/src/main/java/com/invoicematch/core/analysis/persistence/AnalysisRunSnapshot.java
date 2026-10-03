@@ -21,5 +21,6 @@ public record AnalysisRunSnapshot(
         UUID executionToken,
         Instant leaseUntil,
         int executionAttempt,
-        boolean leaseActive) {
+        boolean leaseActive,
+        int attemptLimit) {
 }

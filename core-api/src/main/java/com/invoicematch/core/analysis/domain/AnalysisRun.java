@@ -54,6 +54,9 @@ public class AnalysisRun {
     @Column(name = "execution_attempt", nullable = false)
     private int executionAttempt;
 
+    @Column(name = "attempt_limit", nullable = false)
+    private int attemptLimit = 3;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 

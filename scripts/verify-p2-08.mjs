@@ -24,6 +24,7 @@ const pgPassword = randomUUID(), storageUser = 'test-' + randomUUID(), storagePa
 const rabbitUser = 'test-' + randomUUID(), rabbitPassword = randomUUID(), workerToken = randomUUID() + randomUUID();
 const controlToken = randomUUID();
 let pg, rabbit, worker;
+const workerPython = process.env.WORKER_RUNTIME_IMAGE ? '/usr/local/bin/python' : '/runtime/venv/bin/python';
 const steps = [];
 const record = label => { steps.push(label); console.log('PASS ' + label); };
 const sleep = ms => new Promise(done => setTimeout(done, ms));
@@ -120,12 +121,16 @@ async function queueEmpty() {
 async function publish(runId) {
   const payload = await sql(`select payload::text from analysis_request_outbox where analysis_run_id='${runId}'`);
   const code = 'import os,sys,json,pika; p=json.loads(sys.argv[1]); c=pika.BlockingConnection(pika.ConnectionParameters(host="rabbit",credentials=pika.PlainCredentials(os.environ["ANALYSIS_RABBIT_USERNAME"],os.environ["ANALYSIS_RABBIT_PASSWORD"]),socket_timeout=2,stack_timeout=5,heartbeat=10)); ch=c.channel(); ch.basic_publish(exchange="invoice.analysis",routing_key="document-parser-v1",body=sys.argv[1].encode(),properties=pika.BasicProperties(content_type="application/json",content_encoding="UTF-8",type="InvoiceAnalysisRequested",message_id=p["eventId"],delivery_mode=2)); c.close()';
-  const result = await docker.exec(worker, ['/runtime/venv/bin/python', '-c', code, payload]);
+  const result = await docker.exec(worker, [workerPython, '-c', code, payload]);
   assert.equal(result.code, 0, 'duplicate publisher failed');
 }
 async function startWorker() {
   if (worker) {
     await command(['start', worker]);
+  } else if (process.env.WORKER_RUNTIME_IMAGE) {
+    worker = await container('worker', process.env.WORKER_RUNTIME_IMAGE, ['--memory', '1g', '--pids-limit', '256'],
+      { CORE_API_URL: 'http://proxy:8080', ANALYSIS_WORKER_TOKEN: workerToken, ANALYSIS_RABBIT_HOST: 'rabbit',
+        ANALYSIS_RABBIT_USERNAME: rabbitUser, ANALYSIS_RABBIT_PASSWORD: rabbitPassword });
   } else {
     const shell = 'set -e\npython -m venv /runtime/venv\nV=/runtime/venv/bin\n$V/python -m pip install --disable-pip-version-check --cache-dir /cache -r /w/requirements-dev.txt\nmkdir -p /runtime/pkg\ntar --exclude="__pycache__" --exclude="*.pyc" -cf - -C /w src pyproject.toml README.md | tar -xf - -C /runtime/pkg\n$V/python -m pip install --disable-pip-version-check --no-build-isolation --no-deps /runtime/pkg\nexec $V/ai-worker consume';
     worker = await container('worker', 'python:3.12-slim', ['--memory', '1g', '--pids-limit', '256',
@@ -205,14 +210,37 @@ try {
     headers: { 'x-verification-control': controlToken }, body: JSON.stringify({ runId: partial.runId }), signal: AbortSignal.timeout(5000) });
   assert(configured.ok);
   await startWorker();
-  await wait('fail-stop after response loss', async () => (await command(['inspect', '--format', '{{.State.Running}}', worker])) === 'false');
-  assert.equal(await sql(`select status from analysis_run where id='${partial.runId}'`), 'RUNNING');
-  assert.equal(await sql(`select count(*) from analysis_document_result where run_id='${partial.runId}'`), '1');
-  await wait('real execution lease expiry', async () => (await sql(`select lease_until < clock_timestamp() from analysis_run where id='${partial.runId}'`)) === 't', 130000);
-  await startWorker(); await finished(partial.runId); await queueEmpty();
+  await finished(partial.runId); await queueEmpty();
   assert.equal(await sql(`select count(*) from analysis_document_result where run_id='${partial.runId}'`), '2');
   assert.equal(await sql(`select execution_attempt from analysis_run where id='${partial.runId}'`), '2');
-  record('committed partial result + lost response: no ACK, lease reclaim and immutable replay');
+  assert.equal(await sql(`select count(*) from analysis_execution_failure where run_id='${partial.runId}'`), '1');
+  assert.equal(await sql(`select count(*) from analysis_recovery_dispatch where analysis_run_id='${partial.runId}' and status='PUBLISHED'`), '1');
+  record('committed partial result + lost response: durable retry checkpoint and immutable replay');
+  await command(['stop', '-t', '60', worker]);
+  const exhausted = await makeCase(['pdf']);
+  const fault = await fetch(`http://127.0.0.1:${ports.proxy}/control/fail-source`, { method: 'POST',
+    headers: { 'x-verification-control': controlToken }, body: JSON.stringify({ runId: exhausted.runId }), signal: AbortSignal.timeout(5000) });
+  assert(fault.ok);
+  await startWorker(); await finished(exhausted.runId, 'DEAD_LETTERED'); await queueEmpty();
+  assert.equal(await sql(`select execution_attempt from analysis_run where id='${exhausted.runId}'`), '3');
+  assert.equal(await sql(`select count(*) from analysis_execution_failure where run_id='${exhausted.runId}'`), '3');
+  assert.equal(await sql(`select count(*) from analysis_document_result where run_id='${exhausted.runId}'`), '0');
+  await wait('confirmed DLQ dispatch', async () => await sql(`select count(*) from analysis_recovery_dispatch where analysis_run_id='${exhausted.runId}' and destination='DLQ' and status='PUBLISHED'`) === '1');
+  record('three transient failures: bounded backoff, durable history and confirmed DLQ');
+  const poison = 'do-not-retain-this-secret';
+  const poisonCode = 'import os,sys,pika; c=pika.BlockingConnection(pika.ConnectionParameters(host="rabbit",credentials=pika.PlainCredentials(os.environ["ANALYSIS_RABBIT_USERNAME"],os.environ["ANALYSIS_RABBIT_PASSWORD"]),socket_timeout=2,stack_timeout=5));ch=c.channel();ch.confirm_delivery();ch.basic_publish(exchange="invoice.analysis",routing_key="document-parser-v1",body=sys.argv[1].encode(),mandatory=True,properties=pika.BasicProperties(content_type="application/json",delivery_mode=2));c.close()';
+  assert.equal((await docker.exec(worker, [workerPython, '-c', poisonCode, poison])).code, 0);
+  await queueEmpty();
+  const dlqCode='import os,json,pika; c=pika.BlockingConnection(pika.ConnectionParameters(host="rabbit",credentials=pika.PlainCredentials(os.environ["ANALYSIS_RABBIT_USERNAME"],os.environ["ANALYSIS_RABBIT_PASSWORD"]),socket_timeout=2,stack_timeout=5));ch=c.channel();values=[];\nwhile True:\n m,p,b=ch.basic_get(queue="invoice.analysis.requests.dlq",auto_ack=True)\n if m is None: break\n values.append(json.loads(b))\nprint(json.dumps(values));c.close()';
+  const dead = await docker.exec(worker, [workerPython, '-c', dlqCode]);
+  assert.equal(dead.code, 0);
+  const records=JSON.parse(dead.stdout);
+  assert(records.some(row => row.analysisRunId===exhausted.runId));
+  const quarantine=records.find(row => row.schemaVersion==='analysis-quarantine-v1');
+  assert.equal(quarantine.payloadHash,createHash('sha256').update(poison).digest('hex'));
+  assert.equal(quarantine.sizeBytes,Buffer.byteLength(poison));
+  assert(!dead.stdout.includes(poison));
+  record('poison message: confirm before ACK, only safe hash/size/code in DLQ');
   await command(['stop', '-t', '60', worker]);
   const stale = await makeCase(['pdf']);
   await wait('old request published', async () => (await sql(`select status from analysis_request_outbox where analysis_run_id='${stale.runId}'`)) === 'PUBLISHED');

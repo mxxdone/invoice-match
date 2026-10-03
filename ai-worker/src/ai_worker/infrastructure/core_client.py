@@ -31,6 +31,10 @@ class CoreClient:
             async with aiohttp.ClientSession(timeout=timeout, trust_env=False, auto_decompress=False,
                     cookie_jar=aiohttp.DummyCookieJar(), headers={"Authorization": "Bearer " + self.token}) as session:
                 async with session.post(self.base_url + path, json=body, allow_redirects=False) as response:
+                    if response.status in {401, 403}:
+                        raise WorkerFailure("CORE_AUTHENTICATION_FAILED")
+                    if response.status == 429 or 500 <= response.status < 600:
+                        raise WorkerFailure("CORE_TRANSIENT")
                     if response.status != 200 or response.headers.get("Content-Encoding", "identity") != "identity":
                         raise WorkerFailure("CORE_REQUEST_FAILED")
                     media = response.headers.get("Content-Type", "").split(";", 1)[0].strip()
@@ -72,3 +76,10 @@ class CoreClient:
     def result(self, request: Request, token: str, document: Document, payload: dict) -> dict:
         return self._call(request, "/results", {**request.input(), "claimToken": token,
                           "documentId": document.document_id, **payload})
+
+    def failure(self, request: Request, token: str, code: str) -> dict:
+        return self._call(request, "/failures", {**request.input(), "claimToken": token, "errorCode": code})
+
+    def defer(self, request: Request) -> dict:
+        return self._call(request, "/defer", {**request.input(), "eventId": request.event_id,
+                                             "workflowVersion": request.workflow})

@@ -2,7 +2,7 @@
 
 매입 청구서를 발주·검수 자료와 비교하고, 사람이 검토해 지급요청으로 확정하는 업무 코어다. 승인·검수 잔량 배분·지급요청을 원자적으로 처리하고 Outbox로 외부 인계를 분리한다.
 
-Java 21 / Spring Boot / PostgreSQL / Next.js / MinIO / RabbitMQ / Python 파서를 사용한다. Mock ERP 인계 성공은 실제 송금이 아니다. AI 추출·DLQ·운영 재처리는 후속 작업이다.
+Java 21 / Spring Boot / PostgreSQL / Next.js / MinIO / RabbitMQ / Python 파서를 사용한다. Mock ERP 인계 성공은 실제 송금이 아니다. AI 추출·운영 재처리는 후속 작업이다.
 
 ## 로컬 실행
 
@@ -43,7 +43,7 @@ docker compose -f compose.yaml -f compose.storage.yaml -f compose.documents.yaml
 
 ## 검증
 
-문서 비동기 파싱은 `.env`의 `ANALYSIS_RABBIT_USERNAME`, `ANALYSIS_RABBIT_PASSWORD`, 32자 이상의 `ANALYSIS_WORKER_TOKEN`을 설정하고 기존 세 Compose 파일에 `-f compose.analysis.yaml`을 추가해 실행한다. worker는 Linux에서 실행하며 저장소 secret을 받지 않는다. 아직 자동 재시도/DLQ를 연결하지 않았으므로 통신 장애나 BUSY에서는 메시지를 ACK하지 않고 중단한다. 원인을 해결한 뒤 worker를 다시 시작한다.
+문서 비동기 파싱은 `.env`의 `ANALYSIS_RABBIT_USERNAME`, `ANALYSIS_RABBIT_PASSWORD`, 32자 이상의 `ANALYSIS_WORKER_TOKEN`을 설정하고 기존 세 Compose 파일에 `-f compose.analysis.yaml`을 추가해 실행한다. worker는 Linux에서 실행하며 저장소 secret을 받지 않는다. 일시적 장애는 DB checkpoint 후 최대 3회 실행하고 소진 시 `invoice.analysis.requests.dlq`로 보낸다. core 전체 장애·인증 오류로 checkpoint를 저장할 수 없으면 ACK 없이 중단한다. process 재시작도 3회로 제한하므로 원인을 해결한 뒤 같은 Compose 조합의 `restart ai-worker`로 재개한다.
 
 로컬 검증에는 Java 21, Node 24/npm, Docker가 필요하다. Windows의 Gradle 명령은 `gradlew.bat`을 사용한다.
 

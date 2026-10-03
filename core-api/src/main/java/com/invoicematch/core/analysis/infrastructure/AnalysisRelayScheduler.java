@@ -1,5 +1,6 @@
 package com.invoicematch.core.analysis.infrastructure;
 
+import com.invoicematch.core.analysis.application.AnalysisRecoveryRelay;
 import com.invoicematch.core.analysis.application.AnalysisRequestRelay;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -18,9 +19,11 @@ import org.springframework.stereotype.Component;
 public class AnalysisRelayScheduler {
 
     private final AnalysisRequestRelay relay;
+    private final AnalysisRecoveryRelay recovery;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
-    public AnalysisRelayScheduler(AnalysisRequestRelay relay) {
+    public AnalysisRelayScheduler(AnalysisRequestRelay relay, AnalysisRecoveryRelay recovery) {
+        this.recovery=recovery;
         this.relay = relay;
     }
 
@@ -31,6 +34,7 @@ public class AnalysisRelayScheduler {
         }
         try {
             relay.runOnce();
+            recovery.runOnce();
         } finally {
             running.set(false);
         }

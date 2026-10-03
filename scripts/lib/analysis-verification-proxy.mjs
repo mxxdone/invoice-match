@@ -1,6 +1,7 @@
 // Verification-only fault: lose one response after the real core committed it.
 import { createServer } from 'node:http';
 let dropRun = null;
+let failSource = null;
 const server = createServer(async (request, response) => {
   try {
     if (request.url === '/health') { response.end('ready'); return; }
@@ -12,12 +13,20 @@ const server = createServer(async (request, response) => {
       parts.push(chunk);
     }
     const body = Buffer.concat(parts);
+    if (request.url === '/control/fail-source' && request.headers['x-verification-control'] === process.env.CONTROL_TOKEN) {
+      failSource = JSON.parse(body).runId;
+      response.end('configured'); return;
+    }
     if (request.url === '/control/drop-result' && request.headers['x-verification-control'] === process.env.CONTROL_TOKEN) {
       dropRun = JSON.parse(body).runId;
       response.end('configured');
       return;
     }
     if (!/^\/internal\/analysis-runs\/[a-f0-9-]+\//.test(request.url)) { response.writeHead(404).end(); return; }
+    if (failSource && request.url.startsWith(`/internal/analysis-runs/${failSource}/documents/`) && request.url.endsWith('/source')) {
+      response.writeHead(503, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      response.end('{"code":"SOURCE_UNAVAILABLE"}'); return;
+    }
     const upstream = await fetch(process.env.CORE_API_URL + request.url, {
       method: request.method, body, redirect: 'error', signal: AbortSignal.timeout(30000),
       headers: { authorization: request.headers.authorization ?? '', 'content-type': 'application/json' },

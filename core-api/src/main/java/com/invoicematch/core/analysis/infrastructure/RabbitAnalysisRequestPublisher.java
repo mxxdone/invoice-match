@@ -348,8 +348,10 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
             Channel channel = candidate.createChannel();
             channel.confirmSelect();
             channel.exchangeDeclare(rabbit.exchange(), EXCHANGE_TYPE, true);
-            channel.queueDeclare(rabbit.queue(), true, false, false, null);
-            channel.queueBind(rabbit.queue(), rabbit.exchange(), rabbit.routingKey());
+            String queue=command.deadLetter() ? rabbit.queue()+".dlq" : rabbit.queue();
+            String routingKey=command.deadLetter() ? rabbit.routingKey()+".dlq" : rabbit.routingKey();
+            channel.queueDeclare(queue, true, false, false, null);
+            channel.queueBind(queue, rabbit.exchange(), routingKey);
 
             hooks.afterTopology(candidate);
             if (closed.get() || isAborted()) {
@@ -359,7 +361,7 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
             AtomicBoolean returned = new AtomicBoolean(false);
             AtomicBoolean nacked = new AtomicBoolean(false);
             channel.addReturnListener(
-                    (replyCode, replyText, exchange, routingKey, basicProperties, body) -> returned.set(true));
+                    (replyCode, replyText, exchange, returnedRoutingKey, basicProperties, body) -> returned.set(true));
             channel.addConfirmListener(
                     (deliveryTag, multiple) -> {
                     },
@@ -373,7 +375,7 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
                     .type(EVENT_TYPE)
                     .build();
             byte[] body = command.payload().getBytes(StandardCharsets.UTF_8);
-            channel.basicPublish(rabbit.exchange(), rabbit.routingKey(), true, messageProperties, body);
+            channel.basicPublish(rabbit.exchange(), routingKey, true, messageProperties, body);
 
             long remainingNanos = AnalysisRelayProperties.ATTEMPT_DEADLINE.toNanos()
                     - (System.nanoTime() - start);

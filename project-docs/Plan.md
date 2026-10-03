@@ -1,6 +1,6 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 진행 중 · 현재 Ticket P2-09**  
+문서 상태: **Phase 2 진행 중 · 현재 Ticket P2-10**  
 작성일: **2026-09-25**  
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
 실행 방법: [`Implement.md`](./Implement.md)
@@ -132,13 +132,16 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 ### P2-09 — 제한 재시도와 영속 실패 이력·DLQ
 
-**상태: 진행 중.** Head가 직접 구현한다. application은 실패 분류·횟수·backoff/jitter·STALE 판단을, persistence는 SQL/잠금/조건부 저장을, infrastructure는 confirm 발행과 기계 HTTP/broker I/O를 담당한다. 승인·지급·사건 상태와 immutable 문서 결과는 변경하지 않는다.
+**상태: 완료.** DB 실패 checkpoint·제한 실행 재시도·recovery relay·confirm DLQ를 인수했다. `AnalysisRecoveryService`와 `AnalysisRecoveryStore`가 후속 진입점이다. 동일 eventId와 immutable 부분 결과를 유지하며 core/auth 장애로 checkpoint를 저장하지 못하면 ACK 없이 중단한다. broker 발행 예약은 연결 복구까지 보존한다.
 
-- 자동 실행은 3회로 제한한다. 실행 횟수는 DB가 증가시키며 메시지 header를 신뢰하지 않는다. 일시적 네트워크/429/5xx 장애는 실패 이력과 별도 recovery dispatch를 한 transaction에 예약한다. 원본 request Outbox와 eventId/payload를 보존한다. exponential backoff와 bounded jitter의 deadline은 DB에 저장하고, broker 발행 동안 DB transaction을 유지하지 않는다.
-- `RETRY_SCHEDULED`와 `DEAD_LETTERED` 실행 상태를 추가한다. parser FAILURE 결과는 기존 FAILED 계약을 유지하며 자동 반복하지 않는다. result 응답 유실 뒤 이미 끝난 run은 재시도하지 않고 terminal evidence를 반환한다. 부분 결과는 유지하고 새 claim에서 canonical replay한다. 실패 보고 응답 유실은 같은 token의 immutable 이력으로 replay한다.
-- RUNNING/BUSY 또는 worker 중단으로 남은 lease는 기존 owner를 탈취하지 않는다. 현재 lease 이후의 durable recovery dispatch를 예약하면 ACK할 수 있다. 만료 claim의 횟수 소진은 DLQ checkpoint로 전환한다. core 전체 장애로 checkpoint 저장 불가 시 bounded 호출 후 ACK 없이 종료한다.
-- relay는 기존 bounded publisher를 재사용한다. recovery dispatch에도 SKIP LOCKED·claim token·lease 회수·confirm 후 finalize를 적용한다. DLQ는 별도 durable queue이며 exhausted run의 event identity만 들어간다. malformed 메시지는 내용 대신 hash/크기/고정 오류만 담은 quarantine을 confirm한 뒤 ACK한다. confirm 실패·응답 유실은 원본 delivery를 보존한다.
-- 실제 PostgreSQL/RabbitMQ 검증으로 rollback·failure replay·3회 제한·backoff·부분 결과·STALE·confirm 전/후 중단·poison 격리와 기존 정상 흐름을 확인한다. 운영자 재처리는 P2-10에서 같은 run에 별도 감사/멱등 예약으로 추가한다. 새 문서·scanner는 만들지 않는다.
+### P2-10 — 운영자 분석 조회·재처리
+
+**상태: 진행 중.** 기존 운영 화면에서 문서 분석 운영으로 진입한다. 새 업무 사건·증빙 묶음·문서 결과를 만들거나 고치지 않는다.
+
+- OPERATOR만 분석 실행의 서버 페이지 목록과 실패 이력을 조회한다. 상태·시도 횟수·다음 예약·고정 오류·발행 상태를 보여주되 token, object key, 원문 결과, credential을 노출하지 않는다. application이 권한·필터·페이지 상한을, persistence가 join/SQL을, API가 전송을 담당한다.
+- 재처리는 current `DEAD_LETTERED` run에 한정한다. requestId·기대 실행 횟수·원인 수정 사유를 받으며 case→run 잠금, frozen manifest 재검증, actor-scoped idempotency, `QUEUED` 전환과 추가 3회 예산, recovery dispatch와 감사 기록을 한 transaction에서 처리한다. 최초 eventId와 기존 결과/실패 이력을 유지한다. FAILED 파일은 보완 문서가 필요하며 STALE/실행 중/완료 run은 재처리하지 않는다.
+- UI는 실제 서버 자료만 사용한다. 통신·5xx 응답 불명 시 같은 requestId와 동일 body로 확인하고 새 재처리를 만들지 않는다. 로그인 교체·페이지 전환의 늦은 응답은 무시한다. 기존 olive/gray 컴포넌트를 사용하고 내부 구현 설명은 사용자 흐름에 추가하지 않는다.
+- 실제 PostgreSQL로 RBAC·조회 범위·동시/중복 재처리·변경 body 충돌·감사 실패 rollback·partial 결과 보존을 확인한다. 기존 통합 스크립트에 원인 수정→운영 재처리→완료와 같은 요청 replay를 추가하고 Web lint/test/build 및 실제 화면을 점검한다.
 
 ### Phase 2 남은 Ticket
 

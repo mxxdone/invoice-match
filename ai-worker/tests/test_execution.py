@@ -45,6 +45,12 @@ class Core:
     def heartbeat(self, *_):
         return {"leaseUntil": lease()}
 
+    def failure(self, *_):
+        raise WorkerFailure("CORE_UNAVAILABLE")
+
+    def defer(self, *_):
+        raise WorkerFailure("CORE_UNAVAILABLE")
+
     def source(self, *_):
         return b"%PDF-fixture"
 
@@ -145,7 +151,39 @@ def test_busy_is_not_terminal_ack_evidence():
     node = message()
     core = Core(node)
     core.claim_reply = {"disposition": "BUSY", "leaseUntil": lease()}
-    with pytest.raises(WorkerFailure, match="RUN_BUSY"):
+    with pytest.raises(WorkerFailure, match="CORE_UNAVAILABLE"):
+        ProcessDelivery(core, Parser()).process(decode(node), lambda: False)
+
+
+def test_response_loss_is_ackable_only_after_durable_failure_checkpoint():
+    node = message(2)
+    core = Core(node)
+    core.fail_after_save = True
+    failures = []
+    def checkpoint(request, token, code):
+        failures.append((token, code))
+        return {"disposition": "CHECKPOINTED", "runStatus": "RETRY_SCHEDULED"}
+    core.failure = checkpoint
+    ProcessDelivery(core, Parser()).process(decode(node), lambda: False)
+    assert len(core.saved) == 1
+    assert failures == [(core.claim_reply["claimToken"], "CORE_UNAVAILABLE")]
+
+
+def test_busy_delivery_needs_durable_deferred_dispatch():
+    node = message()
+    core = Core(node)
+    core.claim_reply = {"disposition": "BUSY", "leaseUntil": lease()}
+    core.defer = lambda _: {"disposition": "CHECKPOINTED", "runStatus": "RUNNING"}
+    ProcessDelivery(core, Parser()).process(decode(node), lambda: False)
+    assert not core.saved
+
+
+def test_invalid_checkpoint_cannot_be_ack_evidence():
+    node = message()
+    core = Core(node)
+    core.fail_after_save = True
+    core.failure = lambda *_: {"disposition": "CHECKPOINTED", "runStatus": "MADE_UP"}
+    with pytest.raises(WorkerFailure, match="INVALID_PROTOCOL"):
         ProcessDelivery(core, Parser()).process(decode(node), lambda: False)
 
 

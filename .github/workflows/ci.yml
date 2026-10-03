@@ -98,6 +98,8 @@ jobs:
         with:
           python-version: '3.12'
       - name: Analysis consumer acceptance (real services)
+        env:
+          WORKER_RUNTIME_IMAGE: invoice-match-ai-worker:ci
         run: node scripts/verify-p2-08.mjs
       - name: Analysis acceptance evidence
         if: always()
