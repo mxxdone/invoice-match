@@ -1,5 +1,7 @@
 package com.invoicematch.core.invoicecase.application;
 
+import com.invoicematch.core.analysis.application.AnalysisInput;
+import com.invoicematch.core.analysis.application.AnalysisRequestService;
 import com.invoicematch.core.audit.application.AuditEvent;
 import com.invoicematch.core.audit.application.AuditRecorder;
 import com.invoicematch.core.audit.domain.AuditAction;
@@ -86,6 +88,7 @@ public class InvoiceCaseWriteService {
     private final DraftRevisionRepository draftRevisions;
     private final InvoiceLineRepository invoiceLines;
     private final EvidenceBundleRepository evidenceBundles;
+    private final AnalysisRequestService analysisRequests;
     private final DocumentStore documentEvidence;
     private final PurchaseOrderSnapshotReader purchaseOrderSnapshots;
     private final PurchasingReferenceService purchasingReferenceService;
@@ -102,6 +105,7 @@ public class InvoiceCaseWriteService {
             DraftRevisionRepository draftRevisions,
             InvoiceLineRepository invoiceLines,
             EvidenceBundleRepository evidenceBundles,
+            AnalysisRequestService analysisRequests,
             DocumentStore documentEvidence,
             PurchaseOrderSnapshotReader purchaseOrderSnapshots,
             PurchasingReferenceService purchasingReferenceService,
@@ -116,6 +120,7 @@ public class InvoiceCaseWriteService {
         this.draftRevisions = draftRevisions;
         this.invoiceLines = invoiceLines;
         this.evidenceBundles = evidenceBundles;
+        this.analysisRequests = analysisRequests;
         this.documentEvidence = documentEvidence;
         this.purchaseOrderSnapshots = purchaseOrderSnapshots;
         this.purchasingReferenceService = purchasingReferenceService;
@@ -277,6 +282,14 @@ public class InvoiceCaseWriteService {
         EvidenceBundle bundle = EvidenceBundle.freeze(UUID.randomUUID(), command.caseId(), revision.id(), nextVersion,
                 payloadSchema, canonical.hash(), canonical.json(), now);
         evidenceBundles.saveAndFlush(bundle);
+
+        // Reserve the analysis work in this same transaction: the freeze, the
+        // reservation (or cancellation of lower versions), the audit record and
+        // the idempotency response commit or roll back together. Lower evidence
+        // versions are staled even when analysis is disabled or the bundle is
+        // legacy and carries no documents.
+        analysisRequests.onEvidenceSubmitted(new AnalysisInput(
+                command.caseId(), bundle.id(), bundle.versionNumber(), bundle.payloadHash(), documents));
 
         invoiceCase.transitionTo(InvoiceCaseStatus.SUBMITTED, now);
         invoiceCase.transitionTo(InvoiceCaseStatus.REVIEW_PENDING, now);

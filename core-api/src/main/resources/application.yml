@@ -76,6 +76,14 @@ management:
       exposure:
         include: health,info
 
+# P2-05 analysis reservation. Fail-closed: no AnalysisRun or analysis-request
+# Outbox row is reserved unless an environment explicitly opts in. This only
+# gates new reservations; a newer submission still stales lower evidence
+# versions. The RabbitMQ relay and Python consumer are P2-06.
+analysis:
+  request:
+    enabled: ${ANALYSIS_REQUEST_ENABLED:false}
+
 document-storage:
   enabled: ${DOCUMENT_STORAGE_ENABLED:false}
   endpoint: ${DOCUMENT_STORAGE_ENDPOINT:http://localhost:9000}
