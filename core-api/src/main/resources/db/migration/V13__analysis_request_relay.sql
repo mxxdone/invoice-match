@@ -116,11 +116,11 @@ BEGIN
                 USING ERRCODE = '23514';
         END IF;
     ELSE
-        -- The lease deadline is worker/test-owned and may be adjusted in place
-        -- (for explicit expiry), but the claim token, attempt count and
-        -- published mark can never change without a status transition. The
-        -- lease CHECK still forces lease_until to be null outside CLAIMED.
+        -- Same-state updates may not mutate any claim identity at all: the lease
+        -- deadline is strictly worker-owned only through a status transition, so
+        -- a stale token cannot extend or steal a live claim.
         IF NEW.claim_token IS DISTINCT FROM OLD.claim_token
+            OR NEW.lease_until IS DISTINCT FROM OLD.lease_until
             OR NEW.published_at IS DISTINCT FROM OLD.published_at
             OR NEW.attempt_count IS DISTINCT FROM OLD.attempt_count THEN
             RAISE EXCEPTION 'analysis request claim identity cannot change without a status transition'

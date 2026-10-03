@@ -8,6 +8,12 @@ package com.invoicematch.core.analysis.application;
 public enum AnalysisPublishError {
     /** Relay is disabled, so no broker call is attempted. */
     RELAY_DISABLED,
+    /** The single execution slot already owns an attempt; the call was not queued. */
+    SLOT_BUSY,
+    /** The publisher was closed; no new attempt is admitted. */
+    RELAY_CLOSED,
+    /** Own connection/channel teardown did not complete within the cleanup budget. */
+    CLEANUP_FAILED,
     /** TCP connect / DNS / broker handshake could not be established. */
     CONNECT_FAILED,
     /** The overall monotonic attempt deadline elapsed before completion. */

@@ -1,6 +1,5 @@
 package com.invoicematch.core.analysis.application;
 
-import com.invoicematch.core.analysis.infrastructure.AnalysisRelayProperties;
 import com.invoicematch.core.analysis.persistence.AnalysisOutboxStore;
 import com.invoicematch.core.analysis.persistence.ClaimedAnalysisRequest;
 import java.util.Optional;

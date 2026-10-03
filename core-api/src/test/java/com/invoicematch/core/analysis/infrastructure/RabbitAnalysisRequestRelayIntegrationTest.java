@@ -6,7 +6,10 @@ import com.invoicematch.core.analysis.AbstractAnalysisRelayIntegrationTest;
 import com.invoicematch.core.analysis.application.AnalysisPublishCommand;
 import com.invoicematch.core.analysis.application.AnalysisPublishError;
 import com.invoicematch.core.analysis.application.AnalysisPublishResult;
+import com.invoicematch.core.analysis.application.AnalysisRelayProperties;
 import com.invoicematch.core.analysis.application.AnalysisRequestRelay;
+import com.invoicematch.core.analysis.persistence.AnalysisOutboxStore;
+import com.invoicematch.core.analysis.persistence.ClaimedAnalysisRequest;
 import com.rabbitmq.client.AMQP;
 import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.Connection;
@@ -20,8 +23,11 @@ import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
@@ -35,9 +41,10 @@ import org.testcontainers.utility.DockerImageName;
  * P2-06 relay against a real RabbitMQ ({@code rabbitmq:4.2-alpine}) and real
  * PostgreSQL: a reservation is published with the stable event id and persistent
  * JSON metadata and then marked PUBLISHED; an unroutable mandatory message is
- * ACKed+returned and classified as a failure; and a stalled handshake or
- * unavailable broker is bounded, classified and does not leak the single
- * execution slot.
+ * ACKed+returned and classified as a failure; the single execution slot rejects
+ * busy calls without queueing and recovers after an outer-deadline abort; and a
+ * confirmed publish whose worker dies before DB finalization is re-published
+ * with the same event id (at-least-once, never exactly-once).
  */
 class RabbitAnalysisRequestRelayIntegrationTest extends AbstractAnalysisRelayIntegrationTest {
 
@@ -70,6 +77,9 @@ class RabbitAnalysisRequestRelayIntegrationTest extends AbstractAnalysisRelayInt
 
     @Autowired
     AnalysisRequestRelay relay;
+
+    @Autowired
+    AnalysisOutboxStore store;
 
     @Autowired
     ApplicationContext applicationContext;
@@ -109,15 +119,15 @@ class RabbitAnalysisRequestRelayIntegrationTest extends AbstractAnalysisRelayInt
 
         RabbitAnalysisRequestPublisher publisher =
                 applicationContext.getBean(RabbitAnalysisRequestPublisher.class);
-        publisher.hooks = (connection, exchange, queue, routingKey) -> {
+        publisher.hooks = connection -> {
             try (Channel channel = connection.createChannel()) {
-                channel.queueUnbind(queue, exchange, routingKey);
+                channel.queueUnbind(QUEUE, EXCHANGE, ROUTING_KEY);
             }
         };
         try {
             assertThat(relay.runOnce()).isZero();
         } finally {
-            publisher.hooks = RabbitAnalysisRequestPublisher.PackageHooks.NONE;
+            publisher.hooks = RabbitAnalysisRequestPublisher.AnalysisPublishHooks.NONE;
         }
 
         assertThat(outboxRow(caseId, 1).get("status")).isEqualTo("READY");
@@ -139,34 +149,130 @@ class RabbitAnalysisRequestRelayIntegrationTest extends AbstractAnalysisRelayInt
     }
 
     @Test
-    void stalledHandshakeIsBoundedAndTheExecutionSlotRecovers() throws Exception {
+    void stalledHandshakeIsBoundedAndClassified() throws Exception {
         StalledTcpServer stalled = new StalledTcpServer();
         RabbitAnalysisRequestPublisher publisher =
                 new RabbitAnalysisRequestPublisher(propertiesTo("127.0.0.1", stalled.port()));
         try {
-            long firstStart = System.nanoTime();
-            AnalysisPublishResult first =
+            long start = System.nanoTime();
+            AnalysisPublishResult result =
                     publisher.publish(new AnalysisPublishCommand(UUID.randomUUID(), "{\"k\":1}"));
-            long firstElapsed = System.nanoTime() - firstStart;
-            assertThat(first).isInstanceOf(AnalysisPublishResult.Failed.class);
-            assertThat(Duration.ofNanos(firstElapsed))
-                    .as("a stalled handshake must be bounded by the total attempt deadline")
-                    .isLessThan(AnalysisRelayProperties.ATTEMPT_DEADLINE.plusSeconds(3));
-
-            // The server is now closed; a second publish must return quickly,
-            // proving the single execution slot was not left occupied.
-            stalled.close();
-            long secondStart = System.nanoTime();
-            AnalysisPublishResult second =
-                    publisher.publish(new AnalysisPublishCommand(UUID.randomUUID(), "{\"k\":1}"));
-            assertThat(second).isInstanceOf(AnalysisPublishResult.Failed.class);
-            assertThat(Duration.ofNanos(System.nanoTime() - secondStart))
-                    .as("the execution slot must be free after a deadline abort")
-                    .isLessThan(Duration.ofSeconds(5));
+            Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
+            assertThat(result).isInstanceOf(AnalysisPublishResult.Failed.class);
+            assertThat(((AnalysisPublishResult.Failed) result).error())
+                    .isEqualTo(AnalysisPublishError.CONNECT_FAILED);
+            assertThat(elapsed).isLessThan(AnalysisRelayProperties.ATTEMPT_DEADLINE.plusSeconds(3));
         } finally {
             stalled.close();
             publisher.close();
         }
+    }
+
+    @Test
+    void outerDeadlineAbortsBusyCallsAreRejectedAndCloseRefusesNewOnes() throws Exception {
+        RabbitAnalysisRequestPublisher publisher = new RabbitAnalysisRequestPublisher(realBrokerProperties());
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        publisher.hooks = connection -> {
+            entered.countDown();
+            release.await();
+        };
+        ExecutorService pool = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "outer-deadline-probe");
+            thread.setDaemon(true);
+            return thread;
+        });
+        try {
+            Future<AnalysisPublishResult> first = pool.submit(() ->
+                    publisher.publish(new AnalysisPublishCommand(UUID.randomUUID(), "{\"probe\":1}")));
+            assertThat(entered.await(10, TimeUnit.SECONDS)).as("a real connection is owned").isTrue();
+
+            long busyStart = System.nanoTime();
+            assertThat(failureOf(publisher.publish(
+                            new AnalysisPublishCommand(UUID.randomUUID(), "{\"busy\":1}"))))
+                    .isEqualTo(AnalysisPublishError.SLOT_BUSY);
+            assertThat(Duration.ofNanos(System.nanoTime() - busyStart))
+                    .as("a busy call must be rejected immediately, not queued")
+                    .isLessThan(Duration.ofSeconds(1));
+
+            // The worker is held past the 10s outer deadline; the caller times out.
+            AnalysisPublishResult firstResult = first.get(13, TimeUnit.SECONDS);
+            assertThat(failureOf(firstResult)).isEqualTo(AnalysisPublishError.PUBLISH_TIMEOUT);
+            // Still busy until the worker itself finishes: a cancelling attempt
+            // does not free the slot.
+            assertThat(failureOf(publisher.publish(
+                            new AnalysisPublishCommand(UUID.randomUUID(), "{\"busy2\":1}"))))
+                    .isEqualTo(AnalysisPublishError.SLOT_BUSY);
+
+            release.countDown();
+
+            // The slot recovers and a real broker publish then succeeds.
+            AnalysisPublishResult recovered = null;
+            long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            while (System.nanoTime() < deadline) {
+                AnalysisPublishResult attempt = publisher.publish(
+                        new AnalysisPublishCommand(UUID.randomUUID(), "{\"recovered\":1}"));
+                if (attempt instanceof AnalysisPublishResult.Published) {
+                    recovered = attempt;
+                    break;
+                }
+                assertThat(failureOf(attempt)).isEqualTo(AnalysisPublishError.SLOT_BUSY);
+                Thread.sleep(25);
+            }
+            assertThat(recovered).as("the slot must recover to a successful publish")
+                    .isInstanceOf(AnalysisPublishResult.Published.class);
+
+            publisher.close();
+            assertThat(failureOf(publisher.publish(
+                            new AnalysisPublishCommand(UUID.randomUUID(), "{\"closed\":1}"))))
+                    .isEqualTo(AnalysisPublishError.RELAY_CLOSED);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+            publisher.close();
+        }
+    }
+
+    @Test
+    void confirmBeforeFinalizeCrashRepublishesTheSameEventId() throws Exception {
+        purgeQueue();
+        UUID caseId = createDraftCase("INV-Q3");
+        seedCompletedDocument(caseId);
+        submit(caseId, "submit-q3");
+        UUID eventId = outboxId(caseId, 1);
+        String payload = (String) outboxRow(caseId, 1).get("payload");
+
+        RabbitAnalysisRequestPublisher publisher =
+                applicationContext.getBean(RabbitAnalysisRequestPublisher.class);
+        // A worker claims with a real short lease, reaches the broker (confirmed),
+        // then dies before the DB finalization.
+        ClaimedAnalysisRequest claimed = store.claimOne("crash-worker", Duration.ofSeconds(1)).orElseThrow();
+        assertThat(claimed.eventId()).isEqualTo(eventId);
+        assertThat(publisher.publish(new AnalysisPublishCommand(eventId, payload)))
+                .isInstanceOf(AnalysisPublishResult.Published.class);
+        assertThat(outboxRow(caseId, 1).get("status")).isEqualTo("CLAIMED");
+
+        awaitLeaseExpiry(eventId);
+        assertThat(relay.runOnce()).isEqualTo(1);
+        assertThat(outboxRow(caseId, 1).get("status")).isEqualTo("PUBLISHED");
+
+        try (Connection connection = rawFactory().newConnection();
+                Channel channel = connection.createChannel()) {
+            GetResponse first = channel.basicGet(QUEUE, true);
+            GetResponse second = channel.basicGet(QUEUE, true);
+            assertThat(first).isNotNull();
+            assertThat(second).isNotNull();
+            assertThat(first.getProps().getMessageId()).isEqualTo(eventId.toString());
+            assertThat(second.getProps().getMessageId()).isEqualTo(eventId.toString());
+            assertThat(new String(first.getBody(), StandardCharsets.UTF_8)).isEqualTo(payload);
+            assertThat(new String(second.getBody(), StandardCharsets.UTF_8)).isEqualTo(payload);
+            assertThat(channel.basicGet(QUEUE, true)).isNull();
+        }
+    }
+
+    private AnalysisPublishError failureOf(AnalysisPublishResult result) {
+        assertThat(result).isInstanceOf(AnalysisPublishResult.Failed.class);
+        return ((AnalysisPublishResult.Failed) result).error();
     }
 
     private AnalysisRelayProperties propertiesTo(String host, int port) {
@@ -177,6 +283,18 @@ class RabbitAnalysisRequestRelayIntegrationTest extends AbstractAnalysisRelayInt
                 AnalysisRelayProperties.MAX_TICK_BATCH,
                 Duration.ofSeconds(5),
                 new AnalysisRelayProperties.Rabbit(host, port, "/", "u", "p", EXCHANGE, QUEUE, ROUTING_KEY));
+    }
+
+    private AnalysisRelayProperties realBrokerProperties() {
+        return new AnalysisRelayProperties(
+                false,
+                Duration.ofSeconds(60),
+                Duration.ofSeconds(30),
+                AnalysisRelayProperties.MAX_TICK_BATCH,
+                Duration.ofSeconds(5),
+                new AnalysisRelayProperties.Rabbit(
+                        RABBIT.getHost(), RABBIT.getMappedPort(5672), "/", RABBIT_USER, RABBIT_PASSWORD,
+                        EXCHANGE, QUEUE, ROUTING_KEY));
     }
 
     private ConnectionFactory rawFactory() {

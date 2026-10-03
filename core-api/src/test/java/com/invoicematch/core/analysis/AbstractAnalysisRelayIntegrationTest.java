@@ -1,5 +1,6 @@
 package com.invoicematch.core.analysis;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -40,13 +41,32 @@ public abstract class AbstractAnalysisRelayIntegrationTest extends AbstractAnaly
                 inputVersion);
     }
 
-    /** Test-only: expire the worker-owned lease so recovery can reclaim it. */
-    protected void expireLease(UUID eventId) {
-        jdbc.update("update analysis_request_outbox"
-                + " set lease_until = clock_timestamp() - interval '1 minute' where id = ?", eventId);
+    /**
+     * Bounded DB-time wait for a short lease to actually expire. The lease
+     * deadline is immutable outside a status transition, so a test proves
+     * recovery by letting a real lease lapse rather than rewriting the deadline.
+     */
+    protected void awaitLeaseExpiry(UUID eventId) {
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (System.nanoTime() < deadline) {
+            Boolean expired = jdbc.queryForObject(
+                    "select lease_until <= clock_timestamp() from analysis_request_outbox where id = ?",
+                    Boolean.class,
+                    eventId);
+            if (Boolean.TRUE.equals(expired)) {
+                return;
+            }
+            try {
+                Thread.sleep(25);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("interrupted while waiting for lease expiry");
+            }
+        }
+        throw new AssertionError("lease for " + eventId + " did not expire within 10s");
     }
 
-    /** Test-only: make a retry backoff immediately due. */
+    /** Test-only: make a READY retry backoff immediately due (nextAttemptAt only). */
     protected void releaseBackoff(UUID eventId) {
         jdbc.update("update analysis_request_outbox"
                 + " set next_attempt_at = clock_timestamp() - interval '1 minute' where id = ?", eventId);

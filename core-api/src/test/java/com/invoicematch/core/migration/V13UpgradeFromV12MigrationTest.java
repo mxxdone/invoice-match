@@ -112,7 +112,12 @@ class V13UpgradeFromV12MigrationTest extends AbstractPostgresIntegrationTest {
                             + " lease_until = clock_timestamp() + interval '1 minute',"
                             + " attempt_count = attempt_count + 1 where id = ?",
                     eventId);
-            // attempt_count may not decrease.
+            // A same-state update may not extend the live lease...
+            assertDatabaseRejects("23514", () -> jdbc.update(
+                    "update analysis_request_outbox"
+                            + " set lease_until = clock_timestamp() + interval '2 minutes' where id = ?",
+                    eventId));
+            // ...and attempt_count may not decrease.
             assertDatabaseRejects("23514", () -> jdbc.update(
                     "update analysis_request_outbox set attempt_count = 0 where id = ?", eventId));
             jdbc.update("update analysis_request_outbox"

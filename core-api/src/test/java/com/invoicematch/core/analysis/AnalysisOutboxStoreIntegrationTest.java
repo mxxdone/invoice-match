@@ -2,11 +2,16 @@ package com.invoicematch.core.analysis;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 import com.invoicematch.core.analysis.persistence.AnalysisOutboxStore;
 import com.invoicematch.core.analysis.persistence.ClaimedAnalysisRequest;
+import java.sql.Connection;
+import java.sql.Statement;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -14,6 +19,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
@@ -29,6 +35,9 @@ class AnalysisOutboxStoreIntegrationTest extends AbstractAnalysisRelayIntegratio
 
     @Autowired
     AnalysisOutboxStore store;
+
+    @Autowired
+    DataSource dataSource;
 
     @Test
     void claimOneClaimsDueReadyRequestForQueuedRunExactlyOnce() {
@@ -105,8 +114,9 @@ class AnalysisOutboxStoreIntegrationTest extends AbstractAnalysisRelayIntegratio
         submit(caseId, "submit-s4");
         UUID eventId = outboxId(caseId, 1);
         ClaimedAnalysisRequest stale = store.claimOne("w1", Duration.ofSeconds(1)).orElseThrow();
-
-        expireLease(eventId);
+        // The deadline is immutable outside a transition; wait for the real lease
+        // to lapse, then recover.
+        awaitLeaseExpiry(eventId);
         assertThat(store.recoverExpired()).isEqualTo(1);
         Map<String, Object> recovered = outboxRow(caseId, 1);
         assertThat(recovered.get("status")).isEqualTo("READY");
@@ -191,6 +201,107 @@ class AnalysisOutboxStoreIntegrationTest extends AbstractAnalysisRelayIntegratio
         }
         assertThat(claimed).hasSize(2).doesNotHaveDuplicates();
         assertThat(claimed).containsExactlyInAnyOrder(outboxId(firstCase, 1), outboxId(secondCase, 1));
+    }
+
+    @Test
+    void skipLockedClaimsAnotherDueRowWhileTheOldestIsLocked() throws Exception {
+        UUID firstCase = createDraftCase("INV-S8A");
+        seedCompletedDocument(firstCase);
+        submit(firstCase, "submit-s8a");
+        UUID secondCase = createDraftCase("INV-S8B");
+        seedCompletedDocument(secondCase);
+        submit(secondCase, "submit-s8b");
+        UUID lockedId = outboxId(firstCase, 1);
+        UUID otherId = outboxId(secondCase, 1);
+
+        try (Connection holder = dataSource.getConnection()) {
+            holder.setAutoCommit(false);
+            try (Statement statement = holder.createStatement()) {
+                statement.execute("select id from analysis_request_outbox where id = '" + lockedId
+                        + "' for update");
+            }
+            long start = System.nanoTime();
+            Optional<ClaimedAnalysisRequest> claimed = store.claimOne("skip-worker", LEASE);
+            Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
+            assertThat(claimed).as("SKIP LOCKED must not block on the locked row").isPresent();
+            assertThat(claimed.get().eventId()).isEqualTo(otherId);
+            assertThat(elapsed).isLessThan(Duration.ofSeconds(5));
+            holder.rollback();
+        }
+        assertThat(outboxRow(secondCase, 1).get("status")).isEqualTo("CLAIMED");
+        assertThat(outboxRow(firstCase, 1).get("status")).isEqualTo("READY");
+    }
+
+    @Test
+    void supplementSubmitConditionallyCancelsAClaimedReservation() {
+        UUID caseId = createDraftCase("INV-S9");
+        seedCompletedDocument(caseId);
+        submit(caseId, "submit-s9-v1");
+        ClaimedAnalysisRequest claimed = store.claimOne("w1", LEASE).orElseThrow();
+        assertThat(outboxRow(caseId, 1).get("status")).isEqualTo("CLAIMED");
+
+        advanceToSupplementDraft(caseId, "s9");
+        seedCompletedDocument(caseId);
+        submit(caseId, "submit-s9-v2");
+
+        assertThat(run(caseId, 1).get("status")).isEqualTo("STALE");
+        Map<String, Object> superseded = outboxRow(caseId, 1);
+        assertThat(superseded.get("status")).isEqualTo("CANCELLED");
+        assertThat(superseded.get("claim_token")).isNull();
+        assertThat(superseded.get("lease_until")).isNull();
+        assertThat(claimed.eventId()).isNotNull();
+        assertThat(outboxRow(caseId, 2).get("status")).isEqualTo("READY");
+    }
+
+    @Test
+    void supplementSubmitPreservesAPublishedReservation() {
+        UUID caseId = createDraftCase("INV-S10");
+        seedCompletedDocument(caseId);
+        submit(caseId, "submit-s10-v1");
+        ClaimedAnalysisRequest claimed = store.claimOne("w1", LEASE).orElseThrow();
+        assertThat(store.finalizePublished(claimed.eventId(), claimed.claimToken())).isTrue();
+
+        advanceToSupplementDraft(caseId, "s10");
+        seedCompletedDocument(caseId);
+        submit(caseId, "submit-s10-v2");
+
+        assertThat(run(caseId, 1).get("status")).isEqualTo("STALE");
+        Map<String, Object> published = outboxRow(caseId, 1);
+        assertThat(published.get("status")).isEqualTo("PUBLISHED");
+        assertThat(published.get("published_at")).isNotNull();
+        assertThat(outboxRow(caseId, 2).get("status")).isEqualTo("READY");
+    }
+
+    @Test
+    void supplementAuditFailureRollsBackTheClaimedCancellationAndRunStale() {
+        UUID caseId = createDraftCase("INV-S11");
+        seedCompletedDocument(caseId);
+        submit(caseId, "submit-s11-v1");
+        ClaimedAnalysisRequest claimed = store.claimOne("w1", LEASE).orElseThrow();
+        Map<String, Object> before = outboxRow(caseId, 1);
+        Object tokenBefore = before.get("claim_token");
+        Object leaseBefore = before.get("lease_until");
+
+        advanceToSupplementDraft(caseId, "s11");
+        seedCompletedDocument(caseId);
+        jdbc.execute("alter table audit_entry add constraint test_s11_audit_failure"
+                + " check (action <> 'CASE_SUBMITTED') not valid");
+        try {
+            assertThatThrownBy(() -> submit(caseId, "submit-s11-v2")).isInstanceOf(RuntimeException.class);
+            Map<String, Object> after = outboxRow(caseId, 1);
+            assertThat(after.get("status")).isEqualTo("CLAIMED");
+            assertThat(after.get("claim_token")).isEqualTo(tokenBefore);
+            assertThat(after.get("lease_until")).isEqualTo(leaseBefore);
+            assertThat(run(caseId, 1).get("status")).isEqualTo("QUEUED");
+        } finally {
+            jdbc.execute("alter table audit_entry drop constraint test_s11_audit_failure");
+        }
+
+        submit(caseId, "submit-s11-v2");
+        assertThat(run(caseId, 1).get("status")).isEqualTo("STALE");
+        assertThat(outboxRow(caseId, 1).get("status")).isEqualTo("CANCELLED");
+        assertThat(outboxRow(caseId, 2).get("status")).isEqualTo("READY");
+        assertThat(claimed.eventId()).isNotNull();
     }
 
     private void claimAfter(CountDownLatch start, String workerId, List<UUID> claimed) {

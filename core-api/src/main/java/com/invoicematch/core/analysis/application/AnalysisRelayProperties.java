@@ -1,13 +1,14 @@
-package com.invoicematch.core.analysis.infrastructure;
+package com.invoicematch.core.analysis.application;
 
 import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * Bounded analysis-relay configuration, kept with the infrastructure adapter
- * (mirroring the P1-08 payment relay). The switch defaults to {@code false}, so
- * no scheduler, no RabbitMQ connection and no broker health call happen until an
- * environment explicitly opts in.
+ * Bounded analysis-relay policy configuration. It is SDK-free and lives in the
+ * application layer (the relay policy owner); the infrastructure adapter and the
+ * opt-in scheduler reference it, never the other way around. The switch defaults
+ * to {@code false}, so no scheduler, no RabbitMQ connection and no broker health
+ * call happen until an environment explicitly opts in.
  *
  * <p>The lease must comfortably exceed the bounded single-attempt deadline
  * (10s) so a live claim is never recovered while a publish is in flight. When

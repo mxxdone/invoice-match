@@ -1,5 +1,6 @@
 package com.invoicematch.core.analysis.infrastructure;
 
+import com.invoicematch.core.analysis.application.AnalysisRelayProperties;
 import com.invoicematch.core.analysis.application.AnalysisRequestPublisher;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;

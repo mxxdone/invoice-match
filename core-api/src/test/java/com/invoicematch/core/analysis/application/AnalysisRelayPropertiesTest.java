@@ -1,4 +1,4 @@
-package com.invoicematch.core.analysis.infrastructure;
+package com.invoicematch.core.analysis.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
