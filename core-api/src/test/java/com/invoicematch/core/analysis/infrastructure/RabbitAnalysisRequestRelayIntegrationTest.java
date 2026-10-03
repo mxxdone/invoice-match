@@ -278,6 +278,42 @@ class RabbitAnalysisRequestRelayIntegrationTest extends AbstractAnalysisRelayInt
     }
 
     @Test
+    void closeDuringBlockedHandshakeClosesTheOwnSocketAndReleasesTheWorker() throws Exception {
+        StalledTcpServer server = new StalledTcpServer();
+        RabbitAnalysisRequestPublisher publisher =
+                new RabbitAnalysisRequestPublisher(propertiesTo("127.0.0.1", server.port()));
+        ExecutorService pool = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "blocked-handshake-probe");
+            thread.setDaemon(true);
+            return thread;
+        });
+        try {
+            Future<AnalysisPublishResult> pending = pool.submit(() ->
+                    publisher.publish(new AnalysisPublishCommand(UUID.randomUUID(), "{\"handshake\":1}")));
+            assertThat(server.awaitAccepted(10, TimeUnit.SECONDS))
+                    .as("the owned raw socket must be connected/registered")
+                    .isTrue();
+
+            long start = System.nanoTime();
+            publisher.close();
+            Duration closeElapsed = Duration.ofNanos(System.nanoTime() - start);
+
+            assertThat(closeElapsed)
+                    .as("close must return within the 2s shutdown budget (plus scheduling)")
+                    .isLessThan(Duration.ofSeconds(3));
+            assertThat(pending.get(5, TimeUnit.SECONDS)).isInstanceOf(AnalysisPublishResult.Failed.class);
+            assertThat(server.awaitEof(2, TimeUnit.SECONDS))
+                    .as("closing the own socket must EOF the accepted handshake socket promptly, "
+                            + "not wait for the 3s SDK handshake timeout")
+                    .isTrue();
+        } finally {
+            server.close();
+            publisher.close();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
     void closeRacingConnectionRegistrationAbortsTheLateHandleWithoutIo() throws Exception {
         purgeQueue();
         RabbitAnalysisRequestPublisher publisher = new RabbitAnalysisRequestPublisher(realBrokerProperties());
@@ -376,11 +412,17 @@ class RabbitAnalysisRequestRelayIntegrationTest extends AbstractAnalysisRelayInt
         }
     }
 
-    /** A TCP server that accepts connections and never sends the AMQP greeting. */
+    /**
+     * A TCP server that accepts connections, never sends the AMQP greeting, and
+     * signals when an accepted socket reaches EOF, so a test can prove that
+     * closing the client's owned raw socket tears the connection down promptly.
+     */
     static final class StalledTcpServer implements AutoCloseable {
 
         private final ServerSocket server;
         private final List<Socket> sockets = new CopyOnWriteArrayList<>();
+        private final CountDownLatch accepted = new CountDownLatch(1);
+        private final CountDownLatch eof = new CountDownLatch(1);
         private final ExecutorService pool = Executors.newCachedThreadPool(runnable -> {
             Thread thread = new Thread(runnable, "stalled-amqp-fixture");
             thread.setDaemon(true);
@@ -392,12 +434,36 @@ class RabbitAnalysisRequestRelayIntegrationTest extends AbstractAnalysisRelayInt
             pool.submit(() -> {
                 while (!server.isClosed()) {
                     try {
-                        sockets.add(server.accept());
+                        Socket socket = server.accept();
+                        sockets.add(socket);
+                        accepted.countDown();
+                        pool.submit(() -> readUntilEof(socket));
                     } catch (IOException e) {
                         return;
                     }
                 }
             });
+        }
+
+        private void readUntilEof(Socket socket) {
+            try {
+                byte[] buffer = new byte[256];
+                while (socket.getInputStream().read(buffer) != -1) {
+                    // discard the client's AMQP greeting
+                }
+            } catch (IOException e) {
+                // closed/reset
+            } finally {
+                eof.countDown();
+            }
+        }
+
+        boolean awaitAccepted(long timeout, TimeUnit unit) throws InterruptedException {
+            return accepted.await(timeout, unit);
+        }
+
+        boolean awaitEof(long timeout, TimeUnit unit) throws InterruptedException {
+            return eof.await(timeout, unit);
         }
 
         int port() {
