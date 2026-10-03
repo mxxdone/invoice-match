@@ -34,6 +34,17 @@ import org.springframework.transaction.annotation.Transactional;
 @EnableConfigurationProperties(AnalysisRequestProperties.class)
 public class AnalysisRequestService {
 
+    /**
+     * Every execution state that a newer bundle supersedes. A completed or
+     * failed run is preserved but marked stale so its results are never used as
+     * approval evidence; only an already-stale record is left untouched.
+     */
+    private static final List<AnalysisRunStatus> LIVE_STATUSES = List.of(
+            AnalysisRunStatus.QUEUED,
+            AnalysisRunStatus.RUNNING,
+            AnalysisRunStatus.COMPLETED,
+            AnalysisRunStatus.FAILED);
+
     private final AnalysisRunRepository runs;
     private final AnalysisRequestOutboxRepository outboxes;
     private final AnalysisOutboxStore outboxStore;
@@ -61,8 +72,8 @@ public class AnalysisRequestService {
         Instant now = clock.instant();
 
         List<AnalysisRun> superseded = runs
-                .findByInvoiceCaseIdAndStatusAndInputVersionLessThanOrderByInputVersionAsc(
-                        input.invoiceCaseId(), AnalysisRunStatus.QUEUED, input.inputVersion());
+                .findByInvoiceCaseIdAndStatusInAndInputVersionLessThanOrderByInputVersionAsc(
+                        input.invoiceCaseId(), LIVE_STATUSES, input.inputVersion());
         for (AnalysisRun run : superseded) {
             run.markStale(now);
             runs.save(run);

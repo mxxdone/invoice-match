@@ -15,8 +15,8 @@ import java.util.UUID;
  * The reservation of one parser-backed analysis execution for a frozen evidence
  * bundle version. Identity, frozen evidence payload hash and workflow version
  * are fixed at creation and never change; a newer bundle submission only moves
- * an existing reservation to {@link AnalysisRunStatus#STALE}. The parser output,
- * retries and result reflection are P2-06.
+ * an existing reservation to {@link AnalysisRunStatus#STALE}. The live execution
+ * claim and per-document results are persisted by the analysis execution store.
  */
 @Entity
 @Table(name = "analysis_run")
@@ -44,6 +44,15 @@ public class AnalysisRun {
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
     private AnalysisRunStatus status;
+
+    @Column(name = "execution_token")
+    private UUID executionToken;
+
+    @Column(name = "lease_until")
+    private Instant leaseUntil;
+
+    @Column(name = "execution_attempt", nullable = false)
+    private int executionAttempt;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -74,6 +83,7 @@ public class AnalysisRun {
         this.evidencePayloadHash = evidencePayloadHash;
         this.workflowVersion = AnalysisWorkflow.VERSION;
         this.status = AnalysisRunStatus.QUEUED;
+        this.executionAttempt = 0;
         this.createdAt = Objects.requireNonNull(now, "now");
         this.updatedAt = now;
     }
@@ -86,14 +96,17 @@ public class AnalysisRun {
     }
 
     /**
-     * Marks a superseded reservation stale. Only a live {@code QUEUED} run can
-     * be staled; a second submission must never rewrite an already stale run.
+     * Marks a superseded reservation stale and drops any live execution claim.
+     * Only a run that is not already stale can be staled; a stale record keeps
+     * its immutable input identity, frozen hash and recorded document results.
      */
     public void markStale(Instant now) {
-        if (status != AnalysisRunStatus.QUEUED) {
-            throw new DomainValidationException("AnalysisRun " + id + " is already " + status);
+        if (status == AnalysisRunStatus.STALE) {
+            throw new DomainValidationException("AnalysisRun " + id + " is already STALE");
         }
         this.status = AnalysisRunStatus.STALE;
+        this.executionToken = null;
+        this.leaseUntil = null;
         this.updatedAt = Objects.requireNonNull(now, "now");
     }
 
@@ -123,6 +136,18 @@ public class AnalysisRun {
 
     public AnalysisRunStatus status() {
         return status;
+    }
+
+    public UUID executionToken() {
+        return executionToken;
+    }
+
+    public Instant leaseUntil() {
+        return leaseUntil;
+    }
+
+    public int executionAttempt() {
+        return executionAttempt;
     }
 
     public Instant createdAt() {

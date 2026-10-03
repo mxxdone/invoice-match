@@ -1,11 +1,18 @@
 package com.invoicematch.core.analysis.domain;
 
 /**
- * The only AnalysisRun states implemented in P2-05: a freshly reserved
- * {@code QUEUED} run, and a run {@code STALE}d because a newer evidence bundle
- * for the same case was submitted. Future execution states are P2-06.
+ * Lifecycle of one parser-backed analysis run.
+ *
+ * <p>{@code QUEUED} is a fresh reservation; {@code RUNNING} is held by one
+ * machine worker under a bounded lease; {@code COMPLETED} and {@code FAILED} are
+ * terminal outcomes decided by the last document result; {@code STALE} is the
+ * preserved record of a run superseded by a newer evidence bundle. A stale run's
+ * results are never used as approval evidence but are never deleted either.
  */
 public enum AnalysisRunStatus {
     QUEUED,
+    RUNNING,
+    COMPLETED,
+    FAILED,
     STALE
 }

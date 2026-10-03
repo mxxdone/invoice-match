@@ -20,8 +20,9 @@ import org.springframework.mock.web.MockHttpServletResponse;
 class BoundedRequestBodyFilterTest {
 
     private static final int MAX = 16;
+    private static final int ANALYSIS_RESULT_MAX = 64;
 
-    private final BoundedRequestBodyFilter filter = new BoundedRequestBodyFilter(MAX);
+    private final BoundedRequestBodyFilter filter = new BoundedRequestBodyFilter(MAX, ANALYSIS_RESULT_MAX);
 
     @Test
     void allowsABodyExactlyAtTheLimit() throws Exception {
@@ -78,8 +79,44 @@ class BoundedRequestBodyFilterTest {
 
     @Test
     void rejectsAnInvalidLimitConfiguration() {
-        assertThatThrownBy(() -> new BoundedRequestBodyFilter(0))
+        assertThatThrownBy(() -> new BoundedRequestBodyFilter(0, ANALYSIS_RESULT_MAX))
                 .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new BoundedRequestBodyFilter(MAX, 0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void allowsTheLargerResultBodyOnlyOnTheExactResultPath() throws Exception {
+        byte[] body = "x".repeat(MAX + 5).getBytes(StandardCharsets.UTF_8);
+        MockHttpServletRequest resultPath = new MockHttpServletRequest(
+                "POST", "/internal/analysis-runs/00000000-0000-0000-0000-0000000000aa/results");
+        resultPath.setContentType("application/json");
+        resultPath.setContent(body);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        AtomicBoolean reached = new AtomicBoolean();
+
+        filter.doFilter(resultPath, response, chain(reached));
+
+        assertThat(reached).isTrue();
+        assertThat(response.getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    void keepsTheDefaultCapForTheClaimAndHeartbeatPaths() throws Exception {
+        for (String path : new String[] {
+                "/internal/analysis-runs/00000000-0000-0000-0000-0000000000aa/claim",
+                "/internal/analysis-runs/00000000-0000-0000-0000-0000000000aa/heartbeat"}) {
+            MockHttpServletRequest request = new MockHttpServletRequest("POST", path);
+            request.setContentType("application/json");
+            request.setContent("x".repeat(MAX + 5).getBytes(StandardCharsets.UTF_8));
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            AtomicBoolean reached = new AtomicBoolean();
+
+            filter.doFilter(request, response, chain(reached));
+
+            assertThat(reached).as(path).isFalse();
+            assertThat(response.getStatus()).as(path).isEqualTo(413);
+        }
     }
 
     private static MockHttpServletRequest postWithBody(byte[] body) {

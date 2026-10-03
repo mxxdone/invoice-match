@@ -53,6 +53,8 @@ payment-export:
 http:
   request:
     max-body-bytes: ${HTTP_MAX_BODY_BYTES:262144}
+    # The machine result endpoint carries a bounded document-parse-v1 JSON body.
+    analysis-result-max-body-bytes: ${HTTP_ANALYSIS_RESULT_MAX_BODY_BYTES:4259840}
 
 # Signed mock-ERP result webhook (P1-09). A blank secret fails closed: every
 # webhook is rejected. The tolerance bounds replay of a captured signed request.
@@ -90,6 +92,18 @@ management:
 analysis:
   request:
     enabled: ${ANALYSIS_REQUEST_ENABLED:false}
+  # P2-07 machine worker surface and execution lease.
+  #
+  # The internal surface is fail-closed: no machine request is authenticated
+  # until ANALYSIS_WORKER_ENABLED=true and a non-empty ANALYSIS_WORKER_TOKEN of at
+  # least 32 characters is provided. The token is compared in constant time and
+  # is never logged, defaulted or stored. Loopback development boundary only;
+  # production exposure requires HTTPS.
+  worker:
+    enabled: ${ANALYSIS_WORKER_ENABLED:false}
+    token: ${ANALYSIS_WORKER_TOKEN:}
+  execution:
+    lease-duration: ${ANALYSIS_EXECUTION_LEASE_DURATION:120s}
   relay:
     enabled: ${ANALYSIS_RELAY_ENABLED:false}
     lease-duration: ${ANALYSIS_RELAY_LEASE_DURATION:60s}
