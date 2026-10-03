@@ -1,7 +1,7 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 진행 중 · 현재 Ticket P2-11**  
-작성일: **2026-09-25**  
+문서 상태: **Phase 2 진행 중 · 현재 Ticket P2-12**
+작성일: **2026-09-25**
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
 실행 방법: [`Implement.md`](./Implement.md)
 
@@ -140,12 +140,16 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 ### P2-11 — 만료 임시 업로드 정리
 
-**상태: 진행 중.** 업로드 예약 만료 후 최소 1시간(기본 24시간)의 유예를 지난 임시 객체만 정리한다. 등록 완료된 파일도 임시 사본만 지우며 `originals/`·등록 metadata·동결 참조는 보존한다. 미등록 원본 orphan 탐색은 범위 밖이다.
+**상태: 완료.** opt-in 정리와 lease ledger를 인수했다. `DocumentCleanupService`가 후속 진입점이다. 예약 만료 후 기본 24시간(최소 1시간)을 지난 정확한 임시 경로만 삭제하며 원본·등록 metadata·동결 참조를 보존한다. 실패 backoff와 옛 token fencing을 유지하고 S3/원본 orphan 탐색은 하지 않는다.
 
-- application이 유예·배치 상한·키 검증과 삭제/실패 처리를, persistence가 별도 정리 ledger의 claim·lease·조건부 완료를, infrastructure가 opt-in scheduler와 제한 시간의 MinIO 삭제를 맡는다. 기본 비활성, batch 최대 10, lease는 삭제 SDK의 20초 제한보다 길게 둔다.
-- 대상은 DB 예약의 정확한 `uploads/<caseId>/<documentId>`뿐이다. S3 목록 탐색·호출자 임의 key·원본 삭제를 허용하지 않는다. 유효 presigned URL과 진행 중 등록을 유예로 보호한다. unsafe key는 고정 코드로 차단하고 저장소에 전달하지 않는다.
-- 저장소 삭제는 DB transaction 밖에서 수행한다. 삭제 후 응답 유실은 같은 키의 멱등 삭제로 복구하고, 만료 lease와 옛 token의 완료를 거부한다. 저장소 장애는 고정 코드·backoff로 남긴다. 기존 immutable 예약을 갱신/삭제하지 않는다.
-- 실제 PostgreSQL·MinIO로 만료 임시 사본 삭제, 등록 원본·동결 참조 보존, 젊은 예약 제외, 실패/재claim/옛 token fencing과 외부 I/O의 no-transaction을 확인한다.
+### P2-12 — 페이즈2 통합 인수
+
+**상태: 진행 중.** 기존 검증 경로를 확장하고 필요한 기존 문서만 갱신한다. 새 제품 기능·검증 프레임워크는 추가하지 않는다.
+
+- 전체 backend `test bootJar`, Web lint/test/build, 실제 Linux parser/wheel/CLI와 실제 서비스 분석 인수를 통과한다. 성공한 국소 검증은 그대로 계승하며 새 변경이나 우려가 있는 범위만 반복한다.
+- 기존 분석 인수에 broker 중단 중 제출→Outbox 보존→복구 전달과 실행 중 worker 강제 종료→lease/defer→같은 eventId 완료를 추가한다. 정상·중복·부분 결과/응답 유실·typed failure·3회 소진/DLQ·운영 재처리·STALE 회귀를 유지한다. 업무 승인·지급 전이는 분석 재시도로 바뀌지 않는다.
+- Head가 실제 production 의존성과 책임을 검수한다. 새 architecture scanner를 만들지 않는다. 자신이 만든 임시 자원만 정리하고 기존 서버·DB·volume을 보존한다.
+- Spec/Plan/README에서 구현 결과와 충돌하는 문구를 정정하고 EngineeringNotes에는 코드만으로 설명하기 어려운 설계 이유만 남긴다. 원격 CI와 PC 인쇄 미리보기는 사용자의 별도 확인 항목으로 유지한다.
 
 ### Phase 2 남은 Ticket
 

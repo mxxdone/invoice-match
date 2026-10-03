@@ -162,6 +162,12 @@ public class MinioDocumentStorage implements DocumentStorage {
                     .stream(new ByteArrayInputStream(bytes), bytes.length, -1).build());
         } catch (Exception e) { throw DocumentFailure.storage(); }
     }
+    @Override public void removeTemporary(java.util.UUID caseId, java.util.UUID uploadId) {
+        enabled();
+        String key="uploads/"+java.util.Objects.requireNonNull(caseId)+"/"+java.util.Objects.requireNonNull(uploadId);
+        try { internal.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(key).build()); }
+        catch(Exception e) { throw DocumentFailure.storage(); }
+    }
     @Override public void removeOriginal(String key) {
         enabled();
         try { internal.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(key).build()); }

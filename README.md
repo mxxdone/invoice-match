@@ -41,6 +41,8 @@ docker compose -f compose.yaml -f compose.storage.yaml -f compose.documents.yaml
 
 중지할 때도 위 세 Compose 파일 조합으로 `down`을 실행한다. 데이터가 필요하면 `-v`를 붙이지 않는다. RabbitMQ relay는 기본 비활성이고 broker 연결 설정은 `core-api/src/main/resources/application.yml`에서 확인한다. Python 파서 실행은 [ai-worker README](ai-worker/README.md)를 따른다.
 
+임시 업로드 정리는 기본 비활성이다. `DOCUMENT_CLEANUP_ENABLED=true`로 활성화하면 예약 만료 후 기본 24시간이 지난 임시 사본만 삭제한다. 확정 원본과 제출 근거는 보존한다.
+
 ## 검증
 
 문서 비동기 파싱은 `.env`의 `ANALYSIS_RABBIT_USERNAME`, `ANALYSIS_RABBIT_PASSWORD`, 32자 이상의 `ANALYSIS_WORKER_TOKEN`을 설정하고 기존 세 Compose 파일에 `-f compose.analysis.yaml`을 추가해 실행한다. worker는 Linux에서 실행하며 저장소 secret을 받지 않는다. 일시적 장애는 DB checkpoint 후 최대 3회 실행하고 소진 시 `invoice.analysis.requests.dlq`로 보낸다. core 전체 장애·인증 오류로 checkpoint를 저장할 수 없으면 ACK 없이 중단한다. process 재시작도 3회로 제한하므로 원인을 해결한 뒤 같은 Compose 조합의 `restart ai-worker`로 재개한다.

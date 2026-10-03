@@ -9,6 +9,8 @@ services:
       DOCUMENT_STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
       DOCUMENT_STORAGE_BUCKET: invoice-documents
       DOCUMENT_STORAGE_REGION: us-east-1
+      DOCUMENT_CLEANUP_ENABLED: ${DOCUMENT_CLEANUP_ENABLED:-false}
+      DOCUMENT_CLEANUP_GRACE: ${DOCUMENT_CLEANUP_GRACE:-24h}
     depends_on:
       minio:
         condition: service_healthy
