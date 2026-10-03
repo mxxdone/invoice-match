@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools==75.6.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "invoice-match-ai-worker"
+version = "0.1.0"
+description = "Bounded PDF text-layer and XLSX structure parser for invoice-match (P2-04)"
+requires-python = "==3.12.*"
+dependencies = [
+    "pypdf==6.19.0",
+    "defusedxml==0.7.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-timeout==2.3.1",
+]
+
+[project.scripts]
+ai-worker = "ai_worker.api.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+timeout = 120
+markers = [
+    "linux_only: proves OS-level process isolation; runs for real on Linux Python 3.12 only",
+]

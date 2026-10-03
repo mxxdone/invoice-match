@@ -26,6 +26,33 @@ jobs:
           path: output/p2-00/**/evidence.json
           if-no-files-found: warn
 
+  parser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned parser dependencies
+        working-directory: ai-worker
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
+      - name: Parser tests (real Linux child resource limits)
+        working-directory: ai-worker
+        env:
+          PYTHONPATH: src
+        run: python -m pytest tests -v
+      - name: Parser CLI smoke
+        working-directory: ai-worker
+        env:
+          PYTHONPATH: src
+        run: |
+          python -c "import sys; sys.path.insert(0, 'tests'); from fixtures import build_pdf; open('/tmp/smoke.pdf', 'wb').write(build_pdf(['가나다', None]))"
+          python -m ai_worker.api.cli version
+          python -m ai_worker.api.cli parse /tmp/smoke.pdf --document-id smoke --media-type application/pdf > /tmp/isolated.json
+          python -m ai_worker.api.cli parse-in-process /tmp/smoke.pdf --document-id smoke --media-type application/pdf > /tmp/inprocess.json
+          python -c "import json; a=json.load(open('/tmp/isolated.json')); b=json.load(open('/tmp/inprocess.json')); assert a==b, 'isolated and in-process results differ'; print('cli smoke ok')"
+
   checks:
     runs-on: ubuntu-latest
     env:
