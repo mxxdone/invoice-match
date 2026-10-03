@@ -332,7 +332,7 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 ### P2-05 — AnalysisRun과 분석 요청 transactional Outbox
 
-**진행 상태:** 착수 준비(2026-10-03). P2-04를 인수한 다음 비동기 실행의 DB 예약부터 구현한다. RabbitMQ relay·Python consumer·결과 반영은 P2-06에서 연결하고 재시도/DLQ·운영 재처리는 그 다음 Ticket으로 분리한다.
+**진행 상태:** 구현·Head 인수 완료(2026-10-03). 구현 `70cef4b`, 테스트 보강 `e07f3f0`. 제출 트랜잭션 안의 예약·이전 입력 취소와 3레이어 책임/의존성을 검수했다. 실제 PostgreSQL whole backend 585건(실패/오류/skip 0) 및 bootJar 통과, 후속 test-only 변경의 analysis/V12 focused 14건(실패/오류/skip 0) 통과. payload의 동결 metadata·정렬, 실제 legacy bundle 기반 문서 없는 입력, 정확한 SQLSTATE, V11 기존 데이터 snapshot 보존 검증을 보강했다. 증거는 ignored `output/p2-05/baseline-70cef4b/`, `output/p2-05/accepted-evidence/`, `output/p2-05/followup-junit/`에 보존한다. 원격 CI와 실제 PDF 인쇄 확인은 사용자 요청대로 별도 대기한다. RabbitMQ relay·Python consumer·결과 반영은 다음 Ticket에서 연결하고 재시도/DLQ·운영 재처리는 후속 Ticket으로 분리한다.
 
 **범위/기준:** `core-api`의 새 `analysis` feature, 제출 application 연결, V12 migration, 설정과 backend 테스트/검증 스크립트만 변경한다. 제품 의미는 `Spec.md` 10.2·14.2를 따른다. 이번에는 기존 `InvoiceCaseStatus`와 제출 응답·승인·대사·canonical evidence/hash를 보존하고 parser나 네트워크를 제출 transaction에서 실행하지 않는다. `analysis.request.enabled` 기본값은 false다. true이며 동결 문서가 있는 제출에만 예약하며, 문서 없는 legacy 제출에는 예약하지 않는다. HTTP endpoint·UI·broker·Python 변경·새 dependency는 제외한다.
 
