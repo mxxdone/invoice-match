@@ -93,6 +93,8 @@ SHA=$(sha256sum /out/smoke.pdf | cut -d' ' -f1)
 $V/ai-worker parse /out/smoke.pdf --document-id smoke --media-type application/pdf --size-bytes "$SIZE" --sha256 "$SHA" > /out/isolated.json
 $V/python -c "import json; d=json.load(open('/out/isolated.json')); assert d['kind']=='pdf' and d['pdf']['pages'][0]['text']=='가나다'; print('cli smoke ok')"
 '@
+    # Git may check this PowerShell file out with CRLF on Windows. sh requires LF.
+    $script = $script.Replace("`r`n", "`n")
     $run = Invoke-DockerBounded -Arguments @('run', '--name', $container, '--cpus', '2', '--memory', '2g', '--pids-limit', '256', '--tmpfs', '/runtime:rw,exec,size=256m', '-v', ($dockerRepo + ':/w:ro'), '-v', ($dockerOut + ':/out'), '-w', '/w', $Image, 'sh', '-lc', $script)
     $exit = $run.ExitCode
 }

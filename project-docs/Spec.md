@@ -432,7 +432,7 @@ Phase 1은 지급요청 인계 유실을 막기 위한 최소 transactional Outb
 
 ## 15. 파일 처리
 
-P2-01 접수 기준선은 PDF/XLSX 파일당 10MiB, 작성 차수당 완료 문서 및 유효 예약 합계 10개, 업로드 URL 10분을 사용한다. 소유 제출자가 열린 현재 작성 차수에만 등록하며, 완료 시 실제 파일 크기·Content-Type·SHA-256 및 포맷 signature를 검사한다. parser의 PDF 페이지/XLSX 압축 해제 구조 검증은 후속 Ticket에서 추가한다. 임시 업로드와 확정 원본을 분리해 URL 재사용이 원본을 바꾸지 못하게 한다. 문서 등록만으로 증빙 제출 또는 승인 근거 편입이 이루어지지 않으며, 제출 시 문서 동결은 다음 Ticket에서 구현한다.
+P2-01 접수 기준선은 PDF/XLSX 파일당 10MiB, 작성 차수당 완료 문서 및 유효 예약 합계 10개, 업로드 URL 10분을 사용한다. 소유 제출자가 열린 현재 작성 차수에만 등록하며, 완료 시 실제 파일 크기·Content-Type·SHA-256 및 포맷 signature를 검사한다. parser의 PDF 페이지/XLSX 압축 해제 구조는 별도 Linux process에서 검증한다. 임시 업로드와 확정 원본을 분리해 URL 재사용이 원본을 바꾸지 못하게 한다. 문서 등록만으로 증빙 제출 또는 승인 근거 편입이 이루어지지 않는다. 제출 시 완료 문서의 identity·metadata·checksum을 증빙 묶음에 동결하며 보완 차수에서도 과거 원본을 보존한다.
 
 1. Spring이 사건 권한과 파일 조건을 확인하고 짧은 수명의 presigned upload URL을 발급한다.
 2. 브라우저가 S3 또는 MinIO로 직접 업로드한다.
@@ -508,24 +508,9 @@ flowchart LR
 
 모듈은 JPA entity를 서로 직접 공유하기보다 식별자와 명시적 application service를 통해 협력한다. V1에서는 단일 Spring Boot 애플리케이션 안의 package-by-feature 경계로 구현하고, 물리적인 빌드 모듈·독립 서비스·별도 DB로 분리하지 않는다.
 
-## 18. 주요 API 초안
+## 18. 쓰기 계약
 
-| Method | Endpoint | 목적 |
-|---|---|---|
-| `POST` | `/api/invoice-cases` | 청구 사건 생성 |
-| `POST` | `/api/invoice-cases/{id}/documents/presign` | 업로드 URL 발급 |
-| `POST` | `/api/invoice-cases/{id}/documents/complete` | 업로드 완료 검증 |
-| `POST` | `/api/invoice-cases/{id}/submit` | 증빙 묶음 확정 및 분석 예약 |
-| `GET` | `/api/invoice-cases` | 상태·담당자별 목록 조회 |
-| `GET` | `/api/invoice-cases/{id}` | 상세·대사·근거·이력 조회 |
-| `POST` | `/api/invoice-cases/{id}/mapping-decisions` | 품목 매핑 수정/확정 |
-| `POST` | `/api/invoice-cases/{id}/supplement-requests` | 보완요청 확정 |
-| `POST` | `/api/invoice-cases/{id}/approve` | 최신 version·잔량 재검증 후 승인 |
-| `POST` | `/api/invoice-cases/{id}/reject` | 사유와 함께 거절 |
-| `POST` | `/internal/analysis-runs/{id}/results` | AI 분석 결과 멱등 반영 |
-| `POST` | `/internal/analysis-runs/{id}/interrupts` | Human review 요청 생성 |
-| `POST` | `/webhooks/mock-erp/payment-results` | ERP 처리 결과 수신 |
-| `POST` | `/api/operations/jobs/{id}/retry` | 실패 작업 운영자 재처리 |
+HTTP 경로와 DTO는 controller 코드가 기준이다. 미구현 기능의 endpoint 초안은 별도로 관리하지 않는다.
 
 쓰기 API는 요청 ID와 기대 version을 요구한다. 승인 API는 `requestId`, `expectedCaseVersion`, `reviewSnapshotId`, `reviewPayloadHash`를 받는다. 증빙 bundle 식별은 요청에 별도로 싣지 않고 승인 대상 `reviewSnapshotId`가 동결한 증빙 근거로 서버가 재검증한다. AI Proposal이 존재하면 ReviewSnapshot의 선택적 근거로 포함하지만 승인 API의 필수 식별자는 아니다.
 

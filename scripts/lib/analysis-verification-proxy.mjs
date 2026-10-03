@@ -1,0 +1,39 @@
+// Verification-only fault: lose one response after the real core committed it.
+import { createServer } from 'node:http';
+let dropRun = null;
+const server = createServer(async (request, response) => {
+  try {
+    if (request.url === '/health') { response.end('ready'); return; }
+    const parts = [];
+    let length = 0;
+    for await (const chunk of request) {
+      length += chunk.length;
+      if (length > 4 * 1024 * 1024 + 65536) throw Error('limit');
+      parts.push(chunk);
+    }
+    const body = Buffer.concat(parts);
+    if (request.url === '/control/drop-result' && request.headers['x-verification-control'] === process.env.CONTROL_TOKEN) {
+      dropRun = JSON.parse(body).runId;
+      response.end('configured');
+      return;
+    }
+    if (!/^\/internal\/analysis-runs\/[a-f0-9-]+\//.test(request.url)) { response.writeHead(404).end(); return; }
+    const upstream = await fetch(process.env.CORE_API_URL + request.url, {
+      method: request.method, body, redirect: 'error', signal: AbortSignal.timeout(30000),
+      headers: { authorization: request.headers.authorization ?? '', 'content-type': 'application/json' },
+    });
+    const bytes = Buffer.from(await upstream.arrayBuffer());
+    if (dropRun && request.url === `/internal/analysis-runs/${dropRun}/results` && upstream.ok) {
+      dropRun = null;
+      response.destroy();
+      return;
+    }
+    response.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type'),
+      'content-length': bytes.length, 'cache-control': 'no-store' });
+    response.end(bytes);
+  } catch { response.destroy(); }
+});
+server.requestTimeout = 30000;
+server.headersTimeout = 10000;
+server.listen(8080, '0.0.0.0');
+process.on('SIGTERM', () => { server.closeAllConnections(); server.close(() => process.exit(0)); });

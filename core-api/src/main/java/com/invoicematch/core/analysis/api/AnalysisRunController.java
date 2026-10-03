@@ -12,6 +12,8 @@ import com.invoicematch.core.analysis.application.AnalysisClaimCommand;
 import com.invoicematch.core.analysis.application.AnalysisConflictException;
 import com.invoicematch.core.analysis.application.AnalysisDocumentResultCommand;
 import com.invoicematch.core.analysis.application.AnalysisExecutionService;
+import com.invoicematch.core.analysis.application.AnalysisSourceService;
+import com.invoicematch.core.document.application.DocumentFailure;
 import com.invoicematch.core.analysis.application.AnalysisHeartbeatCommand;
 import com.invoicematch.core.analysis.application.AnalysisRunNotFoundException;
 import com.invoicematch.core.analysis.application.AnalysisValidationException;
@@ -53,10 +55,12 @@ public class AnalysisRunController {
 
     private final AnalysisExecutionService service;
     private final ObjectMapper mapper;
+    private final AnalysisSourceService sources;
 
-    public AnalysisRunController(AnalysisExecutionService service, ObjectMapper mapper) {
+    public AnalysisRunController(AnalysisExecutionService service, ObjectMapper mapper, AnalysisSourceService sources) {
         this.service = service;
         this.mapper = mapper;
+        this.sources = sources;
     }
 
     public record ClaimRequest(
@@ -95,6 +99,22 @@ public class AnalysisRunController {
         HeartbeatOutcome outcome = service.heartbeat(id, new AnalysisHeartbeatCommand(
                 request.claimToken(), request.inputVersion(), request.evidencePayloadHash()));
         return noStore(new HeartbeatResponse(outcome.leaseUntil()));
+    }
+
+    @PostMapping("/{id}/documents/{documentId}/source")
+    public ResponseEntity<byte[]> source(@PathVariable UUID id, @PathVariable UUID documentId,
+            @RequestBody JsonNode body) {
+        HeartbeatRequest request = readEnvelope(body, HEARTBEAT_KEYS, HeartbeatRequest.class);
+        var source = sources.read(id, documentId, new AnalysisHeartbeatCommand(
+                request.claimToken(), request.inputVersion(), request.evidencePayloadHash()));
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).header("X-Content-Type-Options", "nosniff")
+                .contentType(org.springframework.http.MediaType.parseMediaType(source.mediaType()))
+                .contentLength(source.bytes().length).body(source.bytes());
+    }
+
+    @ExceptionHandler(DocumentFailure.class)
+    public ResponseEntity<ApiError> sourceUnavailable(DocumentFailure e) {
+        return error(HttpStatus.SERVICE_UNAVAILABLE, "SOURCE_UNAVAILABLE", "Source is unavailable");
     }
 
     @PostMapping("/{id}/results")

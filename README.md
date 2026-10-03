@@ -43,6 +43,8 @@ docker compose -f compose.yaml -f compose.storage.yaml -f compose.documents.yaml
 
 ## 검증
 
+문서 비동기 파싱은 `.env`의 `ANALYSIS_RABBIT_USERNAME`, `ANALYSIS_RABBIT_PASSWORD`, 32자 이상의 `ANALYSIS_WORKER_TOKEN`을 설정하고 기존 세 Compose 파일에 `-f compose.analysis.yaml`을 추가해 실행한다. worker는 Linux에서 실행하며 저장소 secret을 받지 않는다. 아직 자동 재시도/DLQ를 연결하지 않았으므로 통신 장애나 BUSY에서는 메시지를 ACK하지 않고 중단한다. 원인을 해결한 뒤 worker를 다시 시작한다.
+
 로컬 검증에는 Java 21, Node 24/npm, Docker가 필요하다. Windows의 Gradle 명령은 `gradlew.bat`을 사용한다.
 
 ```sh

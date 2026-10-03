@@ -59,6 +59,8 @@ public class AnalysisWorkerSecurityConfiguration {
                         .hasAuthority(AnalysisWorkerAuthenticator.AUTHORITY)
                         .requestMatchers(HttpMethod.POST, "/internal/analysis-runs/*/results")
                         .hasAuthority(AnalysisWorkerAuthenticator.AUTHORITY)
+                        .requestMatchers(HttpMethod.POST, "/internal/analysis-runs/*/documents/*/source")
+                        .hasAuthority(AnalysisWorkerAuthenticator.AUTHORITY)
                         .anyRequest()
                         .denyAll())
                 .addFilterBefore(

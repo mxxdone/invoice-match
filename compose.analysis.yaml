@@ -1,0 +1,43 @@
+# Opt-in with compose.yaml + compose.storage.yaml + compose.documents.yaml.
+services:
+  rabbitmq:
+    image: rabbitmq:4.2-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${ANALYSIS_RABBIT_USERNAME:?Set ANALYSIS_RABBIT_USERNAME}
+      RABBITMQ_DEFAULT_PASS: ${ANALYSIS_RABBIT_PASSWORD:?Set ANALYSIS_RABBIT_PASSWORD}
+    volumes:
+      - analysis_rabbit_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  core-api:
+    environment:
+      ANALYSIS_REQUEST_ENABLED: "true"
+      ANALYSIS_RELAY_ENABLED: "true"
+      ANALYSIS_RABBIT_HOST: rabbitmq
+      ANALYSIS_RABBIT_USERNAME: ${ANALYSIS_RABBIT_USERNAME:?Set ANALYSIS_RABBIT_USERNAME}
+      ANALYSIS_RABBIT_PASSWORD: ${ANALYSIS_RABBIT_PASSWORD:?Set ANALYSIS_RABBIT_PASSWORD}
+      ANALYSIS_WORKER_ENABLED: "true"
+      ANALYSIS_WORKER_TOKEN: ${ANALYSIS_WORKER_TOKEN:?Set ANALYSIS_WORKER_TOKEN}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  ai-worker:
+    build: ./ai-worker
+    environment:
+      CORE_API_URL: http://core-api:8080
+      ANALYSIS_WORKER_TOKEN: ${ANALYSIS_WORKER_TOKEN:?Set ANALYSIS_WORKER_TOKEN}
+      ANALYSIS_RABBIT_HOST: rabbitmq
+      ANALYSIS_RABBIT_USERNAME: ${ANALYSIS_RABBIT_USERNAME:?Set ANALYSIS_RABBIT_USERNAME}
+      ANALYSIS_RABBIT_PASSWORD: ${ANALYSIS_RABBIT_PASSWORD:?Set ANALYSIS_RABBIT_PASSWORD}
+    depends_on:
+      core-api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    stop_grace_period: 60s
+    restart: "no"
+volumes:
+  analysis_rabbit_data:

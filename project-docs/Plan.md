@@ -1,11 +1,11 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 1 착수 기준선**  
+문서 상태: **Phase 2 진행 중 · 현재 Ticket P2-09**  
 작성일: **2026-09-25**  
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
 실행 방법: [`Implement.md`](./Implement.md)
 
-업무 범위, 용어, 상태, 불변식과 책임 경계는 `Spec.md`를 따른다. 이 문서는 Phase별 목표, Phase 1 Ticket, 의존성과 검증 기준만 정의한다. 각 Ticket에 반복한 규칙은 작업자가 그 Ticket만 읽고 안전하게 실행하도록 발췌한 계약이며, 별도의 원본 정의가 아니다.
+업무 범위, 용어, 상태, 불변식과 책임 경계는 `Spec.md`를 따른다. 이 문서는 Phase별 목표와 현재 Ticket의 구현·인수 계약을 정의한다. 완료 Ticket은 상태와 후속 진입점만 남기며 구현·검증 경과는 코드/Git/ignored output에서 확인한다.
 
 ## 1. Phase 1~5 로드맵
 
@@ -44,329 +44,81 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 ### P1-00 — 저장소와 실행 기준선
 
-**목적과 범위:** Git 저장소, Java 21 Spring Boot 3 `core-api`, Next.js TypeScript `web`, PostgreSQL, Mock ERP의 실행 골격과 Docker Compose/CI를 만든다. AI worker, MinIO, RabbitMQ는 제외한다.
-
-**관련 규칙/불변식:** Spring은 단일 애플리케이션의 package-by-feature 구조로 시작한다. secret을 커밋하지 않으며 시각은 UTC로 저장한다.
-
-**Acceptance Criteria:** 문서화된 명령으로 core, web, postgres, mock-erp가 기동되고 health check, lint, test, build가 통과한다.
-
-**테스트/검증:** clean build, Compose smoke, DB 연결, CI 최소 pipeline.
-
-**의존성:** 없음.
-
-**사람 확인:** README만 보고 새 터미널에서 실행 가능한지, 구조를 2분 안에 설명할 수 있는지 확인한다.
+**상태: 완료.** 업무 범위·불변식은 Spec과 Phase 2+ 동결 인터페이스를 따른다.
 
 ### P1-01 — 도메인 계약과 DB 기준선
 
-**목적과 범위:** 상태 전이, 식별자, 금액/수량 type과 `InvoiceCase`, draft revision, `EvidenceBundle`, `InvoiceLine`, `MatchResult`, `ReviewSnapshot`, `ReviewDecision`의 최소 schema를 구현한다.
-
-**관련 규칙/불변식:** 원 단위 KRW와 정수 수량을 사용한다. 한 사건은 한 공급사·한 발주만 참조한다. 제출된 증빙 묶음과 검토 결정은 수정하지 않는다.
-
-**Acceptance Criteria:** 잘못된 상태 전이와 값이 거부되고, 사건 optimistic version과 migration이 존재하며 entity를 API로 직접 직렬화하지 않는다.
-
-**테스트/검증:** 상태 전이 parameterized test, PostgreSQL migration test, 금액 경계값 test.
-
-**의존성:** P1-00.
-
-**사람 확인:** `Spec.md`의 용어·상태·불변식과 schema가 일치하는지 확인한다.
+**상태: 완료.** 업무 범위·불변식은 Spec과 Phase 2+ 동결 인터페이스를 따른다.
 
 ### P1-02 — 구매·검수 Mock과 로컬 Snapshot
 
-**목적과 범위:** 외부 구매시스템 Mock API, read-only adapter, PO/검수 snapshot과 external version 동기화를 구현한다.
-
-**관련 규칙/불변식:** 외부 Mock은 발주·검수 사실의 정본이고 `ReceiptAllocation`은 이 시스템에서 소비한 수량의 정본이다. 오래된 외부 version이 최신 snapshot을 덮어쓰지 않는다.
-
-**Acceptance Criteria:** PO, 공급사, 품목, 검수와 version을 조회·동기화하고 부재·불일치·미확정을 구분한다. 같은 version refresh는 멱등하다.
-
-**테스트/검증:** API 계약, version 역행, timeout, 잘못된 payload, 반복 refresh 통합 test.
-
-**의존성:** P1-01.
-
-**사람 확인:** 외부 검수량과 로컬 사용량이 화면·로그·문서에서 명확히 구분되는지 확인한다.
+**상태: 완료.** 업무 범위·불변식은 Spec과 Phase 2+ 동결 인터페이스를 따른다.
 
 ### P1-03 — 수동 청구와 증빙 묶음 Versioning
 
-**목적과 범위:** 사건 생성, draft 편집, 제출, 보완 후 다음 revision 작성/제출 API와 request-id 멱등 처리를 구현한다.
-
-**관련 규칙/불변식:** draft만 수정할 수 있다. 제출 시 수동 입력을 수정 불가능한 `EvidenceBundle vN`으로 동결하며 보완은 vNext로 만든다.
-
-**Acceptance Criteria:** header/line 작성과 제출, bundle version/hash 생성, 제출 후 수정 차단, 보완 재제출, 과거 version 조회가 가능하다. 같은 requestId의 다른 payload는 conflict다.
-
-**테스트/검증:** validation/idempotency, v1→보완→v2 보존, 동시 draft 수정 test.
-
-**의존성:** P1-01, P1-02의 PO 조회 계약.
-
-**사람 확인:** 제출 값을 조용히 덮어쓰는 경로가 없는지, 보완 전후 차이를 읽을 수 있는지 확인한다.
+**상태: 완료.** 업무 범위·불변식은 Spec과 Phase 2+ 동결 인터페이스를 따른다.
 
 ### P1-04 — 결정론적 3-way 대사
 
-**목적과 범위:** 품목/PO line, 단가, 청구수량, 검수 잔량을 비교해 결과와 계산 근거, 예상 배분계획을 만든다.
-
-**관련 규칙/불변식:** 허용오차 0, 잔량 이하 부분 청구 허용, 복수 검수 FIFO 배분, AI 미사용, 업무상 중복과 기술적 멱등성 분리를 지킨다.
-
-**Acceptance Criteria:** 정상, 수량 초과, 단가 차이, 품목 미확정, 번호 중복, 근거 부족과 복수 예외를 재현하며 같은 입력은 같은 결과/hash를 만든다.
-
-**테스트/검증:** table-driven test, 배분 합계·잔량 비초과 property test, 잔량 경계와 단가 1원 차이 test.
-
-**의존성:** P1-02, P1-03.
-
-**사람 확인:** 예외 설명을 입력값으로 재계산할 수 있고 FIFO가 V1 정책으로 표시되는지 확인한다.
+**상태: 완료.** 업무 범위·불변식은 Spec과 Phase 2+ 동결 인터페이스를 따른다.
 
 ### P1-05 — 검토·매핑·보완·거절
 
-**목적과 범위:** 품목 매핑 확정, 재대사, 보완요청, 거절, 승인용 `ReviewSnapshot`과 canonical hash를 구현한다.
-
-**관련 규칙/불변식:** 매핑은 현재 사건에만 적용한다. source bundle, 대사 결과, 매핑, 예상 배분, 금액을 snapshot에 포함하며 source 변경 시 stale 처리한다.
-
-**Acceptance Criteria:** 미확정 품목을 사람이 확정해 재대사하고, 보완/거절 사유를 기록하며, stale snapshot으로 승인할 수 없다.
-
-**테스트/검증:** 매핑 전후 결과, bundle/mapping 변경 후 stale, 잘못된 상태 action test.
-
-**의존성:** P1-04.
-
-**사람 확인:** 승인 화면의 사실과 hash 대상 payload가 동일하며 AI 없이도 판단 근거를 이해할 수 있는지 확인한다.
+**상태: 완료.** 업무 범위·불변식은 Spec과 Phase 2+ 동결 인터페이스를 따른다.
 
 ### P1-06 — 역할 권한과 감사이력
 
-**목적과 범위:** `SUBMITTER`, `APPROVER`, `OPERATOR` 역할, 로컬 시연 사용자, action 권한과 append-only 감사이력을 구현한다.
-
-**관련 규칙/불변식:** 제출자의 자기 승인을 금지한다. 감사이력은 actor, action, 대상 version, 의미 있는 변경, request/trace ID를 포함하며 비밀정보를 남기지 않는다.
-
-**Acceptance Criteria:** 역할별 허용/거부가 적용되고 자기 승인은 차단된다. 제출·매핑·보완·거절·승인·revision·재처리 이력이 남는다.
-
-**테스트/검증:** 권한 matrix, 자기 승인, 비인증 접근, 감사 이벤트 누락/민감정보 test.
-
-**의존성:** P1-01. P1-03~05와 계약 고정 후 병렬 통합 가능.
-
-**사람 확인:** 정산 담당자와 승인자의 action이 실제로 구분되고 감사 diff가 업무적으로 읽히는지 확인한다.
+**상태: 완료.** 업무 범위·불변식은 Spec과 Phase 2+ 동결 인터페이스를 따른다.
 
 ### P1-07 — 원자적 승인과 동시 배분
 
-**목적과 범위:** 최신 ReviewSnapshot 승인과 `ReceiptAllocation`, `ReviewDecision`, `PaymentRequest` 생성을 한 트랜잭션으로 구현한다.
-
-**관련 규칙/불변식:** 사건/bundle/snapshot/external receipt version과 권한을 재검증한다. 검수 행을 고정 순서로 잠그고 전체 라인 성공 시에만 배분한다. 외부 호출 중 잠금을 유지하지 않는다.
-
-**Acceptance Criteria:** 정상 승인은 정확한 배분과 지급요청 하나를 만든다. 잔량 60에 40+40 동시 승인 시 한 건만 성공하며 stale/중복 요청은 side effect 없이 실패한다.
-
-**테스트/검증:** 실제 PostgreSQL 동시성 반복 test, rollback 주입, 같은 requestId 병렬 승인 test.
-
-**의존성:** P1-02, P1-05, P1-06.
-
-**사람 확인:** 두 번째 승인 실패 이유가 최신 잔량과 함께 표시되고 HTTP 호출이 잠금 범위 밖인지 확인한다.
+**상태: 완료.** 업무 범위·불변식은 Spec과 Phase 2+ 동결 인터페이스를 따른다.
 
 ### P1-08 — 지급요청과 최소 Transactional Outbox
 
-**목적과 범위:** 승인 트랜잭션의 PaymentRequest/Outbox 저장과 pending event를 Mock ERP HTTP adapter로 전달하는 인프로세스 relay를 구현한다.
-
-**관련 규칙/불변식:** 외부 지급요청 key는 유일하며 전달은 at-least-once일 수 있다. timeout은 실패 확정이 아니며 `RESULT_UNKNOWN`은 자동 blind resend하지 않는다.
-
-**Acceptance Criteria:** relay 중단에도 event가 남고 중복 실행에도 지급요청이 늘지 않는다. 4xx와 timeout을 구분하고 relay 선점을 조건부 update/lease로 보호한다.
-
-**테스트/검증:** commit 직후 중단, HTTP 성공 후 상태 변경 전 중단, 중복 relay, 선점 경합 test.
-
-**의존성:** P1-07.
-
-**사람 확인:** Outbox가 범용 프레임워크로 팽창하지 않고 exactly-once를 과장하지 않는지 확인한다.
+**상태: 완료.** 업무 범위·불변식은 Spec과 Phase 2+ 동결 인터페이스를 따른다.
 
 ### P1-09 — Mock ERP와 Webhook 멱등성
 
-**목적과 범위:** idempotency key 기반 지급요청 수신, ACK/후속 webhook, signature/event/payment key 검증을 구현한다.
-
-**관련 규칙/불변식:** 같은 key+같은 payload는 기존 결과, 다른 payload는 conflict다. webhook event는 한 번만 반영하며 unknown 결과에서 새 지급요청을 만들지 않는다.
-
-**Acceptance Criteria:** 정상 인계 후 `EXPORTED/ACKNOWLEDGED`가 되고, 중복 요청·webhook에도 논리 지급요청은 하나다. 응답 유실과 위조/역순 event를 재현한다.
-
-**테스트/검증:** 소비자 주도 계약, 중복/conflict/위조/역순/unknown key, 응답 유실 test.
-
-**의존성:** P1-08, P1-06.
-
-**사람 확인:** Mock ERP의 실제 레코드 수가 하나이며 `FAILED`와 `RESULT_UNKNOWN`이 구분되는지 확인한다.
+**상태: 완료.** 업무 범위·불변식은 Spec과 Phase 2+ 동결 인터페이스를 따른다.
 
 ### P1-10 — 조회 API와 최소 업무 화면
 
-**진행 상태:** 완료(2026-10-01). 로그인·목록(`034fff4`), 상세·비교 조회(`57e7516`), 작성·검토·승인·인계·운영 연결(`003ff43`)까지 독립 리뷰 PASS로 인수했다. 실제 생성→저장→제출, 보완 작성/재제출, 운영자 비교 실행, 검토 대상 동결·매핑·보완요청·거절·승인, 지급요청/Outbox 조회와 역할별 내비게이션을 제공한다. 서버 계산값을 사용하고 표시 근거와 동결 대상이 다르면 결정을 차단하며, 미확정 쓰기는 동일 payload/requestId로만 재시도한다. 백엔드·DB 계약과 기존 디자인은 유지했다.
-
-**검증 근거:** 워커 최종 171 tests·lint·typecheck·build PASS, 독립 최종 실제 페이지 공격 6/6와 composer 집중 11/11 PASS 및 이전 보안/수명주기 회귀 인수. `node scripts/verify-p1-10.mjs --browser`의 격리 HTTP/Chromium으로 정상 승인·매핑·보완 v2·거절·자기 승인 403·stale 차단·목록 왕복·콘솔/뷰포트를 확인했다. 브라우저 unknown-retry는 upstream 전 취소와 동일 ID 재사용 근거이며, 반영 후 응답 유실의 서버 replay는 격리 HTTP 근거로 구분한다. 인계 브라우저 사례는 NOT_SENT 조회와 송금 구분 문구다. 전체 Phase 1 경합·ERP 장애·Compose 통합 인수는 P1-11로 남긴다. 최종 사용자 시연 확인은 아래 사람 확인 항목을 따른다.
-
-**인수된 실행 단위 — 상세·비교 조회 연결:** 기존 디자인을 유지하며 실제 목록 ID에서 청구서 상세로 이동하고, 청구·제출 근거·비교 결과·검토 대상/현재 자료 일치 여부·결정/감사 이력·ERP 인계 상태를 해당 역할이 허용받은 조회 API로 표시한다. API가 제공하지 않는 값은 만들지 않는다. 목록 복귀, 로딩·빈 값·401/403/404·서버 오류, 다른 ID/세션의 늦은 응답 차단을 검증한다. 이번 단위에는 작성·매핑·보완·거절·승인 등 쓰기 연결과 백엔드 변경을 포함하지 않는다. 사람은 실제 데이터 표시와 기존 디자인 유지 여부를 확인한다. 의존성은 인수된 로그인·목록과 P1-03~P1-09 조회 계약이다.
-
-**디자인 기준:** `Spec.md` 19.0을 따른다. 우선 비교표 중심 상세 화면 하나를 제작해 사용자 확인을 받은 뒤 다른 화면에 확장한다. 디자인 확정만으로 구현 착수를 간주하지 않는다.
-
-**목적과 범위:** 로그인, 사건 목록, 수동 작성, 3-way 비교, 매핑, 보완, 거절, 승인, 인계상태, 감사이력 화면을 구현한다.
-
-**관련 규칙/불변식:** 서버 계산을 UI가 재판정하지 않는다. 표시한 version/hash로 승인하며 stale/경합 후 최신 상세와 원인을 표시한다.
-
-**Acceptance Criteria:** 브라우저에서 정상·예외·보완·거절·승인 흐름과 자기 승인 금지를 재현하며 PO/검수/청구와 계산 근거를 비교할 수 있다.
-
-**테스트/검증:** API schema/typecheck, Playwright happy/supplement/reject/self-approval/stale E2E, console/viewport 확인.
-
-**의존성:** P1-03~P1-09 API 계약. Mock contract로 일부 병렬 진행 가능.
-
-**사람 확인:** 5~7분 시연 흐름, 접근성 기본 동작, Phase 1에 가짜 AI·원문 미리보기·원본 인쇄 버튼이 없는지 확인한다. 원본 PDF 미리보기·다운로드·표준 인쇄와 Excel 원본 다운로드는 실제 문서 접수가 추가되는 Phase 2에서 구현한다.
+**상태: 완료.** 업무 범위·불변식은 Spec과 Phase 2+ 동결 인터페이스를 따른다.
 
 ### P1-11 — Phase 1 통합 인수
 
-**진행 상태:** 구현·자동검증·독립인수 완료(2026-10-01, HEAD `fe97247`, Head 독립 최종검수 PASS). **사람의 5~7분 실제 시연은 미실측·사용자 확인 대기**이며, 자동검증 완료를 사람 확인 완료로 간주하지 않는다. 후속에서 해결: (1) jsonb key 순서로 인한 검토 snapshot hash 불일치를 v2 재귀 canonical로 제거하고, v1은 불변·저장 `schemaVersion`별 단일 알고리즘·no fallback으로 검증(매핑 successor 직접 승인, legacy 변조 zero effect; DB/API/DTO 변경 없음). (2) p1-11 harness의 재-freeze 우회 제거(직접 승인 실패 = run FAILED/exit 1), Compose cleanup 실패 = exit 1, env 격리·per-run 파일·127.0.0.1 publish. (3) 늦은 2xx 증거를 handler 진입이 아니라 응답 finish/close와 relay `beforeFinalize`/no-op로 인과 관찰. 상세는 `adr/EngineeringNotes.md`의 P1-11 항목.
-
-**검증 근거(자동):** `3a1285c` 시점에 whole backend 514 tests(0 fail)·web 191 + lint/build·`verify-p1-11 --browser`(13 시나리오 + 브라우저 hand-off 3상태 + 브라우저 후 DB tuple) ALL PASS·clean Compose PASS. 이후 `fe97247`은 focused JUnit 2 + Node fixture 3에 한정하며 수정된 전체 harness(browser/Compose)는 재실행하지 않았다. 증거 `output/p1-11/evidence.json`, `output/playwright/p1-11-phase-one/`.
-
-**목적과 범위:** 전체 Ticket을 통합하고 반복 가능한 fixture, E2E, 경합·장애 시연과 Phase 2 입력 계약을 확정한다.
-
-**관련 규칙/불변식:** 기대 결과는 구현과 독립된 사건 예제로 정의한다. flaky retry로 실패를 감추지 않으며 미구현 AI/문서/RabbitMQ를 완료로 주장하지 않는다.
-
-**Acceptance Criteria:** 정상 승인, 60/100 보완 후 재제출, 단가 차이, 품목 매핑, 번호 중복, 근거 부족, 40+40 경합, ERP 응답 유실을 재현한다. 전체 test/build/smoke와 ADR/ERD/API/runbook이 최신이다.
-
-**테스트/검증:** JUnit+Testcontainers, Playwright, 반복 동시성, 장애 주입, clean Compose smoke.
-
-**의존성:** P1-00~P1-10.
-
-**사람 확인:** 5~7분 실제 시연과 화이트보드 설명을 수행하고 Phase 2에서 유지할 contract를 확인한다.
+**상태: 완료.** 업무 범위·불변식은 Spec과 Phase 2+ 동결 인터페이스를 따른다.
 
 ## 3. Phase 2 Backlog
 
 ### P2-00 — 비공개 문서 저장소 실행 기준선
 
-**진행 상태:** 구현·로컬 자동 인수 완료(2026-10-02, `feat/p2-00-document-storage`). 사용자 Phase 2 착수 지시에 따른 첫 Ticket이다. 신규 storage CI job의 원격 실행 확인은 아직 남아 있다.
-
-**검증 근거:** 공식 릴리스 소스 빌드 PASS, `node --test web/tests/compose-smoke.test.mjs` 20 tests/0 failures, `node scripts/verify-p2-00.mjs` PASS. 실제 MinIO에서 localhost publish·인증 write/read byte 동일·익명 목록/파일 403·반복 초기화·container 재생성 후 원본 및 private 정책 보존을 확인했다. 성공/실패 실행의 자신이 만든 container/volume와 secret 파일은 모두 정리했다. 최종 증거: ignored `output/p2-00/im-p200-aa03773a/evidence.json`. 초기화 one-shot은 `--wait` 대상에서 제외한 `tools` profile로 명시 실행한다. 백엔드/API/DB/프런트엔드 변경은 없다.
-
-**목적과 범위:** opt-in `compose.storage.yaml`, 로컬 MinIO 소스 빌드, 비공개 `invoice-documents` bucket 초기화, 환경변수 예시, 재사용 격리 검증 스크립트를 추가한다. 기존 Phase 1 Compose 실행은 그대로 가능하다. 백엔드 API·DB·UI·문서 제출·OCR·RabbitMQ는 이 Ticket에 포함하지 않는다.
-
-**관련 규칙/불변식:** 문서 저장소는 비공개이며 localhost에만 publish한다. 저장소 자격 증명은 env로 전달하고 커밋·로그·검증 증거에 남기지 않는다. 검증은 실행마다 고유 Compose project·임시 port·volume·secret 파일을 만들고 성공/실패 모두 자신이 만든 자원만 제거한다. 이 단계의 인증된 S3 PUT 자체는 덮어쓰기 방지를 보장하지 않는다. 사건별 소유권·업로드 완료 검증·불변 Document는 P2-01에서 구현한다.
-
-**Acceptance Criteria:** (1) 고정된 공식 보안 수정 릴리스로 MinIO 이미지 빌드·기동·readiness 성공. (2) bucket 초기화 반복 성공과 익명 목록/파일 읽기 403. (3) 인증된 object write/read byte 동일. (4) container 재생성 후 파일과 private 정책 보존. (5) 검증 제한 시간·진행 로그·cleanup 적용, cleanup 실패도 비정상 exit. (6) README 실행과 제거 절차가 최신이다.
-
-**테스트/검증:** `node scripts/verify-p2-00.mjs`로 실제 Docker/MinIO HTTP와 파일 비교를 검증한다. 기존 `compose-core`의 자원 관리 코드를 재사용한다. 제품 보안 정책은 mock이 아닌 실제 익명 HTTP 요청으로 교차 검증한다.
-
-**의존성:** Phase 1 자동 인수 완료와 사용자 확인 CI 통과. 사람 시연 확인 대기는 기존대로 유지한다.
-
-**사람 확인:** 저장소가 선택 실행 가능하고 기본 Phase 1 사용 흐름이 유지되는지 확인한다.
+**상태: 완료.** 비공개 MinIO 실행 기준선. 이미지·설정은 `infra/minio/`와 `compose.storage.yaml`이 기준이다.
 
 ### P2-01 — Document 접수와 presigned 업로드
 
-**진행 상태:** 구현·로컬 자동 인수 완료(2026-10-02, `feat/p2-01-document-upload`). P2-00을 로컬 main에 통합한 후 분기했다. 변경된 CI의 원격 실행 확인은 별도 대기다.
-
-**검증 근거:** `node scripts/verify-p2-01.mjs --focused` 16 tests/0 failures/errors/skipped, 최종 `node scripts/verify-p2-01.mjs` whole backend 538 tests/0 failures/errors/skipped와 bootJar PASS(8m 34s). 세 Compose 파일의 config 검증, Java 21·실제 Testcontainers PostgreSQL/MinIO에서 서명 PUT·브라우저 preflight·원본 익명 GET 403·동일/다른 requestId 동시 완료·원본 보존·권한·만료·stale·크기/type/hash/signature·DB 불변·감사 실패 rollback·저장소 I/O 중 트랜잭션 없음 PASS. 실행 후 Java 프로세스와 테스트 MinIO가 종료됨을 확인했다. 집계 증거는 ignored `output/p2-01/evidence.json`, 상세 JUnit은 `core-api/build/test-results/test/`다. 사건 제출·승인·프런트엔드 코드는 변경하지 않았다.
-
-**확정 계약:** `POST /api/invoice-cases/{id}/documents/presign`은 requestId/expectedCaseVersion/draftRevisionId/fileName/mediaType/sizeBytes/checksum(SHA-256 소문자 hex)를 받고 upload URL·documentId·expiresAt·필수 Content-Type을 반환한다. PDF 및 XLSX만, 파일당 10MiB, 작성 차수당 완료 문서 + 아직 유효한 예약 합계 10개, URL 수명 10분이다. 이름은 경로/제어문자 없이 최대 255자이고 확장자와 mediaType이 일치해야 한다. 예약은 사건 version을 올리지 않는다. 같은 requestId는 같은 만료시각/URL을 replay하므로 만료 후 새 requestId가 필요하다.
-
-`POST .../documents/complete`는 requestId/expectedCaseVersion/draftRevisionId/documentId/checksum을 받는다. 인증된 소유 제출자만 열린 현재 작성 차수에 쓸 수 있다. 최초 완료는 만료 전이어야 하며 실제 GET 응답의 Content-Type·크기·SHA-256·PDF/ZIP signature를 검증한다. XLSX 내부 구조·PDF 페이지 검증은 parser Ticket 범위다. 검증된 byte를 서버 전용의 새 확정 object key에 쓰고, 짧은 DB 트랜잭션에서 사건/작성 차수/version을 다시 확인해 immutable Document·version 증가·감사·멱등 응답을 함께 저장한다. S3 호출 중 DB 잠금은 유지하지 않는다. 같은 documentId/checksum의 완료는 한 번만 반영되고 완료 후 재시도는 만료·사건 상태 변경에도 기존 성공을 반환한다. 다른 payload의 동일 requestId는 409다. 실패/경합 loser의 서버 생성 object는 트랜잭션 밖에서 제거하며, 저장소 장애나 process 중단으로 남은 orphan 정리는 후속 배치 Ticket이다.
-
-`GET .../documents?page=0&size=20`은 기존 사건 읽기 권한으로 완료 문서 metadata를 조회한다(size 최대 50, page 최대 100000). object key·서명 URL·credential을 목록/감사에 노출하지 않는다. 업로드/완료는 저장소 설정을 명시적으로 활성화해야 하며 기본 Phase 1은 계속 기동된다. 문서는 아직 제출 증빙 및 승인 근거에 포함되지 않는다.
-
-**Acceptance Criteria:** 실제 PostgreSQL+MinIO에서 정상 PDF/XLSX 접수·서명 PUT·익명 접근 거부·다른 사건/역할 거부·stale 및 sealed 작성 차수 차단·크기/type/checksum/signature 불일치·만료·최대 파일 수·동일 요청 replay/payload 충돌·동시 완료·원본 불변·감사/DB rollback을 검증한다. 기존 backend whole suite와 bootJar가 통과한다. 서비스 경계는 저장소 호출 중 트랜잭션 부재도 검증한다.
-
-**목적과 범위:** 사건 소유권·draft revision·expected version 검증, PDF/XLSX 파일 조건·상한, 짧은 수명의 업로드 URL, 완료 시 실제 object 크기/media type/SHA-256 검증과 Document 저장·조회, actor-scoped 멱등 replay와 감사 기록. storage 내부 endpoint와 브라우저 endpoint를 구분한다. 같은 object에 대한 재업로드로 완료된 Document를 변조할 수 없도록 임시 upload object와 서버가 확정하는 immutable object를 분리한다. 제출 및 EvidenceBundle hash 변경은 후속 Ticket에서 처리한다.
-
-**의존성/검증 방향:** P2-00. 실제 MinIO + PostgreSQL로 다른 사건 접근 거부, checksum/크기 불일치, 완료 중복·payload 충돌, 업로드 URL 재사용 후 원본 불변, 동시 완료를 검증한다. 한도·URL TTL·revision 결합·API DTO는 착수 시 관련 Spec/CONTEXT와 함께 고정한다.
+**상태: 완료.** 문서 접수·presigned 업로드·원본 등록. 후속 진입점은 `core-api/document/application/DocumentService`다.
 
 ### P2-02 — 제출 문서 증빙 동결과 보완 참조 보존
 
-**진행 상태:** 구현·로컬 자동 인수 완료(2026-10-02, Worker 최종 `4e46b27`). P2-01을 로컬 main에 통합한 기준에서 전용 Paseo worktree의 Implementation Worker가 구현했고 Head가 계약·사후 diff·3 레이어 책임/의존성·검증 증거를 검토해 인수했다. 원격 push/CI와 사람 시연은 별도 대기다.
-
-**검증 근거:** 최초 구현 `db2427a`에서 whole backend `clean test bootJar` 559 tests/0 failures/errors/skipped PASS. 후속 보완 검증·검사 guard 수정 후 최종 `4e46b27`에서 `node scripts/verify-p2-02.mjs --focused` 74 tests/0 failures/errors/skipped 및 bootJar PASS. 실제 PostgreSQL/MinIO에서 문서 동결·보완 참조·과거 legacy 비소급·승인 재구성·DB 불변·경합·rollback·schema/중복 거부 검증. Head 검토로 보완 계승 범위, schema 검사, 중복 테스트의 실제 원인 분리, 광범위 Adapter 예외를 수정했다. Controller 직접 persistence/저장소 접근 및 새 역방향 의존 없음; application은 정책/트랜잭션, persistence는 조회/저장, domain은 증빙 데이터 책임을 유지한다. 문자열 기반 guard는 제한된 자동 안전장치이고 책임 배치 검토를 대체하지 않는다. 증거는 ignored `output/p2-02/`에 보존했다.
-
-**남은 검증 위험:** 최종 focused 첫 실행에서 기존 P2-01 MinIO 초기화가 `XMinioServerNotInitialized`로 실패했다. 해당 클래스 단독 실행과 focused 재실행은 통과했고 assertion 완화/skip은 없다. 초기화 readiness의 반복 가능성은 미해소이며 이번 인수를 무조건 안정성 보장으로 해석하지 않는다. 테스트 Java/Gradle·임시 container는 종료했고 기존 사용자 `im-demo-*`는 유지했다.
-
-**목적과 범위:** 열린 작성 차수의 완료 문서를 제출 EvidenceBundle에 동결하고, 보완 차수에 이전 증빙의 문서 참조를 계승한다. 기존 수동 청구 및 문서 없는 제출의 canonical JSON/hash는 byte 단위로 유지한다. 원본 다운로드/UI·파서·분석 작업·메시징은 포함하지 않는다.
-
-**확정 계약:** 작성 차수와 immutable Document 사이에 사건 소유권이 검증되는 참조를 둔다. 최초 완료는 해당 열린 차수에 참조를 함께 등록한다. 보완 차수는 직전 제출의 문서 ID를 중복 없이 계승하며 파일·Document·과거 차수·bundle을 복제하거나 수정하지 않는다. 삭제/교체 API는 이번 범위가 아니며 새 파일은 새 ID다. 계승된 참조도 현재 차수의 최대 10개 한도에 포함한다. 예약 한도는 계승/완료 참조와 아직 유효한 미완료 예약의 합계로 검사하고 이중 집계하지 않는다. 기존 접수 문서에는 migration으로 원래 차수의 참조를 채운다. 과거 문서 없는 bundle에는 문서를 소급 편입하지 않는다.
-
-제출은 사건 → 현재 작성 차수 잠금 아래 완료 참조만 읽는다. 미완료 예약은 증빙에 포함하지 않고 제출을 막지 않는다. 완료가 먼저 commit하면 이전 expectedCaseVersion 제출은 충돌하며, 제출이 먼저 commit하면 늦은 최초 완료는 sealed/stale로 실패하고 후보 object는 기존 정책으로 정리한다. 제출·seal·bundle·상태·감사·멱등 응답은 단일 DB 트랜잭션이고 저장소 호출은 없다.
-
-문서가 있는 payload만 명시적 `schemaVersion: 2`와 `documents` 배열을 갖는다. 문서는 documentId UUID 문자열 오름차순이고 각 항목은 documentId, 원래 sourceDraftRevisionId, fileName, mediaType, sizeBytes, checksum을 고정 순서로 기록한다. object key·upload URL·credential은 payload/API/감사에 노출하지 않는다. 문서 없는 legacy payload는 schemaVersion/documents 필드 없이 기존 알고리즘을 그대로 사용한다. 저장된 schema별 단일 알고리즘이며 unknown schema 또는 문서 포함 payload의 legacy 위장은 거부하고 hash fallback은 없다. 승인 재구성은 해당 sealed 차수의 권위 있는 참조·immutable metadata로 canonical을 재생성해 bundle 내용/hash를 검증한다. 기존 ReviewSnapshot v1/v2 및 match-result-v3 알고리즘은 바꾸지 않는다.
-
-**Acceptance Criteria:** (1) 문서 0개 legacy canonical 고정 fixture와 기존 승인 회귀 PASS. (2) PDF/XLSX 문서 ID·metadata·checksum이 순서와 무관하게 동일하게 동결되고 metadata 변경은 hash 변경. (3) 보완 재제출이 기존 ID를 계승하고 추가 문서를 포함하며 과거 bundle/hash/원본은 불변. (4) 실제 PostgreSQL에서 사건 간 참조, sealed 차수 참조 삽입 및 참조 UPDATE/DELETE 차단; 보완 한도·멱등 replay·payload 충돌 검증. (5) barrier 기반 완료↔제출 경합 양방향, 감사 실패 rollback 및 재시도 검증. (6) 문서 포함 실제 검토/승인 성공과 bundle 문서 누락/변조/unknown schema 승인 거부 시 업무 side effect 0을 검증. (7) backend whole suite와 bootJar PASS, 제한 시간·실시간 로그·자신이 만든 프로세스/컨테이너 정리 보고.
-
-**검증/인수:** Worker는 focused 및 전체 검증 증거를 보고한다. Head는 승인 증빙 경계와 migration을 독립 검토하고 필요 시 독립 통합 검증을 추가한다. 기존 완료한 결정론적 검증은 근거 없이 반복하지 않는다. 코드/문서 충돌 시 보고하고 멈춘다.
-
-**사용자 추가 인수 Gate(2026-10-02):** Worker 완료 후 Head가 변경 diff의 API → application → persistence 책임과 의존성, domain 독립성 및 기존 infrastructure port/adapter 경계를 엄격하게 점검한다. Controller의 DB/저장소 직접 접근, persistence의 application/API 타입 의존, 업무 규칙·HTTP 책임의 잘못된 계층 배치를 확인한다. 위반이나 관련 개선사항은 같은 Worker에 수정 지시하고 수정 diff와 필요한 검증을 확인한 뒤 인수한다. 이번 Ticket과 무관한 전역 리팩터링은 포함하지 않는다.
-
-**의존성:** 로컬 자동 인수된 P2-01. 변경된 원격 CI 확인과 사람 시연 확인은 별도 대기다.
+**상태: 완료.** 문서 증빙 동결·보완 참조 보존. 후속 진입점은 `InvoiceCaseWriteService`와 `EvidenceBundleHasher`다.
 
 ### P2-03 — 권한 있는 원본 조회와 PDF 미리보기·다운로드
 
-**진행 상태:** 구현·자동 검증 인수 완료(2026-10-03). P2-02 통합·push된 `a9df807`에서 분기했다. 장시간 지연된 backend Worker와 변경 없이 실패한 Gemini 실행을 정리하고 사용자 지시에 따라 Head가 구현·통합을 완료했다. PDF 표준 인쇄는 별도 사람 확인 항목이며 실제 인쇄 결과는 미확인이다. Phase 2 전체 완료는 아니다.
-
-**구현 인계(2026-10-03):** 사용자 지시에 따라 장시간 지연된 backend Worker를 중지하고 Head가 현재 변경을 기본 작업공간으로 인계했다. provider 응답 300초 timeout과 MinIO test bootstrap 예외 처리/컴파일 수정 반복을 확인했다. Head는 bootstrap을 재현된 `XMinioServerNotInitialized`에 대한 제한 재시도로 좁히고 checked exception 컴파일 오류를 수정했으며, 반복 검증에서 기존 공통 MinIO 이미지를 재사용하도록 했다. 사용자 수정 AGENTS/Implement는 보존했다.
-
-**Backend 인수(2026-10-03):** Head 직접 수정 후 `node scripts/verify-p2-03.mjs` 전체 backend 571 tests/64 classes, failures/errors/skipped 0 및 bootJar PASS(17분). actual PostgreSQL/MinIO와 문서/승인/권한/불변 회귀가 모두 포함됐으며 전체 suite의 단일 실행으로 성공했다. URL 실제 서명시각+TTL과 DTO expiresAt를 일치시키고 헤더 직렬화는 infrastructure에 두었다. API/application/persistence 책임·의존성 Head 검토 완료. 본인 Java/Gradle 및 Testcontainers 잔류 없음; 기존 사용자 시연 서비스 유지. 증거: ignored `output/p2-03/head-whole-backend.log`, `head-whole-summary.json`. 아래 UI/통합 인수 기록으로 이어진다.
-
-**UI/통합 인수(2026-10-03):** 기존 문서 목록·GET URL 발급 API를 제출 이력 탭에 연결하고 프록시는 검증된 UUID의 두 read 경로만 추가했다. 목록 페이지 추가 조회, PDF inline iframe·새 탭 fallback, PDF/XLSX attachment, 2분 만료 제거·재발급, 사건/세션 교체·logout 및 오래된 응답 폐기를 구현했다. frontend lint 오류/경고 0, 기존 포함 214 tests/0 failures 및 최종 build PASS. 현재 bootJar·실제 PostgreSQL/MinIO·최종 Next 빌드의 격리 브라우저 검증에서 PDF 렌더링, PDF/XLSX 실제 다운로드 SHA-256 동일·한글 파일명, 실제 120초 경과 후 iframe 제거·새 URL 성공, logout 제거, 다른 제출자 403, URL 영구 저장 없음과 문서 영역 여백/가로 넘침 없음을 확인했다. 사람의 표준 PDF 인쇄 결과와 원격 CI는 미확인이다. 증거는 ignored `output/p2-03/`, `output/playwright/p2-03/original-pdf-final.png`에 보존한다. 테스트용 서버·컨테이너/volume·브라우저와 두 위임 worktree는 정리하고 기존 사용자 서비스는 유지했다. 실제 책임·의존성 Head 검토 및 기존 architecture guard PASS; 신규 린트/분석 프레임워크는 추가하지 않았다.
-
-**범위/계약:** 기존 완료 문서 목록 API와 `GET /api/invoice-cases/{caseId}/documents/{documentId}/download-url?disposition=attachment|inline`을 사용한다. 기본 attachment, inline은 PDF만 허용하고 XLSX inline 또는 잘못된 disposition은 400이다. 기존 사건 읽기 권한을 그대로 적용한다(소유 제출자 및 기존 허용 검토/운영 역할). 다른 사건 문서나 미완료 예약은 404, 인증/권한 거부는 기존 정책이다. DRAFT·제출·과거 보완 원본도 완료 Document이면 조회 가능하다. 클라이언트가 object key·filename·mediaType을 지정할 수 없다.
-
-성공 DTO는 `documentId`, `fileName`, `mediaType`, `url`, `method: GET`, `expiresAt`이다. 만료는 서버 시각 기준 120초이며 불변 확정 object만 서버가 presigned GET으로 서명한다. 내부 endpoint가 아닌 브라우저용 endpoint를 사용한다. 다운로드 URL 자체에는 서명된 object 경로가 필요하지만 별도 objectKey·credential 필드는 제공하지 않고 로그·감사·DB·브라우저 영구 저장에 URL을 남기지 않는다. URL은 만료까지 사용 가능한 권한이므로 요청마다 인증하고 `Cache-Control: no-store`를 적용한다. API는 URL 발급을 위해 원본 byte를 읽거나 변경하지 않는다. 저장소가 비활성인 경우 기존 generic 503, 서명 오류도 secret 없이 503이다. 서명된 응답 Content-Type 및 안전한 UTF-8 Content-Disposition으로 이름/inline/attachment를 고정한다. object 원본·EvidenceBundle/hash·case version·idempotency·업무상태는 변경하지 않는다.
-
-**UI 계약:** 실제 case 문서 목록을 제출 이력/근거 영역의 기존 역할·탭 구조에 맞춰 표시한다. PDF는 선택 시 새 inline URL로 화면 안의 표준 브라우저 PDF viewer를 열며 원본 다운로드와 뷰어 표준 인쇄를 제공한다. XLSX는 원본 다운로드만 제공한다. 브라우저별 PDF viewer 지원 한계에 대비해 별도 탭에서 열기/다운로드를 제공하고 화면 전체 인쇄로 대체하지 않는다. 로딩·문서 없음·권한 거부·발급 실패·URL 재발급을 처리하고 사건 전환/로그아웃 시 선택·URL을 제거하며 오래된 응답이 다른 사건에 표시되지 않게 한다. 새로운 업무 상태/허위 문서·파싱 결과·AI 정보·파일 업로드 UI는 포함하지 않는다. 목록이 페이지로 나뉘면 추가 문서를 접근할 수 있어야 한다. PDF viewer 부재를 서비스 완료로 가장하지 않으며 인쇄는 표준 뷰어에서 사람 확인 항목이다.
-
-**3 레이어 필수 계약:** API는 HTTP 입력·응답·오류 매핑, application은 인증/소유권·문서 조회 조정·disposition/만료 정책, persistence는 SQL/JPA 및 domain/persistence 데이터 반환만 담당한다. controller에서 repository/SQL/storage 직접 호출 금지, persistence에서 application/API 타입 참조·HTTP DTO 생성 금지, domain의 상위 계층 의존 금지. 저장소 SDK와 응답 서명 옵션은 기존 infrastructure adapter가 application port를 구현한다. application → repository는 기존 3 레이어 패턴으로 허용한다. Head가 완료 diff의 실제 책임·의존성을 수동 검토하고 위반/개선은 같은 Worker에 하달 후 재검증한다. 기존 ArchitectureLayeringTest는 관련 핵심 규칙만 유지하며 린트/자체 분석 도구 확장을 새 작업으로 만들지 않는다.
-
-**검증/Acceptance Criteria:** 실제 PostgreSQL/MinIO에서 역할·타 사건·미완료 문서 차단, PDF inline 및 PDF/XLSX attachment의 HTTP 응답 header·원본 byte/checksum 동일, URL 만료 설정·path/disposition 변조 거부·익명 원본 403, public endpoint·disabled storage·오류 redaction·URL no-store 검증. 저장소 URL 발급 중 DB write/lock·원본 읽기 없음, 이전 원본·증빙 hash/version·업무 side effect 없음. 관련 backend focused 및 build와 변경 위험에 맞는 회귀 검증; 기존 MinIO 초기화 flake는 bounded readiness를 확인하고 실패를 숨기는 재시도로 인수하지 않는다. UI는 기존 lint/test/build, 실제 API/브라우저로 목록·PDF viewer/원본 다운로드·XLSX 다운로드·권한·오래된 사건 응답 폐기·재발급을 검증한다. 표준 PDF 인쇄는 사람 확인으로 구분한다. 실시간 로그·제한 시간·본인 PID/port/container cleanup·git status/미추적 파일 보고. 성공 검증은 불필요하게 반복하지 않는다.
-
-**의존성/제외:** P2-02 로컬 인수·원격 push 완료(원격 CI 결과 미확인). 파서/OCR·RabbitMQ·AI·문서 교체/삭제·사용자 서비스 종료는 제외한다. Worker는 feature에만 commit하며 main 통합·push는 Head가 맡는다.
-
-**인쇄 사람 확인 범위(2026-10-03):** 사용자는 프린터가 없으므로 표준 PDF viewer의 인쇄 버튼으로 PC 인쇄 미리보기가 열리고 원본의 페이지 수·내용·잘림/빈 페이지 여부가 정상인지까지 확인한다. 실물 출력은 인수 조건에 포함하지 않는다. 이 확인과 원격 CI 결과 확인은 기존 요청대로 후속 일괄 확인한다.
+**상태: 완료.** 권한 있는 다운로드와 PDF 미리보기. PC 인쇄 미리보기의 사람 확인은 별도 대기다.
 
 ### P2-04 — 제한된 자원의 PDF text layer·XLSX 구조 파서
 
-**진행 상태:** 구현·Head 인수 완료(2026-10-03). Worker의 `16be1bc`·`ac8db2c`에 Head의 process group 정리, Linux fail-closed, 격리 전 ZIP 접근 제거, 빈 셀 좌표 보존과 검증 스크립트 보완을 통합했다. application의 정책/port, infrastructure의 SDK/OS 실행, 순수 domain을 실제 코드로 검토했다. Linux 89 passed/2 host-guard skips와 설치 wheel/CLI smoke PASS; Windows 78 passed/11 Linux-only skips 후 빈 셀 focused 2건 PASS. Linux script의 8초 deadline 실패와 own client/container cleanup도 검증했다. 근거: ignored `output/p2-04/logs/linux-verify-19144.log`, `linux-verify-28324.log`, `head-windows.log`, `head-empty-cells.log`. P2-03 실제 인쇄와 원격 CI 결과 확인은 사용자 요청대로 후속 일괄 확인 항목이다.
-
-**목적/범위:** `Spec.md` 15·16의 Python 3.12 `ai-worker` 실행 단위에 PDF text layer와 XLSX 원문 구조를 읽는 파서 기반을 만든다. 아직 public HTTP 파싱 endpoint나 분석 요청 API·DB 결과 저장·broker를 열지 않는다. 내부 호출/CLI로 검증 가능한 parser library와 process runner, 최소 Python 패키지/테스트·재현 실행 방법 및 parser 전용 CI job만 포함한다. core-api·web·기존 Compose의 제품 동작을 변경하지 않는다.
-
-**입력/산출물 계약:** 서버가 확정한 Document의 `documentId`, `mediaType`, `sizeBytes`, SHA-256과 원본 byte를 받는다. 네트워크 URL이나 클라이언트 object key를 처리하지 않는다. byte의 실제 크기·checksum·포맷을 파싱 전에 확인한다. 결과는 `schemaVersion: document-parse-v1`, 고정 `parserVersion`(engine/library 버전 포함), documentId·원본 checksum·mediaType·경고를 포함한다. 같은 byte/metadata/parser version은 같은 결과를 낸다(실행 시각·random ID 제외). PDF는 1-based 페이지 번호와 페이지별 추출 text, XLSX는 문서 순서의 시트명·1-based 시트/행/열·셀 좌표·원시 값과 타입을 보존한다. numeric 원문은 float 반올림으로 바꾸지 않고 수식은 수식 표현으로 남긴다. 날짜/수식 cache 등은 원시값과 구분하며 계산·외부 링크 실행을 하지 않는다. 파싱 결과를 청구 header/line 또는 승인 근거로 자동 반영하지 않는다.
-
-**빈 text/OCR:** 빈 PDF text layer는 해당 페이지의 `EMPTY_TEXT_LAYER` 경고로 남긴다. 빈 페이지를 스캔으로 확정하거나 OCR 완료/추출 금액처럼 가장하지 않는다. mixed PDF의 정상 text 페이지는 유지한다. Azure OCR·외부 문서 전송·AI·품목 매핑은 제외한다.
-
-**구현 결정:** PDF는 pinned pypdf adapter, XLSX는 defusedxml 기반의 제한된 OOXML reader를 사용한다. OOXML reader는 numeric lexeme 보존을 위한 선택이며 구조가 잘못된 입력을 정상 빈 문서로 처리하지 않는다. 배포 CLI는 격리된 `parse`와 `version`만 제공한다. in-process 호출은 library 단위 검증용으로 유지하며 운영 우회 명령으로 노출하지 않는다. CLI도 확정된 size/checksum을 명시적으로 받아 검증한다. OS 메모리 제한은 child bootstrap에서 SDK import 전에 적용하고, 멀티스레드 parent에서 `preexec_fn`을 사용하지 않는다. wall deadline은 프로세스 시작·입력 전달을 포함하며 stdin/stdout/stderr를 동시에 처리한다. 종료·실패·중단 시 자신이 만든 process group과 I/O 자원을 회수하고 비정상 exit나 잘못된 응답 envelope를 성공으로 받아들이지 않는다.
-
-**자원 한도(상향은 계약 변경):** 입력 파일 10MiB, PDF 100페이지, XLSX 20시트·시트당 10,000행/256열·문서 전체 비어 있지 않은 셀 100,000개, ZIP entry 1,000개·실제 압축 해제 총합 50MiB·개별 entry 10MiB·최대 압축비 100:1, 추출 text/value UTF-8 합계 1MiB, 최종 JSON 4MiB, 문서별 wall time 20초·별도 parser process 메모리 512MiB. 한도 위반은 결과를 잘라 성공하지 않고 typed failure를 반환한다. SDK 호출·압축 해제도 child process 경계 안에 둔다. parent는 timeout/output limit에서 child를 종료·회수하고 temp를 정리한다. Linux Python 3.12가 production parser runtime이며 hard memory 한도를 적용한다. 해당 OS의 메모리 제한을 제공하지 못하면 production entry는 fail-closed한다. Windows 호스트의 library 테스트만으로 Linux 자원 한도를 검증했다고 보고하지 않는다.
-
-**파일 검증:** 암호화/깨진 PDF·XLSX, ZIP 경로 traversal·중복 entry·암호화 entry·DTD/entity 확장·거짓 dimension 또는 실제 초과 좌표·압축 bomb을 거부한다. ZIP metadata의 크기만 믿지 않고 읽으면서 실제 해제 byte를 센다. workbook 순서/relationship을 검증하고, 셀/시트 한도 검사는 dimension이 누락되거나 실제보다 작아도 우회되지 않는다. 원본을 다시 저장하거나 수정하지 않는다. 오류에는 안정적인 원인 code를 반환하며 원문·내부 파일 경로·SDK exception·credential을 결과/로그에 노출하지 않는다.
-
-**3 레이어 필수 계약:** Spring의 API → application → persistence 규칙은 유지하고 controller의 repository/SQL/storage 직접 호출, persistence의 application/API 역의존, domain의 상위 의존을 금지한다. Python에서도 API/CLI/향후 consumer는 입력·출력만, application은 parser 실행 조정·입력 검증·한도/실패 정책, infrastructure는 파일/SDK·process/OS adapter만 담당한다. domain의 순수 산출물/원문 위치 타입은 상위 계층·parser SDK를 참조하지 않는다. composition root에서 port와 adapter를 연결하며 application이 SDK를 직접 import하지 않는다. 이번 범위에는 DB가 없으므로 빈 persistence 모듈이나 자체 lint/architecture 분석 프레임워크를 만들지 않는다. Head는 실제 책임·의존성을 직접 검토하고 개선은 같은 Worker에 하달한다.
-
-**VERIFY/Acceptance Criteria:** 실제 유효한 다중 페이지 PDF(한글/빈/mixed 페이지 포함)와 다중 시트 XLSX(한글·공백·숫자 정밀도·날짜·수식·sparse 셀)에서 값·위치·순서·버전·결정적 결과·원본 byte 불변을 검증한다. 유효 baseline에서 결함 하나를 넣어 checksum/format/암호화/구조/각 한도 위반을 분리한다. 실제 Linux child로 wall timeout·메모리 초과·출력 초과 후 종료/회수·다음 정상 요청 성공을 검증하며 assertion skip/재실행으로 실패를 숨기지 않는다. parser 전체 pytest, 패키지 import/CLI smoke와 명시적 dependency pin/설치 재현이 통과해야 한다. 기존 backend/web 제품 소스를 바꾸지 않았다면 이미 성공한 전체 테스트를 이유 없이 반복하지 않는다. CI job 구성은 추가하되 원격 결과 확인은 사용자 요청대로 후속 항목이다.
-
-**실행/정리:** 현재 root의 사용자 수정 AGENTS/Implement를 worktree에 전달하고 Worker는 해당 두 파일을 stage/commit하지 않는다. cache·venv·TEMP·검증 산출물은 가능한 D 드라이브의 ignored 경로에 두며 실시간 로그·명령 deadline·본인 PID/container/temp 기록·성공/실패 cleanup을 지킨다. C 여유 5GiB 미만에서 큰 Docker 빌드를 시작하지 않는다. Linux 검증에 필요한 작은 공식 Python runtime의 다운로드도 사전 여유/사용량을 확인하고 분리해서 기록하며 서비스 전체 rebuild는 하지 않는다. 진행이 막히면 원인과 실패 명령을 바로 보고하고 무관한 파일/반복 test를 늘리지 않는다. main merge/push는 Head만 수행한다.
-
-**선행/제외:** P2-03. AnalysisRun·RabbitMQ·재시도/DLQ·OCR·LLM/LangGraph·UI·DB migration·기존 업무 상태/증빙/hash 변경은 후속 Ticket이다.
+**상태: 완료.** Linux process 격리 PDF/XLSX parser. 한도·wire·설치 실행은 `ai-worker/`와 Spec 15절을 따른다.
 
 ### P2-05 — AnalysisRun과 분석 요청 transactional Outbox
 
-**진행 상태:** 구현·Head 인수 완료(2026-10-03). 구현 `70cef4b`, 테스트 보강 `e07f3f0`. 제출 트랜잭션 안의 예약·이전 입력 취소와 3레이어 책임/의존성을 검수했다. 실제 PostgreSQL whole backend 585건(실패/오류/skip 0) 및 bootJar 통과, 후속 test-only 변경의 analysis/V12 focused 14건(실패/오류/skip 0) 통과. payload의 동결 metadata·정렬, 실제 legacy bundle 기반 문서 없는 입력, 정확한 SQLSTATE, V11 기존 데이터 snapshot 보존 검증을 보강했다. 증거는 ignored `output/p2-05/baseline-70cef4b/`, `output/p2-05/accepted-evidence/`, `output/p2-05/followup-junit/`에 보존한다. 원격 CI와 실제 PDF 인쇄 확인은 사용자 요청대로 별도 대기한다. RabbitMQ relay·Python consumer·결과 반영은 다음 Ticket에서 연결하고 재시도/DLQ·운영 재처리는 후속 Ticket으로 분리한다.
-
-**범위/기준:** `core-api`의 새 `analysis` feature, 제출 application 연결, V12 migration, 설정과 backend 테스트/검증 스크립트만 변경한다. 제품 의미는 `Spec.md` 10.2·14.2를 따른다. 이번에는 기존 `InvoiceCaseStatus`와 제출 응답·승인·대사·canonical evidence/hash를 보존하고 parser나 네트워크를 제출 transaction에서 실행하지 않는다. `analysis.request.enabled` 기본값은 false다. true이며 동결 문서가 있는 제출에만 예약하며, 문서 없는 legacy 제출에는 예약하지 않는다. HTTP endpoint·UI·broker·Python 변경·새 dependency는 제외한다.
-
-**저장 계약:** `analysis_run`은 UUID id, invoiceCaseId, evidenceBundleId, inputVersion(묶음 version), evidencePayloadHash, workflowVersion=`document-parser-v1`, status, createdAt/updatedAt를 저장한다. 이번 상태 전이는 생성 `QUEUED`와 새 증빙 제출에 따른 `STALE`만 구현한다. future 상태를 미리 실행하거나 임의 성공으로 처리하지 않는다. 동일 `(invoiceCaseId,inputVersion,workflowVersion)`는 DB unique로 한 실행만 존재한다. `(evidenceBundleId,invoiceCaseId,inputVersion)` 복합 FK로 동일 사건/묶음/version을 보장한다. 입력 identity/hash/workflow는 생성 후 변경하거나 삭제하지 않는다.
-
-**Outbox 계약:** 지급요청 `payment/outbox_event`와 분리한 `analysis_request_outbox`에 UUID id, analysisRunId(unique FK), schemaVersion=`analysis-request-v1`, immutable JSON payload, status=`READY`, createdAt를 저장한다. 이번 상태는 READY와 STALE 예약의 CANCELLED뿐이며 lease/전송 필드와 relay는 P2-06이 맡는다. payload는 eventId/outbox id, analysisRunId, invoiceCaseId, evidenceBundleId, inputVersion, evidencePayloadHash, workflowVersion, documents를 담는다. documents는 동결된 `DocumentEvidence`의 documentId/sourceDraftRevisionId/fileName/mediaType/sizeBytes/checksum을 documentId 순으로 정렬한 배열이다. 원본 byte, object key, URL, credential, 실행 시각은 넣지 않는다. schema와 payload는 생성 후 수정/삭제하지 않는다. 향후 발행은 publisher confirm과 consumer의 영속화 후 ACK를 구분한다([RabbitMQ 계약](https://www.rabbitmq.com/docs/confirms)); 이번에는 발행하지 않는다.
-
-**application 연결:** `AnalysisRequestService.onEvidenceSubmitted(AnalysisInput)`을 제출의 동결 bundle 저장 직후, 감사·멱등 응답 기록 전에 호출한다. `AnalysisInput`은 위 입력 identity와 immutable document metadata를 갖는 application record다. 서비스는 `MANDATORY`로 기존 제출 transaction에 참여한다. 새 묶음 제출에서는 enable 여부·문서 유무와 관계없이 같은 사건의 낮은 inputVersion 예약을 STALE로 만들고 해당 READY Outbox를 CANCELLED로 만든다. enable=true + 문서 있음이면 새 QUEUED 실행과 READY Outbox를 저장한다. replay는 기존 제출 멱등 응답을 그대로 반환하여 추가 예약하지 않는다. 기존 사건 lock을 유지하며 예약·취소·bundle·audit·idempotency가 모두 commit 또는 rollback된다.
-
-**3 레이어:** 순수 domain은 상태/identity 불변식만 갖는다. application은 enable/문서 유무/버전 교체 판단·payload 정규화·transaction 조정을 소유한다. persistence는 SQL/JPA 저장·동일 사건 FK·unique·불변 입력 보호만 맡고 application/API를 import하지 않는다. `InvoiceCaseWriteService`는 analysis application을 호출하며 analysis persistence를 직접 참조하지 않는다. 새 scanner/lint framework나 빈 계층을 만들지 않는다. 기존 선택과 충돌하면 Head에게 보고한다.
-
-**검증/인수:** 실제 PostgreSQL migration과 submission 통합 테스트로 enabled 문서 제출의 run+Outbox 각 1개, disabled/legacy 예약 0개, 동일 request replay 및 다른 request 동시 제출에서도 중복 예약 없음, 감사 실패 rollback 후 예약 0개와 재시도 성공, 보완 제출의 이전 STALE/READY 취소와 새 예약을 검증한다. 새 제출 실패 시 이전 상태도 rollback되는지 확인한다. 복합 FK 교차 사건/version 실패, unique 충돌과 입력/payload UPDATE·DELETE 거부를 실제 DB에서 검증한다. 문서 배열/hash가 frozen evidence와 일치하며 URL/key/secret가 없는지 확인한다. 기존 문서 제출·보완·승인 focused 회귀 후 backend whole suite와 bootJar를 실행한다. Python/web 전체 테스트나 Compose 전체 빌드는 범위 밖이다. 공통 실행/정리는 `Implement.md`, 결과는 ignored `output/p2-05/`에 기록한다. Worker는 feature commit만, Head가 인수·통합·push한다.
+**상태: 완료.** 제출 transaction의 AnalysisRun·분석 Outbox 예약. 후속 진입점은 `AnalysisRequestService`다.
 
 ### P2-06 — 분석 요청 RabbitMQ publisher relay
 
-**진행 상태:** 구현·Head 인수 완료(2026-10-03), 최종 Worker `17f869d`, 선행 P2-05 main `330c9fc`. claim/token fencing·DB-time lease·mandatory return/confirm·보완 취소 rollback·중단 후 동일 eventId 재발행과 3레이어 책임/의존성을 실제 코드로 검수했다. 전체 backend 612건(실패/오류/skip 0, `4d92fb8`)과 bootJar, 이후 adapter 국소 수정의 최종 focused 50건(실패/오류/skip 0, Rabbit 8건 포함)과 bootJar 통과. timeout/close는 시도별 소유 raw TCP socket을 닫아 SDK 종료 쓰기를 기다리지 않으며 실제 handshake EOF·등록 경합·슬롯 복구 회귀로 확인했다. 전체 baseline과 최종 로그/XML은 ignored `output/p2-06/baseline-4d92fb8/`, `output/p2-06/accepted-evidence/`에 보존한다. 현재 adapter는 plain TCP 전용이며 TLS 도입 때 socket 소유 경계를 재검토한다. 원격 CI/PDF 인쇄 미리보기는 별도 대기다. 이번에는 발행 경계만 인수한다. Python consumer·원본 접근·분석 결과 멱등 반영은 P2-07, 제한 재시도/DLQ·운영 재처리는 후속 Ticket이다.
-
-**범위/구현 순서:** `core-api/analysis`에 lease 저장소 → 발행 application port/relay → RabbitMQ infrastructure adapter/조건부 scheduler → V13/설정/테스트를 구현한다. 지급 Outbox/HTTP relay, 업무 사건 상태·승인·증빙/hash, Python/web/HTTP route를 변경하지 않는다. SDK는 `com.rabbitmq:amqp-client:5.36.0`만 추가한다([공식 Java client](https://www.rabbitmq.com/client-libraries/java-client)); AMQP starter/자동 health 연결은 추가하지 않는다. RabbitMQ 실행 구성은 이번에 Compose로 확장하지 않고 실제 broker 통합 테스트로 검증한다.
-
-**DB 계약:** V12는 수정하지 않는다. V13이 analysis Outbox에 `claim_token uuid`, `lease_until timestamptz`, `next_attempt_at timestamptz`, `attempt_count integer NOT NULL DEFAULT 0`, `published_at timestamptz`, `last_error_code varchar(64)`와 due 조회 index를 추가한다. 기존 READY는 due 시각을 created_at으로 backfill하며 기존 identity/schema/payload/createdAt/삭제 보호를 유지한다. 상태는 READY → CLAIMED → PUBLISHED, CLAIMED → READY(실패/lease 복구), READY/CLAIMED → CANCELLED뿐이다. PUBLISHED/CANCELLED은 terminal이다. CLAIMED만 non-null token/lease, PUBLISHED만 non-null publishedAt, 시도 수는 비음수, nextAttemptAt은 항상 non-null이다. 상태/lease 필드 조합과 금지 전이를 DB CHECK/trigger로 보호한다. 기존 run 상태는 QUEUED/STALE 그대로다.
-
-**잠금/lease:** `analysis/persistence/AnalysisOutboxStore`의 짧은 트랜잭션에서 DB 시각으로 due READY를 createdAt/id 순서 `FOR UPDATE OF outbox SKIP LOCKED`로 한 건 claim한다(새 UUID token, 60초 lease, attemptCount +1). QUEUED run만 대상으로 하되 relay는 run/case를 잠그거나 갱신하지 않는다. 한 tick은 최대 10건을 순차 처리하며 전량을 미리 claim하지 않는다. 만료 CLAIMED 복구는 token/lease를 지워 READY/due로 되돌리고, STALE run의 READY/CLAIMED은 CANCELLED로 정리한다. finalize/release는 id+token+CLAIMED+미만료 lease 조건부 UPDATE이며 0행이면 권한 상실로 처리한다. 오래된 token은 새 claim·terminal 상태를 바꿀 수 없다. 저장소 반환 record는 persistence/domain에 두며 application 타입을 import하지 않는다.
-
-**보완 제출 연동:** `AnalysisRequestService`의 이전 run STALE 처리/동일 submit transaction은 유지한다. 기존 entity load/save 취소를 저장소의 conditional cancel로 바꿔 READY/CLAIMED만 CANCELLED로 만들고 lease를 제거한다. PUBLISHED는 보존한다. relay와 경합해도 dirty checking으로 CLAIMED/PUBLISHED를 덮어쓰지 않아야 한다. 감사 실패는 STALE/취소를 함께 rollback한다. claim 이후 취소가 경합하면 이미 전송된 메시지가 존재할 수 있으며 P2-07 consumer는 run/inputVersion을 재검증한다. 발행 후 중단·confirm 불명확 시 동일 eventId 재발행은 허용되며 exactly-once를 주장하지 않는다.
-
-**발행 계약:** application `AnalysisRequestPublisher` port는 SDK 없는 요청/결과 타입으로 eventId와 보존된 payload를 전달한다. relay `runOnce`는 `Propagation.NEVER`로 호출자 transaction을 거부하고 broker 호출은 모든 DB transaction/lock 밖에서 수행한다. adapter는 한 발행 시도에 소유 connection/channel을 생성·종료한다. durable direct exchange `invoice.analysis`, durable 비독점/non-auto-delete classic queue `invoice.analysis.requests`, routing key `document-parser-v1`을 선언·bind한다. UTF-8 JSON, contentType=application/json, deliveryMode=2, messageId=eventId, type=InvoiceAnalysisRequested, payload 불변이다. publisher confirm ACK와 mandatory=true의 return 부재를 함께 확인한 경우만 PUBLISHED로 finalize한다. return/NACK/연결·채널·deadline 실패는 token 조건부 release로 READY, DB 시각 +30초에 다시 due로 둔다. error는 고정된 분류 code만 저장·로그하며 payload/credential/원본/SDK exception message를 남기지 않는다. 발행 실패는 사건 제출을 되돌리지 않는다. [confirm과 mandatory return 계약](https://www.rabbitmq.com/docs/confirms), [Java API](https://www.rabbitmq.com/client-libraries/java-api-guide).
-
-**시간 제한/수명:** 연결·handshake·channel RPC 각각 최대 3초, 전체 시도(connect/declare/publish/confirm)는 monotonic 10초 deadline이다. confirm timeout만으로 publish write 제한을 대신하지 않는다. 단일 bounded 실행 슬롯에서 시도를 수행하고 deadline 시 cancellation flag와 소유 connection abort로 I/O를 끊는다. 연결 생성이 deadline 뒤 완료돼도 flag 재검사/finally로 종료한다. 자동 connection/topology recovery는 꺼 relay만 재발행한다. 바쁜 실행 슬롯에는 시도를 누적하지 않는다. abort/종료와 executor shutdown에 제한 시간을 두고 누수/잔류를 보고한다. max tick은 10건 × 시도 상한 + 짧은 DB 처리 시간으로 제한된다.
-
-**설정/3레이어:** `analysis.relay.enabled=false`가 기본이며 비활성에서는 scheduler·SDK connection·broker health 호출이 없다. scheduler는 opt-in infrastructure 진입점에서 application만 호출하고 fixedDelay=5초, 같은 instance overlapping tick을 막는다. broker host/port/vhost/username/password는 환경변수로 주입하며 enabled에서 비어 있는 credential은 fail closed, password 기본값/커밋/로그 금지. domain은 순수 상태·identity 정책, application은 claim/send/finalize 조정·결과/취소 정책, persistence는 SQL/JPA/조건부 갱신만, infrastructure는 SDK·scheduler·I/O 수명만 맡는다. infrastructure는 application port를 구현하며 SDK는 application/domain/persistence에 노출하지 않는다. API/상위 계층 역참조·새 architecture scanner/lint framework·빈 계층은 금지한다. Head가 실제 diff를 검수하고 개선은 같은 Worker에게 하달한다.
-
-**검증/인수:** 실제 PostgreSQL과 RabbitMQ(`rabbitmq:4.2-alpine`, 최초 pull digest를 증거에 기록; management image/전체 서비스 build 제외)로 제출 예약 → relay → 큐의 동일 eventId/metadata/persistent 속성 → PUBLISHED를 검증한다. 동시 relay의 한 claim, SKIP LOCKED, lease 회수/옛 token 거부, confirm 후 finalize 전 중단 재발행의 동일 eventId, unavailable broker와 복구, return을 발생시키는 unbound routing key의 ACK+return을 실패로 분류, CLAIMED 취소/이미 PUBLISHED 보존/감사 rollback, disabled 무접속을 검증한다. 지연 publisher port와 정지한 handshake TCP fixture로 transaction 밖 호출·전체 deadline·소유 연결/실행 슬롯 cleanup/recovery를 확인한다. migration은 V12 기존 row/payload 보존과 정확한 SQLSTATE·lease 조합/전이/immutability를 확인한다. analysis/V12/V13/payment relay/문서·승인 focused 후 backend whole suite와 bootJar를 실행한다. Python/web/기존 서비스 전체 Compose 빌드는 하지 않는다. 공통 제한 시간·live log·자원/디스크 규칙은 Implement.md, 증거는 ignored `output/p2-06/`. Worker는 feature commit, Head가 인수·통합·push한다.
+**상태: 완료.** RabbitMQ confirm·lease relay. `RabbitAnalysisRequestPublisher`는 plain TCP 전용이며 TLS 도입 시 socket 소유 경계를 재검토한다.
 
 ### P2-07 — 분석 실행 claim과 문서별 결과 멱등 반영
 
@@ -374,15 +126,32 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 후속 Ticket은 현재 [기계 API](../core-api/src/main/java/com/invoicematch/core/analysis/api/AnalysisRunController.java), [실행 서비스](../core-api/src/main/java/com/invoicematch/core/analysis/application/AnalysisExecutionService.java), [결과 validator](../core-api/src/main/java/com/invoicematch/core/analysis/application/AnalysisResultValidator.java)를 계약 진입점으로 사용한다. API/schema·검증 수치는 여기 복제하지 않는다.
 
-### Phase 2 후속 실행 순서
+### P2-08 — Python consumer와 실행 권한 기반 원본 접근
 
-P2-01 이후에는 아래 순서로 Ticket 계약을 상세화하며, 한 번에 하나씩 인수한다.
+**상태: 완료.** Python consumer·실행 권한 기반 원본 접근·설치 이미지·실제 서비스 통합 인수를 완료했다. 후속 진입점은 `ai-worker/application/execution.py`, `RabbitConsumer`, `AnalysisSourceService`와 `scripts/verify-p2-08.mjs`다. 재시도 예약 전 장애는 ACK 없이 fail-stop하며, 이 한계는 P2-09에서 해소한다.
 
-1. 제출 시 Document 목록·checksum을 EvidenceBundle에 동결하고 보완 revision에서도 과거 원본을 보존한다.
-2. 원본 조회 권한·짧은 다운로드 URL, PDF 미리보기/다운로드/표준 인쇄와 Excel 다운로드 UI를 연결한다.
-3. PDF text layer와 Excel 구조를 제한된 자원으로 파싱하고 parser version·원문 위치를 보존한다. Azure 스캔 OCR은 F0 조건·외부 전송·실제 샘플을 검증한 뒤 별도 계약으로 연결한다. 품목 매핑·AI Proposal은 Phase 3 범위다.
-4. AnalysisRun과 분석 요청 Outbox, RabbitMQ·문서 worker·결과 멱등 반영을 연결한다. 실행 상태와 업무 사건 상태를 분리한다.
-5. 제한 재시도·DLQ·운영자 재처리·미제출 임시 object 정리와 중단/중복/장애 통합 인수를 완료한다.
+### P2-09 — 제한 재시도와 영속 실패 이력·DLQ
+
+**상태: 진행 중.** Head가 직접 구현한다. application은 실패 분류·횟수·backoff/jitter·STALE 판단을, persistence는 SQL/잠금/조건부 저장을, infrastructure는 confirm 발행과 기계 HTTP/broker I/O를 담당한다. 승인·지급·사건 상태와 immutable 문서 결과는 변경하지 않는다.
+
+- 자동 실행은 3회로 제한한다. 실행 횟수는 DB가 증가시키며 메시지 header를 신뢰하지 않는다. 일시적 네트워크/429/5xx 장애는 실패 이력과 별도 recovery dispatch를 한 transaction에 예약한다. 원본 request Outbox와 eventId/payload를 보존한다. exponential backoff와 bounded jitter의 deadline은 DB에 저장하고, broker 발행 동안 DB transaction을 유지하지 않는다.
+- `RETRY_SCHEDULED`와 `DEAD_LETTERED` 실행 상태를 추가한다. parser FAILURE 결과는 기존 FAILED 계약을 유지하며 자동 반복하지 않는다. result 응답 유실 뒤 이미 끝난 run은 재시도하지 않고 terminal evidence를 반환한다. 부분 결과는 유지하고 새 claim에서 canonical replay한다. 실패 보고 응답 유실은 같은 token의 immutable 이력으로 replay한다.
+- RUNNING/BUSY 또는 worker 중단으로 남은 lease는 기존 owner를 탈취하지 않는다. 현재 lease 이후의 durable recovery dispatch를 예약하면 ACK할 수 있다. 만료 claim의 횟수 소진은 DLQ checkpoint로 전환한다. core 전체 장애로 checkpoint 저장 불가 시 bounded 호출 후 ACK 없이 종료한다.
+- relay는 기존 bounded publisher를 재사용한다. recovery dispatch에도 SKIP LOCKED·claim token·lease 회수·confirm 후 finalize를 적용한다. DLQ는 별도 durable queue이며 exhausted run의 event identity만 들어간다. malformed 메시지는 내용 대신 hash/크기/고정 오류만 담은 quarantine을 confirm한 뒤 ACK한다. confirm 실패·응답 유실은 원본 delivery를 보존한다.
+- 실제 PostgreSQL/RabbitMQ 검증으로 rollback·failure replay·3회 제한·backoff·부분 결과·STALE·confirm 전/후 중단·poison 격리와 기존 정상 흐름을 확인한다. 운영자 재처리는 P2-10에서 같은 run에 별도 감사/멱등 예약으로 추가한다. 새 문서·scanner는 만들지 않는다.
+
+### Phase 2 남은 Ticket
+
+Phase 2는 P2-12에서 마무리한다. 현재 Ticket 인수 뒤 다음 계약을 구체화하며 Head가 순차 구현한다.
+
+| Ticket | 남은 범위 |
+|---|---|
+| P2-09 | 제한 재시도·backoff/jitter·DLQ와 실패 이력의 영속화 |
+| P2-10 | 운영자 권한의 작업 조회·재처리와 운영 화면 |
+| P2-11 | 만료 임시 upload 정리; 확정 원본·동결 참조 보존 |
+| P2-12 | 중단·중복·장애·재처리 통합 인수와 필요한 기존 문서 갱신 |
+
+원격 CI 결과와 PDF 인쇄 버튼→PC 인쇄 미리보기는 사용자 요청에 따라 별도 일괄 확인한다. 프린터 출력은 인수 조건이 아니다. Azure 스캔 OCR·AI 추출/매핑·근거는 Phase 3 계약에서 다룬다.
 
 ## 4. Ticket 의존성
 
@@ -410,38 +179,8 @@ flowchart TD
 
 ### R1-01 — 백엔드 3계층/클린코드 정리
 
-**진행 상태:** 완료(2026-10-02, 브랜치 `refactor/three-layer-cleanup`). 백엔드 리뷰의 책임 분리와 중복 정리를 반영했다. oversized page의 `400 VALIDATION_ERROR`를 명시하고 나머지 공개 API·멱등성·동시성 계약은 보존했다. 상세 근거·결과는 `ThreeLayerRefactoring.md`에 기록했다.
-
-**목적과 범위:** `core-api` main/test만 수정한다. 공개 API JSON/status/error schema, actor-scoped 멱등 replay, 승인 단일 트랜잭션과 write 순서, lock 순서·전파, canonical JSON byte/hash(legacy review 포함)를 보존한다. 프런트엔드·DB migration·신규 의존성·무관 기능은 포함하지 않는다.
-
-**관련 규칙/불변식:** 승인은 allocation·decision·PaymentRequest·Outbox·case·audit을 한 트랜잭션으로 쓰고, 외부 HTTP는 lock/트랜잭션 밖에서 수행한다. Webhook ACK는 `invoice_case -> payment_request -> outbox_event -> event insert`, 실패는 `payment_request -> outbox_event -> event insert` 순서와 실패 시 rollback을 유지한다. 영속 계층은 application 업무 타입에 역의존하지 않는다.
-
-**Acceptance Criteria:** (1) oversized page 요청이 `400 VALIDATION_ERROR`이고 정상 empty/out-of-range page와 `hasNext` 산술이 안전하다. (2) 목록 Criteria/EntityManager/predicate/LIKE escaping이 persistence query 모듈로 이동하고 actor scope·normalization은 application에 남는다. (3) Webhook SQL이 persistence 모듈로 추출되고 application이 `@Transactional`·replay/conflict 정책을 소유하며 저장 모듈은 `MANDATORY`로 참여한다. (4) `OutboxStore`가 `payment.persistence`로 이동한다. (5) 승인 decision payload·audit summary가 순수 helper로 추출된다. (6) `MatchEngine`이 계산과 canonical serialization/hash를 분리하고 golden byte/hash가 불변이다. (7) `ReviewService`의 보완/거절 중복이 공유 helper로 정리된다. (8) `CommandResult` HTTP 결합은 replay 호환 때문에 의도적으로 유지됨을 문서화한다.
-
-**테스트/검증:** `core-api`에서 Java 21 + Testcontainers PostgreSQL로 focused unit/integration 후 whole suite와 bootJar를 실행했다. whole backend `.\gradlew.bat test --console=plain` = 521 tests, 0 failures/errors/skipped; `bootJar` BUILD SUCCESSFUL. golden canonical/hash와 Webhook/승인/검토/매칭/조회 focused 통합 테스트 PASS. 상세 명령·수치는 `ThreeLayerRefactoring.md`에 기록했다. 실패를 skip이나 flaky retry로 숨기지 않았다.
-
-**의존성:** P1-01~P1-11의 구현·자동검증·독립인수 완료 상태. P1-11의 사람 시연 확인 대기는 기존 상태를 유지한다.
-
-**사람 확인:** 공개 API 응답 schema와 승인·webhook replay 동작이 이전과 동일한지, oversized page만 새 400이 되는지 확인한다.
+**상태: 완료.** 책임 분리의 이유는 기존 EngineeringNotes에 남기고 구현·검증 목록은 코드와 Git에서 확인한다.
 
 ### R1-02 — main CI IntegrationTest 실패 조사·복구
 
-**후속 확인(2026-10-02):** 사용자가 원격 CI 통과를 확인했다. 아래의 원격 CI 대기는 해소되었다. 에이전트가 run URL·SHA를 직접 조회한 증거는 아니며, 실패 당시 run URL·SHA는 미확보 상태로 남긴다.
-
-**통합 검증(2026-10-02):** R1-01과 R1-02를 통합한 코드에서 커밋된 CI 환경변수를 적용해 webhook 12건·계층 의존성 3건·canonical JSON golden 1건, 총 16건을 다시 검증했다. 실패·오류·skip 0이며 `bootJar`도 통과했다. 두 작업을 `main`에 반영하고 push하며, GitHub Actions 실행 결과 확인은 별도 대기 상태로 유지한다. 로그: ignored `output/merge-verification/backend.log`.
-
-**진행 상태:** 수정·로컬 검증 완료, 원격 CI 확인 대기(2026-10-02, 브랜치 `fix/main-ci-integration-tests`, 기준 로컬 `main` `766889c`). CI 환경변수를 적용한 로컬 재현에서 테스트 서명 secret과 애플리케이션 검증 secret의 불일치를 확인해 테스트 전용 고우선순위 설정으로 최소 수정했다. 사용자 제공 증거: CI 명령 `./gradlew --no-daemon clean test bootJar`에서 `PaymentResultWebhookIntegrationTest` 10건이 실패했다(CI 2026-10-01T08:54Z). 실패 run URL·SHA는 미제공이고 GitHub connector 404·`gh` 미인증으로 원격 run을 직접 확인하지 못해 Ubuntu CI 복구를 직접 주장하지 않는다. 읽기 전용 `git ls-remote`로 확인한 현재 원격 `main`은 `4fcbcb5`이며, 로컬 기준선과 백엔드·CI 설정은 동일하다(차이는 웹·문서·gitignore).
-
-**검증 근거(자동):** 커밋된 CI env(`POSTGRES_PASSWORD=ci-only-not-for-production`, `MOCK_ERP_WEBHOOK_SECRET=ci-only-webhook-secret`)를 유지한 focused 재현에서 수정 전 12 tests/10 failures(전부 `Status expected:<200/409/404> but was:<401>`, 실패 라인은 제공 증거와 일치), 수정 후 12 tests/0 failures. 같은 env의 whole backend `clean test bootJar`는 516 tests/0 failures/0 errors/0 skipped로 BUILD SUCCESSFUL, web lint·test 208·build, mock-erp 7, mock-purchasing 6, Compose `config`/`build`와 격리 project·port smoke PASS. 증거는 ignored `output/main-ci-integration-tests/`. 실행 환경은 Windows + Temurin Java 21 + Docker Testcontainers다.
-
-**목적과 범위:** 실패 증거를 `main`에서 재현하고, 테스트 코드/제품 코드/CI runner·환경 중 원인을 구분해 최소 수정한다. 수정 후 해당 IntegrationTest와 CI 전체를 재검증한다.
-
-**관련 규칙/불변식:** 로그·run URL·실패 테스트명 없이 원인을 단정하지 않는다. flaky retry나 skip으로 실패를 숨기지 않는다. 제품 HMAC 검증을 약화하거나 secret을 하드코딩하지 않는다. CI 환경 변수를 테스트에 맞춰 바꾸는 것을 단독 수정으로 삼지 않는다.
-
-**Acceptance Criteria:** 실패 로그와 run URL, 실패 테스트명, 재현 절차, 원인 분류(테스트/코드/환경), 최소 수정 diff, focused·whole 재검증 결과가 증거로 남는다. Windows 로컬 PASS를 Ubuntu CI 복구 증거로 간주하지 않는다. 실패 run URL·SHA 확보와 수정 브랜치의 GitHub Actions 재실행 확인은 아직 남아 있다.
-
-**테스트/검증:** `.github/workflows/ci.yml`의 백엔드 실행 조건은 `ubuntu-latest`, Temurin Java 21, `core-api`에서 `./gradlew --no-daemon clean test bootJar`다. 커밋된 CI env(`POSTGRES_PASSWORD=ci-only-not-for-production`, `MOCK_ERP_WEBHOOK_SECRET=ci-only-webhook-secret`)를 그대로 설정해 focused 재현 후 whole backend와 가능한 파이프라인을 재실행하고 결과를 기록한다.
-
-**의존성:** 없음(신규 조사 Ticket). R1-01과 독립.
-
-**사람 확인:** 실패 테스트명, 재현·수정·재검증 증거를 확인한다.
+**상태: 완료.** 테스트와 애플리케이션의 webhook secret 설정 우선순위를 바로잡았다. 사용자가 해당 CI 통과를 확인했다. 이후 변경의 원격 CI 결과는 사용자 요청에 따라 일괄 확인한다.

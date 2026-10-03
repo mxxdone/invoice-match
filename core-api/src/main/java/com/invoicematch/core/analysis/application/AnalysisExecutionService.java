@@ -6,6 +6,8 @@ import com.invoicematch.core.analysis.persistence.AnalysisExecutionStore;
 import com.invoicematch.core.analysis.persistence.AnalysisRunSnapshot;
 import com.invoicematch.core.analysis.persistence.StoredDocumentResult;
 import com.invoicematch.core.document.domain.DocumentEvidence;
+import com.invoicematch.core.document.application.DocumentOriginalRequest;
+import com.invoicematch.core.document.persistence.DocumentStore;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
@@ -37,6 +39,7 @@ public class AnalysisExecutionService {
     private final AnalysisResultValidator validator;
     private final AnalysisExecutionProperties properties;
     private final Clock clock;
+    private final DocumentStore documents;
 
     public AnalysisExecutionService(
             AnalysisExecutionStore execution,
@@ -44,13 +47,14 @@ public class AnalysisExecutionService {
             AnalysisManifestVerifier manifestVerifier,
             AnalysisResultValidator validator,
             AnalysisExecutionProperties properties,
-            Clock clock) {
+            Clock clock, DocumentStore documents) {
         this.execution = execution;
         this.results = results;
         this.manifestVerifier = manifestVerifier;
         this.validator = validator;
         this.properties = properties;
         this.clock = clock;
+        this.documents = documents;
     }
 
     @Transactional
@@ -76,6 +80,29 @@ public class AnalysisExecutionService {
             case RUNNING -> run.leaseActive() ? new ClaimOutcome.Busy(run.leaseUntil()) : claim(run);
             case QUEUED -> claim(run);
         };
+    }
+
+    @Transactional
+    public DocumentOriginalRequest authorizeSource(UUID runId, UUID documentId, AnalysisHeartbeatCommand command) {
+        AnalysisRunSnapshot run = lock(runId);
+        if (command.claimToken() == null || command.inputVersion() == null
+                || isBlank(command.evidencePayloadHash())) {
+            throw invalid("VALIDATION_ERROR", "claimToken, inputVersion and evidencePayloadHash are required");
+        }
+        requireRunInput(run, command.inputVersion(), command.evidencePayloadHash());
+        requireActiveClaim(run, command.claimToken());
+        DocumentEvidence frozen = manifestVerifier.verify(run).stream()
+                .filter(document -> document.documentId().equals(documentId)).findFirst()
+                .orElseThrow(() -> conflict("MANIFEST_MISMATCH", "document is not part of the frozen manifest"));
+        var registered = documents.document(run.invoiceCaseId(), documentId)
+                .orElseThrow(() -> conflict("MANIFEST_MISMATCH", "registered document is unavailable"));
+        var upload = registered.upload();
+        if (!upload.draftRevisionId().equals(frozen.sourceDraftRevisionId())
+                || !upload.fileName().equals(frozen.fileName()) || !upload.mediaType().equals(frozen.mediaType())
+                || upload.sizeBytes() != frozen.sizeBytes() || !upload.checksum().equals(frozen.checksum())) {
+            throw conflict("MANIFEST_MISMATCH", "registered metadata differs from the frozen manifest");
+        }
+        return new DocumentOriginalRequest(registered.objectKey(), frozen.mediaType(), frozen.sizeBytes(), frozen.checksum());
     }
 
     @Transactional

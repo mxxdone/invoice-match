@@ -1,13 +1,22 @@
-# ai-worker — bounded PDF/XLSX parser (P2-04)
+# ai-worker — bounded PDF/XLSX analysis worker
 
-Python 3.12 parser foundation for the `ai-worker` execution unit. It reads a PDF
+Python 3.12 document consumer and parser. It reads a PDF
 text layer and XLSX raw structure under hard resource bounds and emits the
 deterministic `document-parse-v1` result. Contract and limits are fixed by
 [`P2-04`](../project-docs/Plan.md); this README only covers runtime, supported
 input scope and how to run it.
 
-It does **not** open a public HTTP endpoint, write to a database, call a
-broker, OCR, use AI, or infer invoice fields.
+Results are sent to the authenticated core-api machine surface. OCR and AI
+invoice field inference are later work.
+
+## Consumer
+
+Use `ai-worker consume` on Linux with `CORE_API_URL`, `ANALYSIS_WORKER_TOKEN`
+and `ANALYSIS_RABBIT_HOST/USERNAME/PASSWORD` set. Optional broker port/vhost and
+topology use the same defaults as the core relay. The root README describes
+the opt-in Compose configuration. The worker acknowledges only durable terminal
+results; transport errors preserve the delivery and stop this process. Restart
+after resolving the cause. Automatic retry/DLQ is not connected yet.
 
 ## Layout and layer responsibilities
 
@@ -72,7 +81,7 @@ Linux venv uses a bounded RAM mount; pip cache and evidence stay on D:
 pwsh -File ..\scripts\verify-p2-04-linux.ps1
 ```
 
-The deployable CLI is ``parse`` (isolated production path) and ``version``; it
+The parser CLI commands are ``parse`` (isolated production path) and ``version``; parse
 takes the server-confirmed `--size-bytes`/`--sha256`. The in-process library
 entrypoint is for unit tests only and is not exposed as a CLI command.
 

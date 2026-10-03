@@ -663,6 +663,12 @@ SDK abort의 timeout은 close-ok 대기를 제한하며 그 앞의 socket write�
 
 회귀 fixture는 정상 제출자료와 실제 run을 기준으로 한 조건씩 바꾸고, 실패 뒤 DB 효과가 없는지 확인했다. lease를 SQL로 되감아 만료를 흉내 내는 대신 짧은 실제 lease와 제한된 DB 시계 대기를 사용했다. 거부 테스트에는 정상 대조군과 정확한 오류 검증이 함께 있어야 다른 제약의 실패를 원하는 guard의 증거로 오인하지 않는다.
 
+## R1-01 — 업무 정책과 SQL의 책임 분리
+
+조회와 webhook 처리에서 SQL을 application과 함께 두면 권한·상태 정책을 바꿀 때 저장 방식까지 함께 읽어야 했다. 조회 조건과 잠금·조건부 갱신은 persistence가 소유하고, actor 범위와 상태 판단·transaction orchestration은 application이 소유하도록 분리했다.
+
+canonical 직렬화는 hash 호환성을 유지해야 하므로 전역 JSON 설정과 분리했다. 반면 멱등 응답은 저장된 HTTP status와 응답값을 그대로 재생해야 하므로, 계층 순수성을 이유로 기존 replay 표현을 일괄 변경하지 않았다. 책임을 나누는 리팩터링에서도 관찰 가능한 계약과 write/lock 순서는 보존해야 한다.
+
 ## 앞으로 추가할 때의 형식
 
 새 사례는 아래 항목을 중심으로 짧게 추가한다.

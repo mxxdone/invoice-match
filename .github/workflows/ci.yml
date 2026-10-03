@@ -93,6 +93,19 @@ jobs:
         run: |
           docker compose config --quiet
           docker compose build
+          docker build --progress=plain -t invoice-match-ai-worker:ci ai-worker
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Analysis consumer acceptance (real services)
+        run: node scripts/verify-p2-08.mjs
+      - name: Analysis acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: analysis-consumer-evidence
+          path: output/p2-08/**
+          if-no-files-found: warn
       - name: Compose smoke
         run: |
           docker compose up -d --wait

@@ -73,6 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("version", help="print the fixed parser version")
+    subparsers.add_parser("consume", help="consume analysis requests on Linux")
 
     parse = subparsers.add_parser("parse", help="parse via the isolated production process")
     parse.add_argument("input", help="path to a PDF or XLSX file")
@@ -86,6 +87,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "consume":
+        from ai_worker.application.execution import WorkerFailure
+        try:
+            composition.consume()
+            return 0
+        except WorkerFailure as exc:
+            sys.stderr.write(json.dumps({"error": {"code": exc.code}}) + "\n")
+            return 2
     if args.command == "version":
         _emit({"parserVersion": PARSER_VERSION})
         return 0

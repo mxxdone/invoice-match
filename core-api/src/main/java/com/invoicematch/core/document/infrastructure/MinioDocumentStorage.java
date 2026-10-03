@@ -1,6 +1,7 @@
 package com.invoicematch.core.document.infrastructure;
 
 import com.invoicematch.core.document.application.DocumentDownloadRequest;
+import com.invoicematch.core.document.application.DocumentOriginalRequest;
 import com.invoicematch.core.document.application.DocumentFailure;
 import com.invoicematch.core.document.application.DocumentPolicy;
 import com.invoicematch.core.document.application.DocumentStorage;
@@ -139,6 +140,19 @@ public class MinioDocumentStorage implements DocumentStorage {
                 throw new DocumentFailure(409, "DOCUMENT_NOT_UPLOADED", "Upload the object before completing");
             }
             throw DocumentFailure.storage();
+        } catch (Exception e) { throw DocumentFailure.storage(); }
+    }
+    @Override public byte[] readOriginal(DocumentOriginalRequest request) {
+        enabled();
+        try (var object = internal.getObject(GetObjectArgs.builder().bucket(bucket)
+                .object(request.objectKey()).build())) {
+            if (!request.mediaType().equals(object.headers().get("Content-Type"))
+                    || request.sizeBytes() <= 0 || request.sizeBytes() > DocumentPolicy.MAX_BYTES) {
+                throw DocumentFailure.storage();
+            }
+            byte[] bytes = object.readNBytes((int) request.sizeBytes() + 1);
+            DocumentPolicy.bytes(bytes, request.mediaType(), request.sizeBytes(), request.checksum());
+            return bytes;
         } catch (Exception e) { throw DocumentFailure.storage(); }
     }
     @Override public void writeOriginal(String key, byte[] bytes, String mediaType) {
