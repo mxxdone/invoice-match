@@ -1,103 +1,73 @@
 # Invoice Match
 
-공급사로부터 받은 매입 청구서를 우리 회사의 발주·검수 자료와 비교하고, 불일치 사건을 사람이 검토해 지급요청으로 확정하는 기업용 업무 코어다. 수동 입력을 결정론적으로 대사하며, 승인·검수 잔량 배분·지급요청을 한 트랜잭션으로 처리하고 transactional Outbox로 Mock ERP에 인계한다.
+매입 청구서를 발주·검수 자료와 비교하고, 사람이 검토해 지급요청으로 확정하는 업무 코어다. 승인·검수 잔량 배분·지급요청을 원자적으로 처리하고 Outbox로 외부 인계를 분리한다.
 
-## 핵심 기능
+Java 21 / Spring Boot / PostgreSQL / Next.js / MinIO / RabbitMQ / Python 파서를 사용한다. Mock ERP 인계 성공은 실제 송금이 아니다. AI 추출·DLQ·운영 재처리는 후속 작업이다.
 
-- 수동 청구 등록·제출 시 증빙 version 동결·요청 단위 멱등성
-- AI 없는 결정론적 3-way 대사(5가지 예외 유형)
-- 검토 스냅샷, 품목 매핑, 보완요청/거절, 역할 기반 권한과 append-only 감사이력
-- 원자적 승인: 검수 잔량 배분 + 승인 결정 + 지급요청 + Outbox를 한 트랜잭션으로 처리
-- 인프로세스 relay → Mock ERP 인계, 서명 결과 webhook 수렴(`RESULT_UNKNOWN` 포함)
-- 청구 목록·상세/비교·검토·승인·인계·운영 화면(Next.js)
+## 로컬 실행
 
-## 기술 스택
-
-- Backend: Java 21, Spring Boot 3, Spring Security, Spring Data JPA, Flyway, PostgreSQL
-- Web: Next.js 16 (TypeScript), same-origin `/backend` 프록시
-- Infra: Docker Compose, Mock ERP / Mock purchasing (Node, 외부 의존성 없음)
-- Tests: JUnit + Testcontainers(실제 PostgreSQL), Node test, Playwright
-
-## 실행
-
-Docker Desktop(Compose)이 필요하다. 개인용 secret은 저장소에 커밋하지 않는다.
+Docker Desktop과 Compose가 필요하다. `.env`는 커밋하거나 로그에 남기지 않는다.
 
 ```sh
 cp .env.example .env
-```
-
-`.env`의 `POSTGRES_PASSWORD`와 `MOCK_ERP_WEBHOOK_SECRET`을 **각자 고유한 개인 값**으로 바꾼 뒤(테스트/예시 값 금지):
-
-```sh
+# POSTGRES_PASSWORD와 MOCK_ERP_WEBHOOK_SECRET을 고유한 개인 값으로 변경
 docker compose up --build -d --wait
 ```
 
-접속 주소:
+Web: <http://localhost:3000>, Core health: <http://localhost:8080/actuator/health>. Compose가 필요한 이미지를 빌드하므로 별도 jar/web 빌드는 필요 없다.
 
-- Web: <http://localhost:3000>
-- Core API health: <http://localhost:8080/actuator/health>
-- Mock ERP: <http://localhost:8081/health>
-- Mock purchasing: <http://localhost:8082/health>
-
-로컬 데모 계정(`local` 프로필에서만 제공되는 공개 시연 계정):
-
-| 사용자 | 비밀번호 | 역할 |
+| 로컬 시연 계정 | 비밀번호 | 역할 |
 | --- | --- | --- |
-| `submitter` | `submitter-pass` | `SUBMITTER` |
-| `approver` | `approver-pass` | `APPROVER` |
-| `operator` | `operator-pass` | `OPERATOR` |
+| submitter | submitter-pass | 제출자 |
+| approver | approver-pass | 승인자 |
+| operator | operator-pass | 운영자 |
 
-## Phase 1 범위와 제약
+이 계정은 local 프로필 전용이다. 중지는 `docker compose down`이며 named volume을 보존한다. `down -v`는 로컬 데이터까지 삭제하므로 버려도 되는 환경에서만 사용한다.
 
-- 포함: 수동 입력 → 결정론적 대사 → 사람 검토 → 원자적 승인 → 지급요청 Outbox → Mock ERP 인계.
-- 제약: Mock ERP 인계 성공(ACK)은 실제 송금이 아니며 실제 지급·회계는 외부 ERP 범위다. 구매·검수 데이터는 결정론적 read-only Mock이다. 업무 화면의 파일 업로드 연결·AI 추출/LangGraph/RAG·RabbitMQ/DLQ는 아직 구현하지 않는다. 문서 접수 API는 아래 Phase 2 절을 따른다.
+## 문서 저장소 선택 실행
 
-정지: `docker compose down`(named volume 유지) / 데이터까지 제거: `docker compose down -v`.
-
-## Phase 2 문서 저장소 (P2-00)
-
-로컬 JVM을 저장소에 연결할 때 `DOCUMENT_STORAGE_ACCESS_KEY`/`DOCUMENT_STORAGE_SECRET_KEY`는 아래 MinIO의 `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`와 같은 로컬 값으로 설정한다. Compose 연결 설정은 이를 자동으로 전달한다.
-
-`.env`의 `MINIO_ROOT_USER`와 `MINIO_ROOT_PASSWORD`를 고유한 로컬 값으로 바꾼 뒤 선택 실행한다. API는 `http://localhost:9000`, 콘솔은 `http://localhost:9001`이며 두 포트 모두 localhost에만 바인딩한다. 콘솔에는 해당 로컬 자격 증명으로 로그인한다. 기존 포트와 겹치면 `.env`의 `MINIO_API_PORT`/`MINIO_CONSOLE_PORT`를 변경한다.
+`.env`의 `MINIO_ROOT_USER`와 `MINIO_ROOT_PASSWORD`를 고유한 로컬 값으로 설정한다.
 
 ```sh
 docker compose -f compose.storage.yaml build --progress=plain
 docker compose -f compose.storage.yaml up -d --wait --wait-timeout 90
 docker compose -f compose.storage.yaml run --rm minio-init
-```
-
-`minio-init`은 `invoice-documents` bucket을 생성하고 익명 접근을 차단한 뒤 정상 종료한다. 종료 코드 0은 초기화 완료 상태다. 파일은 named volume에 보존된다. 첫 빌드는 Go 의존성 다운로드와 컴파일에 시간이 걸린다. MinIO는 공식 [보안 수정 릴리스](https://github.com/minio/minio/releases/tag/RELEASE.2025-10-15T17-29-55Z)를 소스 빌드하며, builder/client 버전도 Dockerfile에 고정한다. 이는 로컬 개발용 실행 기준선이고 운영 배포의 유지보수·업데이트 정책은 별도 검토 대상이다.
-
-반복 검증은 자동 생성한 secret·빈 포트·고유 Compose project로 실행하며, 실제 object 쓰기/읽기·익명 접근 거부·초기화 반복·container 재생성 후 보존을 확인한다. 성공과 실패 모두 검증용 container/volume/secret 파일을 제거한다. 기존 사용자 서버는 건드리지 않으며 credential 없는 증거를 `output/p2-00/<project>/evidence.json`에 저장한다. Node 22+와 Docker Desktop이 필요하다.
-
-```sh
-node scripts/verify-p2-00.mjs
-```
-
-저장소만 정지하거나 로컬 저장소 데이터까지 제거하는 명령은 각각 다음과 같다.
-
-```sh
-docker compose -f compose.storage.yaml down
-docker compose -f compose.storage.yaml down -v
-```
-
-P2-01에서는 사건별 Document 접수 API도 제공한다. 기본 Phase 1 실행에서는 저장소 연결이 꺼져 있다. 저장소를 위 명령으로 초기화한 뒤 API까지 연결하려면 다음처럼 실행한다.
-
-```sh
 docker compose -f compose.yaml -f compose.storage.yaml -f compose.documents.yaml up --build -d --wait --wait-timeout 120
 ```
 
-브라우저가 접근하는 주소는 `DOCUMENT_STORAGE_PUBLIC_ENDPOINT`이며, MinIO host port를 바꾸면 이 값도 맞춘다. 컨테이너의 내부 주소는 `http://minio:9000`이다. 로컬 JVM은 `.env.example`의 `DOCUMENT_STORAGE_*` 값을 환경변수로 설정하고 `DOCUMENT_STORAGE_ENABLED=true`로 활성화한다. `.env`는 Compose가 읽으며 JVM이 자동으로 읽지는 않는다. 접수 API 계약은 [API.md](project-docs/API.md)의 Document intake 절을 따른다. 등록 문서는 아직 제출 증빙/승인 근거에 포함되지 않는다.
+초기화가 종료 코드 0으로 끝나면 비공개 `invoice-documents` bucket이 준비된다. API는 localhost:9000, 콘솔은 localhost:9001이며 파일은 volume에 보존된다. 최초 MinIO 소스 빌드는 시간이 걸린다.
 
-문서 접수의 실제 PostgreSQL/MinIO 통합 테스트 및 전체 backend 검증은 다음과 같다. 실행 스크립트가 저장소 이미지를 먼저 빌드하며 빌드와 검증에는 각각 20분 제한을 둔다. Testcontainers가 해당 검증용 container를 생성·정리한다.
+포트를 변경하면 브라우저용 `DOCUMENT_STORAGE_PUBLIC_ENDPOINT`도 맞춘다. 로컬 JVM은 `.env`를 자동으로 읽지 않으므로 `DOCUMENT_STORAGE_*` 환경변수와 `DOCUMENT_STORAGE_ENABLED=true`를 별도로 설정한다.
+
+중지할 때도 위 세 Compose 파일 조합으로 `down`을 실행한다. 데이터가 필요하면 `-v`를 붙이지 않는다. RabbitMQ relay는 기본 비활성이고 broker 연결 설정은 `core-api/src/main/resources/application.yml`에서 확인한다. Python 파서 실행은 [ai-worker README](ai-worker/README.md)를 따른다.
+
+## 검증
+
+로컬 검증에는 Java 21, Node 24/npm, Docker가 필요하다. Windows의 Gradle 명령은 `gradlew.bat`을 사용한다.
 
 ```sh
-node scripts/verify-p2-01.mjs --focused
-node scripts/verify-p2-01.mjs
+cd core-api
+./gradlew test bootJar --console=plain
+cd ../web
+npm ci
+npm run lint
+npm test
+npm run build
+cd ..
 ```
 
-문서 API를 함께 띄운 환경의 정지에는 같은 파일 조합을 사용한다(named volume 유지).
+빌드된 jar/web을 사용하는 격리 업무 인수와 별도 Compose smoke는 독립 실행 경로다.
 
 ```sh
-docker compose -f compose.yaml -f compose.storage.yaml -f compose.documents.yaml down
+node scripts/verify-p1-11.mjs --browser
+node scripts/compose-smoke-p1-11.mjs
 ```
+
+스크립트는 자기 검증 자원만 생성·회수하고 결과를 ignored `output/`에 남긴다. Compose smoke는 자체 빌드한다. 저장소 검증은 `node scripts/verify-p2-00.mjs`, 문서 API focused 검증은 `node scripts/verify-p2-01.mjs --focused`를 사용한다. 필요한 서비스만 실행하고 사용자 DB·volume은 초기화하지 않는다.
+
+## 프로젝트 문서
+
+- [Spec](project-docs/Spec.md): 제품·업무 기준
+- [Plan](project-docs/Plan.md): 로드맵·현재 작업 계약
+- [AGENTS](AGENTS.md): 공통 작업 규칙과 필요한 문서 라우팅
+- [EngineeringNotes](project-docs/adr/EngineeringNotes.md) · [ADR](project-docs/adr/): 면접용 문제 해결 사례·설계 결정 이유

@@ -206,7 +206,7 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 ### P1-11 — Phase 1 통합 인수
 
-**진행 상태:** 구현·자동검증·독립인수 완료(2026-10-01, HEAD `fe97247`, Head 독립 최종검수 PASS). **사람의 5~7분 실제 시연은 미실측·사용자 확인 대기**이며, 자동검증 완료를 사람 확인 완료로 간주하지 않는다. 후속에서 해결: (1) jsonb key 순서로 인한 검토 snapshot hash 불일치를 v2 재귀 canonical로 제거하고, v1은 불변·저장 `schemaVersion`별 단일 알고리즘·no fallback으로 검증(매핑 successor 직접 승인, legacy 변조 zero effect; DB/API/DTO 변경 없음). (2) p1-11 harness의 재-freeze 우회 제거(직접 승인 실패 = run FAILED/exit 1), Compose cleanup 실패 = exit 1, env 격리·per-run 파일·127.0.0.1 publish. (3) 늦은 2xx 증거를 handler 진입이 아니라 응답 finish/close와 relay `beforeFinalize`/no-op로 인과 관찰. 상세는 `EngineeringNotes.md`의 P1-11 항목.
+**진행 상태:** 구현·자동검증·독립인수 완료(2026-10-01, HEAD `fe97247`, Head 독립 최종검수 PASS). **사람의 5~7분 실제 시연은 미실측·사용자 확인 대기**이며, 자동검증 완료를 사람 확인 완료로 간주하지 않는다. 후속에서 해결: (1) jsonb key 순서로 인한 검토 snapshot hash 불일치를 v2 재귀 canonical로 제거하고, v1은 불변·저장 `schemaVersion`별 단일 알고리즘·no fallback으로 검증(매핑 successor 직접 승인, legacy 변조 zero effect; DB/API/DTO 변경 없음). (2) p1-11 harness의 재-freeze 우회 제거(직접 승인 실패 = run FAILED/exit 1), Compose cleanup 실패 = exit 1, env 격리·per-run 파일·127.0.0.1 publish. (3) 늦은 2xx 증거를 handler 진입이 아니라 응답 finish/close와 relay `beforeFinalize`/no-op로 인과 관찰. 상세는 `adr/EngineeringNotes.md`의 P1-11 항목.
 
 **검증 근거(자동):** `3a1285c` 시점에 whole backend 514 tests(0 fail)·web 191 + lint/build·`verify-p1-11 --browser`(13 시나리오 + 브라우저 hand-off 3상태 + 브라우저 후 DB tuple) ALL PASS·clean Compose PASS. 이후 `fe97247`은 focused JUnit 2 + Node fixture 3에 한정하며 수정된 전체 harness(browser/Compose)는 재실행하지 않았다. 증거 `output/p1-11/evidence.json`, `output/playwright/p1-11-phase-one/`.
 
