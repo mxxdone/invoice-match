@@ -19,6 +19,8 @@ const POSITIVE_INT_PATTERN = /^[1-9][0-9]{0,8}$/;
 
 const ALLOWED_ROUTES: readonly (readonly string[])[] = [
   ['api', 'me'],
+  ['api', 'analysis-runs'],
+  ['api', 'analysis-runs', '*', 'failures'],
   ['api', 'invoice-cases'],
   ['api', 'invoice-cases', '*'],
   ['api', 'invoice-cases', '*', 'evidence-bundles'],
@@ -40,6 +42,7 @@ export type BackendMutationMethod = 'POST' | 'PUT';
 
 const MUTATION_ROUTES: readonly (readonly [BackendMutationMethod, readonly string[]])[] = [
   ['POST', ['api', 'invoice-cases']],
+  ['POST', ['api', 'analysis-runs', '*', 'retries']],
   ['PUT', ['api', 'invoice-cases', '*', 'draft']],
   ['POST', ['api', 'invoice-cases', '*', 'submit']],
   ['POST', ['api', 'invoice-cases', '*', 'revisions']],

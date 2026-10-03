@@ -123,3 +123,8 @@ button.session-link:focus-visible { outline: 2px solid #798769; outline-offset: 
 .original-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .original-preview { margin-top: 1rem; }
 .original-pdf-frame { display: block; width: 100%; height: min(70vh, 760px); min-height: 320px; border: 1px solid var(--border); border-radius: 6px; }
+
+.analysis-table td:first-child .button { max-width: 280px; white-space: normal; overflow-wrap: anywhere; text-align: left; line-height: 1.6; }
+.analysis-history h2 { overflow-wrap: anywhere; font-size: 17px; font-weight: 500; margin-bottom: 16px; }
+.analysis-history .history-table { margin: 16px 0; }
+.analysis-history .reason-label { display: block; margin: 20px 0; max-width: 580px; }

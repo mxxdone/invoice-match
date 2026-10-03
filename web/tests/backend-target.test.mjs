@@ -97,3 +97,13 @@ test('a method or path mismatch never resolves a write', () => {
   assert.equal(resolveBackendMutationTarget(base, 'POST', ['api', 'invoice-cases', 'not-a-uuid', 'submit']), null);
   assert.equal(resolveBackendMutationTarget(base, 'POST', ['api', 'invoice-cases', CASE, 'approve', 'extra']), null);
 });
+
+test('analysis operations have exact human paths and no machine reachability', () => {
+  const base = 'http://localhost:8080';
+  assert.equal(resolveBackendTarget(base, ['api','analysis-runs'], '?page=1'), base+'/api/analysis-runs?page=1');
+  assert.equal(resolveBackendTarget(base, ['api','analysis-runs',CASE,'failures'], ''), base+`/api/analysis-runs/${CASE}/failures`);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', ['api','analysis-runs',CASE,'retries']), base+`/api/analysis-runs/${CASE}/retries`);
+  assert.equal(resolveBackendTarget(base, ['internal','analysis-runs',CASE,'claim'], ''), null);
+  assert.equal(resolveBackendMutationTarget(base, 'PUT', ['api','analysis-runs',CASE,'retries']), null);
+  assert.equal(resolveBackendTarget(base, ['api','analysis-runs','bad','failures'], ''), null);
+});

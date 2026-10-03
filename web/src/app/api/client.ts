@@ -414,3 +414,28 @@ export function approveInvoiceCase(
     { method: 'POST', body: input, signal },
   );
 }
+
+export type AnalysisJob = {
+  runId: string; caseId: string; invoiceNumber: string; inputVersion: number; status: string;
+  executionAttempt: number; attemptLimit: number; nextRetryAt: string | null; lastErrorCode: string | null;
+  publishStatus: string; createdAt: string; updatedAt: string;
+};
+export type AnalysisFailure = {
+  executionAttempt: number; errorCode: string; disposition: string; createdAt: string;
+  publishStatus: string | null; publishedAt: string | null;
+};
+export type AnalysisPage<T> = { items: T[]; page: number; size: number; totalElements: number };
+export type AnalysisRetryIntent = { runId: string; requestId: string; expectedExecutionAttempt: number; reason: string };
+export function fetchAnalysisJobs(credentials: Credentials, status: string, page: number, signal?: AbortSignal) {
+  const query = new URLSearchParams({ page: String(page), size: '20' });
+  if (status) query.set('status', status);
+  return requestJson<AnalysisPage<AnalysisJob>>(`/api/analysis-runs?${query}`, credentials, { signal });
+}
+export function fetchAnalysisFailures(credentials: Credentials, runId: string, page: number, signal?: AbortSignal) {
+  return requestJson<AnalysisPage<AnalysisFailure>>(`/api/analysis-runs/${encodeURIComponent(runId)}/failures?page=${page}&size=20`, credentials, { signal });
+}
+export function retryAnalysis(credentials: Credentials, intent: AnalysisRetryIntent, signal?: AbortSignal) {
+  const { runId, ...body } = intent;
+  return requestJson<{ runId: string; status: string; executionAttempt: number; attemptLimit: number }>(
+    `/api/analysis-runs/${encodeURIComponent(runId)}/retries`, credentials, { method: 'POST', body, signal });
+}

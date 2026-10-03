@@ -1,6 +1,6 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 진행 중 · 현재 Ticket P2-10**  
+문서 상태: **Phase 2 진행 중 · 현재 Ticket P2-11**  
 작성일: **2026-09-25**  
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
 실행 방법: [`Implement.md`](./Implement.md)
@@ -136,12 +136,16 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 ### P2-10 — 운영자 분석 조회·재처리
 
-**상태: 진행 중.** 기존 운영 화면에서 문서 분석 운영으로 진입한다. 새 업무 사건·증빙 묶음·문서 결과를 만들거나 고치지 않는다.
+**상태: 완료.** 운영자 페이지 목록·실패 이력·수동 재처리와 감사/멱등 계약을 인수했다. `AnalysisOperationsService`가 후속 진입점이다. 재처리는 현재 DEAD_LETTERED에만 추가 3회 예산을 주며 기존 결과·실패 이력·eventId를 보존한다. `/operations/analysis`는 서버 자료를 조회하고 결과 불명 시 동일 요청을 재확인한다.
 
-- OPERATOR만 분석 실행의 서버 페이지 목록과 실패 이력을 조회한다. 상태·시도 횟수·다음 예약·고정 오류·발행 상태를 보여주되 token, object key, 원문 결과, credential을 노출하지 않는다. application이 권한·필터·페이지 상한을, persistence가 join/SQL을, API가 전송을 담당한다.
-- 재처리는 current `DEAD_LETTERED` run에 한정한다. requestId·기대 실행 횟수·원인 수정 사유를 받으며 case→run 잠금, frozen manifest 재검증, actor-scoped idempotency, `QUEUED` 전환과 추가 3회 예산, recovery dispatch와 감사 기록을 한 transaction에서 처리한다. 최초 eventId와 기존 결과/실패 이력을 유지한다. FAILED 파일은 보완 문서가 필요하며 STALE/실행 중/완료 run은 재처리하지 않는다.
-- UI는 실제 서버 자료만 사용한다. 통신·5xx 응답 불명 시 같은 requestId와 동일 body로 확인하고 새 재처리를 만들지 않는다. 로그인 교체·페이지 전환의 늦은 응답은 무시한다. 기존 olive/gray 컴포넌트를 사용하고 내부 구현 설명은 사용자 흐름에 추가하지 않는다.
-- 실제 PostgreSQL로 RBAC·조회 범위·동시/중복 재처리·변경 body 충돌·감사 실패 rollback·partial 결과 보존을 확인한다. 기존 통합 스크립트에 원인 수정→운영 재처리→완료와 같은 요청 replay를 추가하고 Web lint/test/build 및 실제 화면을 점검한다.
+### P2-11 — 만료 임시 업로드 정리
+
+**상태: 진행 중.** 업로드 예약 만료 후 최소 1시간(기본 24시간)의 유예를 지난 임시 객체만 정리한다. 등록 완료된 파일도 임시 사본만 지우며 `originals/`·등록 metadata·동결 참조는 보존한다. 미등록 원본 orphan 탐색은 범위 밖이다.
+
+- application이 유예·배치 상한·키 검증과 삭제/실패 처리를, persistence가 별도 정리 ledger의 claim·lease·조건부 완료를, infrastructure가 opt-in scheduler와 제한 시간의 MinIO 삭제를 맡는다. 기본 비활성, batch 최대 10, lease는 삭제 SDK의 20초 제한보다 길게 둔다.
+- 대상은 DB 예약의 정확한 `uploads/<caseId>/<documentId>`뿐이다. S3 목록 탐색·호출자 임의 key·원본 삭제를 허용하지 않는다. 유효 presigned URL과 진행 중 등록을 유예로 보호한다. unsafe key는 고정 코드로 차단하고 저장소에 전달하지 않는다.
+- 저장소 삭제는 DB transaction 밖에서 수행한다. 삭제 후 응답 유실은 같은 키의 멱등 삭제로 복구하고, 만료 lease와 옛 token의 완료를 거부한다. 저장소 장애는 고정 코드·backoff로 남긴다. 기존 immutable 예약을 갱신/삭제하지 않는다.
+- 실제 PostgreSQL·MinIO로 만료 임시 사본 삭제, 등록 원본·동결 참조 보존, 젊은 예약 제외, 실패/재claim/옛 token fencing과 외부 I/O의 no-transaction을 확인한다.
 
 ### Phase 2 남은 Ticket
 

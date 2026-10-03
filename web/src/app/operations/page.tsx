@@ -189,7 +189,7 @@ function Operations() {
 
   return (
     <Shell active="operations" preview={false}>
-      <PageHeader eyebrow="운영 업무" title="운영 작업" subtitle="대사 대상과 ERP 인계 상태를 실제 서버 계약으로 조회합니다." />
+      <PageHeader eyebrow="운영 업무" title="운영 작업" subtitle="대사 대상과 ERP 인계 상태를 조회합니다." action={<Link className="button" href="/operations/analysis">문서 분석 운영</Link>} />
       <div className="tabs" role="tablist" aria-label="운영 작업 상태">
         {tabs.map(([id, label]) => <button key={id} role="tab" aria-selected={status === id} className={status === id ? 'active' : ''} onClick={() => { setStatus(id); setPage(0); setSelected(null); }}>{label}</button>)}
       </div>

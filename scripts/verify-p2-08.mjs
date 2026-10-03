@@ -241,6 +241,24 @@ try {
   assert.equal(quarantine.sizeBytes,Buffer.byteLength(poison));
   assert(!dead.stdout.includes(poison));
   record('poison message: confirm before ACK, only safe hash/size/code in DLQ');
+  const repaired = await fetch(`http://127.0.0.1:${ports.proxy}/control/fail-source`, { method: 'POST',
+    headers: { 'x-verification-control': controlToken }, body: JSON.stringify({ runId: null }), signal: AbortSignal.timeout(5000) });
+  assert(repaired.ok);
+  const jobs = await api('GET', '/api/analysis-runs?status=DEAD_LETTERED&page=0&size=20', undefined, 'operator');
+  assert(jobs.items.some(row => row.runId === exhausted.runId));
+  const history = await api('GET', `/api/analysis-runs/${exhausted.runId}/failures`, undefined, 'operator');
+  assert.equal(history.totalElements, 3);
+  assert(!JSON.stringify(history).includes('claimToken'));
+  const intent = { requestId: randomUUID(), expectedExecutionAttempt: 3, reason: 'source availability repaired' };
+  const retry = await api('POST', `/api/analysis-runs/${exhausted.runId}/retries`, intent, 'operator');
+  assert.equal(retry.attemptLimit, 6);
+  await finished(exhausted.runId);await queueEmpty();
+  assert.deepEqual(await api('POST', `/api/analysis-runs/${exhausted.runId}/retries`, intent, 'operator'), retry);
+  assert.equal(await sql(`select execution_attempt from analysis_run where id='${exhausted.runId}'`), '4');
+  assert.equal(await sql(`select count(*) from analysis_execution_failure where run_id='${exhausted.runId}'`), '3');
+  assert.equal(await sql(`select count(*) from audit_entry where invoice_case_id='${exhausted.id}' and action='ANALYSIS_RETRY_RESERVED'`), '1');
+  record('operator repairs source, reserves one retry, completes and replays the same request');
+
   await command(['stop', '-t', '60', worker]);
   const stale = await makeCase(['pdf']);
   await wait('old request published', async () => (await sql(`select status from analysis_request_outbox where analysis_run_id='${stale.runId}'`)) === 'PUBLISHED');
@@ -259,6 +277,14 @@ try {
   assert.equal(await sql(`select status from analysis_run where id='${stale.runId}'`), 'STALE');
   assert.equal(await sql(`select count(*) from analysis_document_result where run_id='${stale.runId}'`), '0');
   record('real supplement makes old input STALE before consumer reads source');
+  if (process.env.VERIFY_UI_HOLD_SECONDS) {
+    const seconds=Number(process.env.VERIFY_UI_HOLD_SECONDS);
+    assert(Number.isInteger(seconds) && seconds>0 && seconds<=300);
+    writeFileSync(join(output,'ui-ready.json'),JSON.stringify({ coreUrl,runId:exhausted.runId }));
+    console.log('INFO UI inspection ready: '+output);
+    const deadline=Date.now()+seconds*1000;
+    while(Date.now()<deadline && !existsSync(join(output,'ui-release'))) await sleep(400);
+  }
   writeFileSync(join(output, 'summary.json'), JSON.stringify({ ok: true, steps }, null, 2));
 } catch (error) {
   console.error(error.message);
