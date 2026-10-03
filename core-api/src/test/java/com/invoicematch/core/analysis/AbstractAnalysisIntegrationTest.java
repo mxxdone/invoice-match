@@ -19,6 +19,10 @@ import com.invoicematch.core.support.PurchasingPayloads;
 import com.invoicematch.core.support.StubPurchasingServer;
 import com.invoicematch.core.support.TestActors;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -104,28 +108,79 @@ abstract class AbstractAnalysisIntegrationTest extends AbstractPostgresIntegrati
                 new SubmitInvoiceCaseCommand(caseId, requestId, expectedCaseVersion)));
     }
 
+    /** The frozen metadata of one document a fixture seeded. */
+    protected record SeededDocument(
+            UUID documentId,
+            UUID sourceDraftRevisionId,
+            String fileName,
+            String mediaType,
+            long sizeBytes,
+            String checksum) {
+    }
+
+    /** A storage-valid frozen bundle a fixture seeded directly. */
+    protected record FrozenBundle(UUID bundleId, int versionNumber, String payloadHash) {
+    }
+
     /**
      * Seeds a completed document reference into the current open draft through
-     * raw SQL, bypassing MinIO, and returns the document id. The row set is
-     * exactly what {@code DocumentStore.evidenceForRevision} reads.
+     * raw SQL, bypassing MinIO. The row set is exactly what
+     * {@code DocumentStore.evidenceForRevision} reads.
      */
-    protected UUID seedCompletedDocument(UUID caseId) {
+    protected SeededDocument seedDocument(
+            UUID caseId, UUID documentId, String fileName, long sizeBytes, String checksum) {
         UUID revision = currentDraftRevisionId(caseId);
-        UUID documentId = UUID.randomUUID();
-        String checksum = UUID.randomUUID().toString().replace("-", "")
-                + UUID.randomUUID().toString().replace("-", "").substring(0, 32);
+        String mediaType = "application/pdf";
         jdbc.update("insert into document_upload (id, invoice_case_id, draft_revision_id, file_name, media_type,"
                         + " size_bytes, checksum, upload_key, expires_at, created_at)"
-                        + " values (?, ?, ?, 'invoice.pdf', 'application/pdf', 4, ?, ?,"
-                        + " now() + interval '10 minutes', now())",
-                documentId, caseId, revision, checksum, "uploads/" + documentId);
+                        + " values (?, ?, ?, ?, ?, ?, ?, ?, now() + interval '10 minutes', now())",
+                documentId, caseId, revision, fileName, mediaType, sizeBytes, checksum, "uploads/" + documentId);
         jdbc.update("insert into document (id, object_key, registered_case_version, registered_at)"
                         + " values (?, ?, 0, now())",
                 documentId, "originals/" + caseId + "/" + documentId);
         jdbc.update("insert into draft_revision_document (draft_revision_id, document_id, invoice_case_id, created_at)"
                         + " values (?, ?, ?, now())",
                 revision, documentId, caseId);
-        return documentId;
+        return new SeededDocument(documentId, revision, fileName, mediaType, sizeBytes, checksum);
+    }
+
+    /** Seeds one completed document with generated identity and metadata. */
+    protected UUID seedCompletedDocument(UUID caseId) {
+        String checksum = UUID.randomUUID().toString().replace("-", "")
+                + UUID.randomUUID().toString().replace("-", "").substring(0, 32);
+        return seedDocument(caseId, UUID.randomUUID(), "invoice.pdf", 4, checksum).documentId();
+    }
+
+    /**
+     * Seeds a storage-valid, document-less (legacy) frozen bundle for the same
+     * case: the next sealed draft revision plus a legacy evidence bundle. It
+     * writes no document references, so it never disturbs the normal supplement
+     * document inheritance.
+     */
+    protected FrozenBundle seedLegacyFrozenBundle(UUID caseId, String invoiceNumber, int versionNumber) {
+        UUID revisionId = UUID.randomUUID();
+        UUID bundleId = UUID.randomUUID();
+        String payload = "{\"caseId\":\"" + caseId + "\",\"supplierId\":\"" + SUPPLIER + "\","
+                + "\"purchaseOrderId\":\"" + PO_ID + "\",\"invoiceNumber\":\"" + invoiceNumber + "\","
+                + "\"revisionNumber\":" + versionNumber + ",\"lines\":[]}";
+        String payloadHash = sha256Hex(payload);
+        jdbc.update("insert into draft_revision (id, invoice_case_id, revision_number, status, created_at, sealed_at)"
+                        + " values (?, ?, ?, 'SEALED', now(), now())",
+                revisionId, caseId, versionNumber);
+        jdbc.update("insert into evidence_bundle (id, invoice_case_id, draft_revision_id, version_number,"
+                        + " payload_schema, payload_hash, payload, submitted_at)"
+                        + " values (?, ?, ?, ?, 'legacy-v1', ?, cast(? as jsonb), now())",
+                bundleId, caseId, revisionId, versionNumber, payloadHash, payload);
+        return new FrozenBundle(bundleId, versionNumber, payloadHash);
+    }
+
+    private static String sha256Hex(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is unavailable", e);
+        }
     }
 
     /** Runs the approval-side supplement request and opens the next draft. */
@@ -162,7 +217,7 @@ abstract class AbstractAnalysisIntegrationTest extends AbstractPostgresIntegrati
 
     protected Map<String, Object> bundle(UUID caseId, int versionNumber) {
         return jdbc.queryForMap(
-                "select id, payload_hash, payload_schema from evidence_bundle"
+                "select id, payload_hash, payload_schema, payload::text as payload from evidence_bundle"
                         + " where invoice_case_id = ? and version_number = ?",
                 caseId,
                 versionNumber);

@@ -1,7 +1,6 @@
 package com.invoicematch.core.migration;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.invoicematch.core.support.AbstractPostgresIntegrationTest;
 import java.sql.Connection;
@@ -14,7 +13,6 @@ import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
-import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
@@ -61,6 +59,13 @@ class V12UpgradeFromV11MigrationTest extends AbstractPostgresIntegrationTest {
                             + " values (?, ?, ?, 1, 'legacy-hash', '{\"revisionNumber\":1}'::jsonb, now())",
                     bundleId, caseId, revisionId);
 
+            // Full pre-migration snapshot of the existing rows: identity,
+            // version, times, hash, schema and the actual payload text.
+            Map<String, Object> caseBefore = caseSnapshot(jdbc, caseId);
+            Map<String, Object> revisionBefore = revisionSnapshot(jdbc, revisionId);
+            Map<String, Object> bundleBefore = bundleSnapshot(jdbc, bundleId);
+            assertThat(bundleBefore).containsEntry("payload_text", "{\"revisionNumber\": 1}");
+
             flyway(upgradeDataSource, "12").migrate();
 
             // New tables and guards exist after the upgrade.
@@ -76,11 +81,12 @@ class V12UpgradeFromV11MigrationTest extends AbstractPostgresIntegrationTest {
                             Integer.class))
                     .isEqualTo(2);
 
-            // The pre-existing bundle is byte-identical.
-            Map<String, Object> bundle = jdbc.queryForMap(
-                    "select payload_schema, payload_hash from evidence_bundle where id = ?", bundleId);
-            assertThat(bundle).containsEntry("payload_schema", "legacy-v1")
-                    .containsEntry("payload_hash", "legacy-hash");
+            // The pre-existing case, revision and bundle are preserved snapshot
+            // for snapshot: identity, version, times, hash, schema and payload
+            // text are all unchanged by the migration.
+            assertThat(caseSnapshot(jdbc, caseId)).isEqualTo(caseBefore);
+            assertThat(revisionSnapshot(jdbc, revisionId)).isEqualTo(revisionBefore);
+            assertThat(bundleSnapshot(jdbc, bundleId)).isEqualTo(bundleBefore);
 
             // A reservation for the pre-existing frozen bundle is valid.
             UUID runId = UUID.randomUUID();
@@ -94,12 +100,17 @@ class V12UpgradeFromV11MigrationTest extends AbstractPostgresIntegrationTest {
                             + " values (?, ?, 'analysis-request-v1', '{}'::jsonb, 'READY', now())",
                     eventId, runId);
 
-            // Appendix-only and unique constraints are enforced.
-            assertThatThrownBy(() -> jdbc.update(
-                            "update analysis_run set evidence_payload_hash = 'tampered' where id = ?", runId))
-                    .isInstanceOf(DataAccessException.class);
-            assertThatThrownBy(() -> jdbc.update("delete from analysis_request_outbox where id = ?", eventId))
-                    .isInstanceOf(DataAccessException.class);
+            // Appendix-only guards are enforced with their raised SQLSTATE.
+            assertDatabaseRejects("23000", () -> jdbc.update(
+                    "update analysis_run set evidence_payload_hash = 'tampered' where id = ?", runId));
+            assertDatabaseRejects("23000", () -> jdbc.update(
+                    "delete from analysis_request_outbox where id = ?", eventId));
+            assertDatabaseRejects("23505", () -> jdbc.update(
+                    "insert into analysis_request_outbox"
+                            + " (id, analysis_run_id, schema_version, payload, status, created_at)"
+                            + " values (?, ?, 'analysis-request-v1', '{}'::jsonb, 'READY', now())",
+                    UUID.randomUUID(),
+                    runId));
 
             Integer applied = jdbc.queryForObject(
                     "select count(*) from flyway_schema_history where version = '12' and success", Integer.class);
@@ -107,6 +118,29 @@ class V12UpgradeFromV11MigrationTest extends AbstractPostgresIntegrationTest {
         } finally {
             dropDatabase(baseUrl, username, password);
         }
+    }
+
+    private static Map<String, Object> caseSnapshot(JdbcTemplate jdbc, UUID caseId) {
+        return jdbc.queryForMap(
+                "select id, supplier_id, purchase_order_id, invoice_number, normalized_invoice_number,"
+                        + " submitted_by, status, version, submitted_at, created_at, updated_at,"
+                        + " current_draft_revision_id from invoice_case where id = ?",
+                caseId);
+    }
+
+    private static Map<String, Object> revisionSnapshot(JdbcTemplate jdbc, UUID revisionId) {
+        return jdbc.queryForMap(
+                "select id, invoice_case_id, revision_number, status, created_at, sealed_at"
+                        + " from draft_revision where id = ?",
+                revisionId);
+    }
+
+    private static Map<String, Object> bundleSnapshot(JdbcTemplate jdbc, UUID bundleId) {
+        return jdbc.queryForMap(
+                "select id, invoice_case_id, draft_revision_id, draft_revision_status, version_number,"
+                        + " payload_schema, payload_hash, payload::text as payload_text, submitted_at"
+                        + " from evidence_bundle where id = ?",
+                bundleId);
     }
 
     private Flyway flyway(DataSource dataSource, String target) {

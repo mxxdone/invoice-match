@@ -6,10 +6,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.invoicematch.core.analysis.application.AnalysisInput;
+import com.invoicematch.core.analysis.application.AnalysisRequestPayloadFactory;
 import com.invoicematch.core.analysis.application.AnalysisRequestService;
+import com.invoicematch.core.analysis.domain.AnalysisRun;
+import com.invoicematch.core.document.domain.DocumentEvidence;
 import com.invoicematch.core.invoicecase.application.SubmitInvoiceCaseCommand;
 import com.invoicematch.core.invoicecase.domain.StaleCaseVersionException;
 import com.invoicematch.core.support.TestActors;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -21,7 +26,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.dao.DataAccessException;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -47,13 +51,21 @@ class AnalysisRequestEnabledIntegrationTest extends AbstractAnalysisIntegrationT
     @Autowired
     AnalysisRequestService analysisRequests;
     @Autowired
+    AnalysisRequestPayloadFactory payloadFactory;
+    @Autowired
     PlatformTransactionManager transactionManager;
 
     @Test
     void enabledDocumentSubmissionReservesRunAndRequestWithCanonicalPayload() {
         UUID caseId = createDraftCase("INV-E1");
-        UUID revision = currentDraftRevisionId(caseId);
-        UUID documentId = seedCompletedDocument(caseId);
+
+        // Two documents with caller-controlled ids and metadata, inserted in
+        // descending documentId order so an unsorted payload cannot pass by
+        // accident: the canonical arrays must come out ascending instead.
+        UUID highId = UUID.fromString("00000000-0000-0000-0000-0000000000bb");
+        UUID lowId = UUID.fromString("00000000-0000-0000-0000-0000000000aa");
+        SeededDocument high = seedDocument(caseId, highId, "second.pdf", 22, "b".repeat(64));
+        SeededDocument low = seedDocument(caseId, lowId, "first.pdf", 11, "a".repeat(64));
 
         submit(caseId, "submit-e1");
 
@@ -83,15 +95,37 @@ class AnalysisRequestEnabledIntegrationTest extends AbstractAnalysisIntegrationT
         assertThat(payload.get("evidencePayloadHash").asText()).isEqualTo(bundle.get("payload_hash"));
         assertThat(payload.get("workflowVersion").asText()).isEqualTo("document-parser-v1");
 
-        JsonNode documents = payload.get("documents");
-        assertThat(documents.size()).isEqualTo(1);
-        JsonNode document = documents.get(0);
-        assertThat(document.get("documentId").asText()).isEqualTo(documentId.toString());
-        assertThat(document.get("sourceDraftRevisionId").asText()).isEqualTo(revision.toString());
-        assertThat(document.get("fileName").asText()).isEqualTo("invoice.pdf");
-        assertThat(document.get("mediaType").asText()).isEqualTo("application/pdf");
-        assertThat(document.get("sizeBytes").asLong()).isEqualTo(4L);
-        assertThat(document.get("checksum").asText()).matches("[0-9a-f]{64}");
+        // The Outbox documents must equal the actual frozen bundle documents
+        // field for field, including checksum, in the same order.
+        JsonNode frozenDocuments = readJson((String) bundle.get("payload")).get("documents");
+        assertThat(frozenDocuments.size()).isEqualTo(2);
+        JsonNode outboxDocuments = payload.get("documents");
+        assertThat(outboxDocuments).as("outbox documents must equal the frozen bundle documents")
+                .isEqualTo(frozenDocuments);
+        assertThat(outboxDocuments.size()).isEqualTo(2);
+        // Ascending documentId proves canonical ordering, not insertion order.
+        assertThat(outboxDocuments.get(0).get("documentId").asText()).isEqualTo(lowId.toString());
+        assertThat(outboxDocuments.get(1).get("documentId").asText()).isEqualTo(highId.toString());
+        assertThat(outboxDocuments.get(0).get("documentId").asText())
+                .isLessThan(outboxDocuments.get(1).get("documentId").asText());
+        assertDocumentMetadata(outboxDocuments.get(0), low);
+        assertDocumentMetadata(outboxDocuments.get(1), high);
+        assertDocumentMetadata(frozenDocuments.get(0), low);
+        assertDocumentMetadata(frozenDocuments.get(1), high);
+
+        // The same run fed the documents in reverse order must serialize to the
+        // identical JSON, proving the factory sorts rather than trusting input.
+        List<DocumentEvidence> reversed = new ArrayList<>(List.of(toEvidence(high), toEvidence(low)));
+        AnalysisRun canonicalRun = AnalysisRun.queue(
+                (UUID) run.get("id"),
+                caseId,
+                (UUID) bundle.get("id"),
+                1,
+                (String) bundle.get("payload_hash"),
+                Instant.now());
+        JsonNode rebuilt = readJson(
+                payloadFactory.canonicalPayload((UUID) request.get("id"), canonicalRun, reversed));
+        assertThat(rebuilt).isEqualTo(payload);
 
         // No object key, URL, credential → the request is safe to publish.
         String raw = (String) request.get("payload");
@@ -169,15 +203,18 @@ class AnalysisRequestEnabledIntegrationTest extends AbstractAnalysisIntegrationT
         UUID caseId = createDraftCase("INV-E6");
         seedCompletedDocument(caseId);
         submit(caseId, "submit-e6");
-        String bundleHash = (String) bundle(caseId, 1).get("payload_hash");
-        UUID bundleId = (UUID) bundle(caseId, 1).get("id");
+        assertThat(run(caseId, 1).get("status")).isEqualTo("QUEUED");
 
-        // A newer submission whose frozen bundle carries no documents (legacy)
-        // must still stale the lower reservation and cancel its request while
-        // reserving nothing of its own.
+        // Prepare a real, storage-valid second evidence version for the same
+        // case: its next SEALED revision plus a document-less (legacy) frozen
+        // bundle. This is exactly the input a document-less newer submission
+        // would produce and it leaves the normal supplement document
+        // inheritance untouched.
+        FrozenBundle legacyV2 = seedLegacyFrozenBundle(caseId, "INV-E6", 2);
+
         new TransactionTemplate(transactionManager).executeWithoutResult(status ->
-                analysisRequests.onEvidenceSubmitted(
-                        new AnalysisInput(caseId, bundleId, 2, bundleHash, List.of())));
+                analysisRequests.onEvidenceSubmitted(new AnalysisInput(
+                        caseId, legacyV2.bundleId(), legacyV2.versionNumber(), legacyV2.payloadHash(), List.of())));
 
         assertThat(count("analysis_run")).isEqualTo(1);
         assertThat(count("analysis_request_outbox")).isEqualTo(1);
@@ -245,11 +282,9 @@ class AnalysisRequestEnabledIntegrationTest extends AbstractAnalysisIntegrationT
         UUID caseB = createDraftCase("INV-E9B");
 
         // The bundle belongs to case A but claims case B: composite FK rejects.
-        assertThatThrownBy(() -> insertRun(caseB, bundleA, 1, "h"))
-                .isInstanceOf(DataAccessException.class);
+        assertDatabaseRejects("23503", () -> insertRun(caseB, bundleA, 1, "h"));
         // Case A has no evidence bundle version 2: composite FK rejects.
-        assertThatThrownBy(() -> insertRun(caseA, bundleA, 2, "h"))
-                .isInstanceOf(DataAccessException.class);
+        assertDatabaseRejects("23503", () -> insertRun(caseA, bundleA, 2, "h"));
     }
 
     @Test
@@ -260,15 +295,13 @@ class AnalysisRequestEnabledIntegrationTest extends AbstractAnalysisIntegrationT
         UUID runId = (UUID) run(caseId, 1).get("id");
         UUID bundleId = (UUID) bundle(caseId, 1).get("id");
 
-        assertThatThrownBy(() -> insertRun(caseId, bundleId, 1, "h"))
-                .isInstanceOf(DataAccessException.class);
-        assertThatThrownBy(() -> jdbc.update(
-                        "insert into analysis_request_outbox"
-                                + " (id, analysis_run_id, schema_version, payload, status, created_at)"
-                                + " values (?, ?, 'analysis-request-v1', '{}'::jsonb, 'READY', now())",
-                        UUID.randomUUID(),
-                        runId))
-                .isInstanceOf(DataAccessException.class);
+        assertDatabaseRejects("23505", () -> insertRun(caseId, bundleId, 1, "h"));
+        assertDatabaseRejects("23505", () -> jdbc.update(
+                "insert into analysis_request_outbox"
+                        + " (id, analysis_run_id, schema_version, payload, status, created_at)"
+                        + " values (?, ?, 'analysis-request-v1', '{}'::jsonb, 'READY', now())",
+                UUID.randomUUID(),
+                runId));
     }
 
     @Test
@@ -279,35 +312,31 @@ class AnalysisRequestEnabledIntegrationTest extends AbstractAnalysisIntegrationT
         UUID runId = (UUID) run(caseId, 1).get("id");
         UUID requestId = (UUID) request(caseId, 1).get("id");
 
-        // Input identity/hash is immutable and the run is not deletable.
-        assertThatThrownBy(() -> jdbc.update(
-                        "update analysis_run set evidence_payload_hash = 'tampered' where id = ?", runId))
-                .isInstanceOf(DataAccessException.class);
-        assertThatThrownBy(() -> jdbc.update("update analysis_run set input_version = 9 where id = ?", runId))
-                .isInstanceOf(DataAccessException.class);
-        assertThatThrownBy(() -> jdbc.update("delete from analysis_run where id = ?", runId))
-                .isInstanceOf(DataAccessException.class);
+        // Input identity/hash is immutable and the run is not deletable: the
+        // raised guard (23000), not a check/fk/unique violation.
+        assertDatabaseRejects("23000", () -> jdbc.update(
+                "update analysis_run set evidence_payload_hash = 'tampered' where id = ?", runId));
+        assertDatabaseRejects("23000", () -> jdbc.update(
+                "update analysis_run set input_version = 9 where id = ?", runId));
+        assertDatabaseRejects("23000", () -> jdbc.update(
+                "delete from analysis_run where id = ?", runId));
 
         // Schema/payload is immutable and the request is not deletable.
-        assertThatThrownBy(() -> jdbc.update(
-                        "update analysis_request_outbox set payload = '{}'::jsonb where id = ?", requestId))
-                .isInstanceOf(DataAccessException.class);
-        assertThatThrownBy(() -> jdbc.update(
-                        "update analysis_request_outbox set schema_version = 'x' where id = ?", requestId))
-                .isInstanceOf(DataAccessException.class);
-        assertThatThrownBy(() -> jdbc.update(
-                        "delete from analysis_request_outbox where id = ?", requestId))
-                .isInstanceOf(DataAccessException.class);
+        assertDatabaseRejects("23000", () -> jdbc.update(
+                "update analysis_request_outbox set payload = '{}'::jsonb where id = ?", requestId));
+        assertDatabaseRejects("23000", () -> jdbc.update(
+                "update analysis_request_outbox set schema_version = 'x' where id = ?", requestId));
+        assertDatabaseRejects("23000", () -> jdbc.update(
+                "delete from analysis_request_outbox where id = ?", requestId));
 
-        // Only QUEUED -> STALE and READY -> CANCELLED are legal.
+        // Only QUEUED -> STALE and READY -> CANCELLED are legal: the raised
+        // transition guard (23514), not a plain CHECK violation.
         jdbc.update("update analysis_run set status = 'STALE', updated_at = now() where id = ?", runId);
-        assertThatThrownBy(() -> jdbc.update(
-                        "update analysis_run set status = 'QUEUED', updated_at = now() where id = ?", runId))
-                .isInstanceOf(DataAccessException.class);
+        assertDatabaseRejects("23514", () -> jdbc.update(
+                "update analysis_run set status = 'QUEUED', updated_at = now() where id = ?", runId));
         jdbc.update("update analysis_request_outbox set status = 'CANCELLED' where id = ?", requestId);
-        assertThatThrownBy(() -> jdbc.update(
-                        "update analysis_request_outbox set status = 'READY' where id = ?", requestId))
-                .isInstanceOf(DataAccessException.class);
+        assertDatabaseRejects("23514", () -> jdbc.update(
+                "update analysis_request_outbox set status = 'READY' where id = ?", requestId));
     }
 
     private String submissionOutcome(UUID caseId, String requestId, long version, CountDownLatch start)
@@ -330,6 +359,26 @@ class AnalysisRequestEnabledIntegrationTest extends AbstractAnalysisIntegrationT
                         + " workflow_version, status, created_at, updated_at)"
                         + " values (?, ?, ?, ?, ?, 'document-parser-v1', 'QUEUED', now(), now())",
                 UUID.randomUUID(), caseId, bundleId, inputVersion, hash);
+    }
+
+    private static DocumentEvidence toEvidence(SeededDocument document) {
+        return new DocumentEvidence(
+                document.documentId(),
+                document.sourceDraftRevisionId(),
+                document.fileName(),
+                document.mediaType(),
+                document.sizeBytes(),
+                document.checksum());
+    }
+
+    private static void assertDocumentMetadata(JsonNode node, SeededDocument document) {
+        assertThat(node.get("documentId").asText()).isEqualTo(document.documentId().toString());
+        assertThat(node.get("sourceDraftRevisionId").asText())
+                .isEqualTo(document.sourceDraftRevisionId().toString());
+        assertThat(node.get("fileName").asText()).isEqualTo(document.fileName());
+        assertThat(node.get("mediaType").asText()).isEqualTo(document.mediaType());
+        assertThat(node.get("sizeBytes").asLong()).isEqualTo(document.sizeBytes());
+        assertThat(node.get("checksum").asText()).isEqualTo(document.checksum());
     }
 
     private JsonNode readJson(String payload) {
