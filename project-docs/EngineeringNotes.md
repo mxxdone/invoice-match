@@ -11,6 +11,14 @@
 - 자동 테스트나 재현 절차로 해결을 입증한 문제
 - 해결되지 않은 사항은 완료 사례처럼 쓰지 않고 `남은 고려사항`으로 명시
 
+## P2-04 — 파서 입력 크기보다 중요한 실행 자원 경계
+
+PDF/OOXML은 작은 입력에서도 큰 압축 해제와 SDK 할당을 유발할 수 있다. library의 파일 크기 검사만으로 wall time·메모리를 보장하지 않고, Linux child에서 SDK import 전에 RLIMIT_AS를 적용하며 parent가 입력 전달과 출력 수집을 동시에 제한하도록 했다. Windows library 검증과 실제 Linux OS 검증을 구분했다.
+
+Head 검수에서는 DTD 기본 허용, 잘못된 workbook의 빈 성공, 음수 shared-string 인덱스를 직접 재현하고 거부하도록 수정했다. CLI의 격리 전 ZIP 접근도 제거했다. child가 먼저 종료되면 `getpgid(childPid)`로 후손을 찾을 수 없고, 그 상태에서 buffered pipe를 닫으면 reader lock에서 멈출 수 있었다. 생성 시 정해진 process group id로 후손을 종료한 뒤 I/O thread를 회수하는 순서로 바꾸었다.
+
+실제 Linux에서 parser 89건, timeout·입력 pipe stall·512MiB memory·출력 한도·종료된 leader의 후손 정리·다음 정상 요청과 설치 CLI를 검증했다. 검증 runner도 image 준비부터 단일 deadline을 적용하고 별도 짧은 cleanup 예산으로 본인 client/container만 회수한다. 바인드 마운트의 venv/캐시 권한과 느린 import를 피해 제한된 RAM runtime을 사용하고 다운로드 cache·로그는 D에 둔다. 8초 의도적 timeout은 cleanup 포함 14.3초에 비정상 종료했다. 이 검증은 원격 CI 결과나 P2-03의 실제 인쇄 확인을 대신하지 않는다.
+
 ## P1-00 — CI와 실행환경의 숨은 전제 제거
 
 ### 문제

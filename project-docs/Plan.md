@@ -306,6 +306,46 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 **의존성/제외:** P2-02 로컬 인수·원격 push 완료(원격 CI 결과 미확인). 파서/OCR·RabbitMQ·AI·문서 교체/삭제·사용자 서비스 종료는 제외한다. Worker는 feature에만 commit하며 main 통합·push는 Head가 맡는다.
 
+### P2-04 — 제한된 자원의 PDF text layer·XLSX 구조 파서
+
+**진행 상태:** 구현·Head 인수 완료(2026-10-03). Worker의 `16be1bc`·`ac8db2c`에 Head의 process group 정리, Linux fail-closed, 격리 전 ZIP 접근 제거, 빈 셀 좌표 보존과 검증 스크립트 보완을 통합했다. application의 정책/port, infrastructure의 SDK/OS 실행, 순수 domain을 실제 코드로 검토했다. Linux 89 passed/2 host-guard skips와 설치 wheel/CLI smoke PASS; Windows 78 passed/11 Linux-only skips 후 빈 셀 focused 2건 PASS. Linux script의 8초 deadline 실패와 own client/container cleanup도 검증했다. 근거: ignored `output/p2-04/logs/linux-verify-19144.log`, `linux-verify-28324.log`, `head-windows.log`, `head-empty-cells.log`. P2-03 실제 인쇄와 원격 CI 결과 확인은 사용자 요청대로 후속 일괄 확인 항목이다.
+
+**목적/범위:** `Spec.md` 15·16의 Python 3.12 `ai-worker` 실행 단위에 PDF text layer와 XLSX 원문 구조를 읽는 파서 기반을 만든다. 아직 public HTTP 파싱 endpoint나 분석 요청 API·DB 결과 저장·broker를 열지 않는다. 내부 호출/CLI로 검증 가능한 parser library와 process runner, 최소 Python 패키지/테스트·재현 실행 방법 및 parser 전용 CI job만 포함한다. core-api·web·기존 Compose의 제품 동작을 변경하지 않는다.
+
+**입력/산출물 계약:** 서버가 확정한 Document의 `documentId`, `mediaType`, `sizeBytes`, SHA-256과 원본 byte를 받는다. 네트워크 URL이나 클라이언트 object key를 처리하지 않는다. byte의 실제 크기·checksum·포맷을 파싱 전에 확인한다. 결과는 `schemaVersion: document-parse-v1`, 고정 `parserVersion`(engine/library 버전 포함), documentId·원본 checksum·mediaType·경고를 포함한다. 같은 byte/metadata/parser version은 같은 결과를 낸다(실행 시각·random ID 제외). PDF는 1-based 페이지 번호와 페이지별 추출 text, XLSX는 문서 순서의 시트명·1-based 시트/행/열·셀 좌표·원시 값과 타입을 보존한다. numeric 원문은 float 반올림으로 바꾸지 않고 수식은 수식 표현으로 남긴다. 날짜/수식 cache 등은 원시값과 구분하며 계산·외부 링크 실행을 하지 않는다. 파싱 결과를 청구 header/line 또는 승인 근거로 자동 반영하지 않는다.
+
+**빈 text/OCR:** 빈 PDF text layer는 해당 페이지의 `EMPTY_TEXT_LAYER` 경고로 남긴다. 빈 페이지를 스캔으로 확정하거나 OCR 완료/추출 금액처럼 가장하지 않는다. mixed PDF의 정상 text 페이지는 유지한다. Azure OCR·외부 문서 전송·AI·품목 매핑은 제외한다.
+
+**구현 결정:** PDF는 pinned pypdf adapter, XLSX는 defusedxml 기반의 제한된 OOXML reader를 사용한다. OOXML reader는 numeric lexeme 보존을 위한 선택이며 구조가 잘못된 입력을 정상 빈 문서로 처리하지 않는다. 배포 CLI는 격리된 `parse`와 `version`만 제공한다. in-process 호출은 library 단위 검증용으로 유지하며 운영 우회 명령으로 노출하지 않는다. CLI도 확정된 size/checksum을 명시적으로 받아 검증한다. OS 메모리 제한은 child bootstrap에서 SDK import 전에 적용하고, 멀티스레드 parent에서 `preexec_fn`을 사용하지 않는다. wall deadline은 프로세스 시작·입력 전달을 포함하며 stdin/stdout/stderr를 동시에 처리한다. 종료·실패·중단 시 자신이 만든 process group과 I/O 자원을 회수하고 비정상 exit나 잘못된 응답 envelope를 성공으로 받아들이지 않는다.
+
+**자원 한도(상향은 계약 변경):** 입력 파일 10MiB, PDF 100페이지, XLSX 20시트·시트당 10,000행/256열·문서 전체 비어 있지 않은 셀 100,000개, ZIP entry 1,000개·실제 압축 해제 총합 50MiB·개별 entry 10MiB·최대 압축비 100:1, 추출 text/value UTF-8 합계 1MiB, 최종 JSON 4MiB, 문서별 wall time 20초·별도 parser process 메모리 512MiB. 한도 위반은 결과를 잘라 성공하지 않고 typed failure를 반환한다. SDK 호출·압축 해제도 child process 경계 안에 둔다. parent는 timeout/output limit에서 child를 종료·회수하고 temp를 정리한다. Linux Python 3.12가 production parser runtime이며 hard memory 한도를 적용한다. 해당 OS의 메모리 제한을 제공하지 못하면 production entry는 fail-closed한다. Windows 호스트의 library 테스트만으로 Linux 자원 한도를 검증했다고 보고하지 않는다.
+
+**파일 검증:** 암호화/깨진 PDF·XLSX, ZIP 경로 traversal·중복 entry·암호화 entry·DTD/entity 확장·거짓 dimension 또는 실제 초과 좌표·압축 bomb을 거부한다. ZIP metadata의 크기만 믿지 않고 읽으면서 실제 해제 byte를 센다. workbook 순서/relationship을 검증하고, 셀/시트 한도 검사는 dimension이 누락되거나 실제보다 작아도 우회되지 않는다. 원본을 다시 저장하거나 수정하지 않는다. 오류에는 안정적인 원인 code를 반환하며 원문·내부 파일 경로·SDK exception·credential을 결과/로그에 노출하지 않는다.
+
+**3 레이어 필수 계약:** Spring의 API → application → persistence 규칙은 유지하고 controller의 repository/SQL/storage 직접 호출, persistence의 application/API 역의존, domain의 상위 의존을 금지한다. Python에서도 API/CLI/향후 consumer는 입력·출력만, application은 parser 실행 조정·입력 검증·한도/실패 정책, infrastructure는 파일/SDK·process/OS adapter만 담당한다. domain의 순수 산출물/원문 위치 타입은 상위 계층·parser SDK를 참조하지 않는다. composition root에서 port와 adapter를 연결하며 application이 SDK를 직접 import하지 않는다. 이번 범위에는 DB가 없으므로 빈 persistence 모듈이나 자체 lint/architecture 분석 프레임워크를 만들지 않는다. Head는 실제 책임·의존성을 직접 검토하고 개선은 같은 Worker에 하달한다.
+
+**VERIFY/Acceptance Criteria:** 실제 유효한 다중 페이지 PDF(한글/빈/mixed 페이지 포함)와 다중 시트 XLSX(한글·공백·숫자 정밀도·날짜·수식·sparse 셀)에서 값·위치·순서·버전·결정적 결과·원본 byte 불변을 검증한다. 유효 baseline에서 결함 하나를 넣어 checksum/format/암호화/구조/각 한도 위반을 분리한다. 실제 Linux child로 wall timeout·메모리 초과·출력 초과 후 종료/회수·다음 정상 요청 성공을 검증하며 assertion skip/재실행으로 실패를 숨기지 않는다. parser 전체 pytest, 패키지 import/CLI smoke와 명시적 dependency pin/설치 재현이 통과해야 한다. 기존 backend/web 제품 소스를 바꾸지 않았다면 이미 성공한 전체 테스트를 이유 없이 반복하지 않는다. CI job 구성은 추가하되 원격 결과 확인은 사용자 요청대로 후속 항목이다.
+
+**실행/정리:** 현재 root의 사용자 수정 AGENTS/Implement를 worktree에 전달하고 Worker는 해당 두 파일을 stage/commit하지 않는다. cache·venv·TEMP·검증 산출물은 가능한 D 드라이브의 ignored 경로에 두며 실시간 로그·명령 deadline·본인 PID/container/temp 기록·성공/실패 cleanup을 지킨다. C 여유 5GiB 미만에서 큰 Docker 빌드를 시작하지 않는다. Linux 검증에 필요한 작은 공식 Python runtime의 다운로드도 사전 여유/사용량을 확인하고 분리해서 기록하며 서비스 전체 rebuild는 하지 않는다. 진행이 막히면 원인과 실패 명령을 바로 보고하고 무관한 파일/반복 test를 늘리지 않는다. main merge/push는 Head만 수행한다.
+
+**선행/제외:** P2-03. AnalysisRun·RabbitMQ·재시도/DLQ·OCR·LLM/LangGraph·UI·DB migration·기존 업무 상태/증빙/hash 변경은 후속 Ticket이다.
+
+### P2-05 — AnalysisRun과 분석 요청 transactional Outbox
+
+**진행 상태:** 착수 준비(2026-10-03). P2-04를 인수한 다음 비동기 실행의 DB 예약부터 구현한다. RabbitMQ relay·Python consumer·결과 반영은 P2-06에서 연결하고 재시도/DLQ·운영 재처리는 그 다음 Ticket으로 분리한다.
+
+**범위/기준:** `core-api`의 새 `analysis` feature, 제출 application 연결, V12 migration, 설정과 backend 테스트/검증 스크립트만 변경한다. 제품 의미는 `Spec.md` 10.2·14.2를 따른다. 이번에는 기존 `InvoiceCaseStatus`와 제출 응답·승인·대사·canonical evidence/hash를 보존하고 parser나 네트워크를 제출 transaction에서 실행하지 않는다. `analysis.request.enabled` 기본값은 false다. true이며 동결 문서가 있는 제출에만 예약하며, 문서 없는 legacy 제출에는 예약하지 않는다. HTTP endpoint·UI·broker·Python 변경·새 dependency는 제외한다.
+
+**저장 계약:** `analysis_run`은 UUID id, invoiceCaseId, evidenceBundleId, inputVersion(묶음 version), evidencePayloadHash, workflowVersion=`document-parser-v1`, status, createdAt/updatedAt를 저장한다. 이번 상태 전이는 생성 `QUEUED`와 새 증빙 제출에 따른 `STALE`만 구현한다. future 상태를 미리 실행하거나 임의 성공으로 처리하지 않는다. 동일 `(invoiceCaseId,inputVersion,workflowVersion)`는 DB unique로 한 실행만 존재한다. `(evidenceBundleId,invoiceCaseId,inputVersion)` 복합 FK로 동일 사건/묶음/version을 보장한다. 입력 identity/hash/workflow는 생성 후 변경하거나 삭제하지 않는다.
+
+**Outbox 계약:** 지급요청 `payment/outbox_event`와 분리한 `analysis_request_outbox`에 UUID id, analysisRunId(unique FK), schemaVersion=`analysis-request-v1`, immutable JSON payload, status=`READY`, createdAt를 저장한다. 이번 상태는 READY와 STALE 예약의 CANCELLED뿐이며 lease/전송 필드와 relay는 P2-06이 맡는다. payload는 eventId/outbox id, analysisRunId, invoiceCaseId, evidenceBundleId, inputVersion, evidencePayloadHash, workflowVersion, documents를 담는다. documents는 동결된 `DocumentEvidence`의 documentId/sourceDraftRevisionId/fileName/mediaType/sizeBytes/checksum을 documentId 순으로 정렬한 배열이다. 원본 byte, object key, URL, credential, 실행 시각은 넣지 않는다. schema와 payload는 생성 후 수정/삭제하지 않는다. 향후 발행은 publisher confirm과 consumer의 영속화 후 ACK를 구분한다([RabbitMQ 계약](https://www.rabbitmq.com/docs/confirms)); 이번에는 발행하지 않는다.
+
+**application 연결:** `AnalysisRequestService.onEvidenceSubmitted(AnalysisInput)`을 제출의 동결 bundle 저장 직후, 감사·멱등 응답 기록 전에 호출한다. `AnalysisInput`은 위 입력 identity와 immutable document metadata를 갖는 application record다. 서비스는 `MANDATORY`로 기존 제출 transaction에 참여한다. 새 묶음 제출에서는 enable 여부·문서 유무와 관계없이 같은 사건의 낮은 inputVersion 예약을 STALE로 만들고 해당 READY Outbox를 CANCELLED로 만든다. enable=true + 문서 있음이면 새 QUEUED 실행과 READY Outbox를 저장한다. replay는 기존 제출 멱등 응답을 그대로 반환하여 추가 예약하지 않는다. 기존 사건 lock을 유지하며 예약·취소·bundle·audit·idempotency가 모두 commit 또는 rollback된다.
+
+**3 레이어:** 순수 domain은 상태/identity 불변식만 갖는다. application은 enable/문서 유무/버전 교체 판단·payload 정규화·transaction 조정을 소유한다. persistence는 SQL/JPA 저장·동일 사건 FK·unique·불변 입력 보호만 맡고 application/API를 import하지 않는다. `InvoiceCaseWriteService`는 analysis application을 호출하며 analysis persistence를 직접 참조하지 않는다. 새 scanner/lint framework나 빈 계층을 만들지 않는다. 기존 선택과 충돌하면 Head에게 보고한다.
+
+**검증/인수:** 실제 PostgreSQL migration과 submission 통합 테스트로 enabled 문서 제출의 run+Outbox 각 1개, disabled/legacy 예약 0개, 동일 request replay 및 다른 request 동시 제출에서도 중복 예약 없음, 감사 실패 rollback 후 예약 0개와 재시도 성공, 보완 제출의 이전 STALE/READY 취소와 새 예약을 검증한다. 새 제출 실패 시 이전 상태도 rollback되는지 확인한다. 복합 FK 교차 사건/version 실패, unique 충돌과 입력/payload UPDATE·DELETE 거부를 실제 DB에서 검증한다. 문서 배열/hash가 frozen evidence와 일치하며 URL/key/secret가 없는지 확인한다. 기존 문서 제출·보완·승인 focused 회귀 후 backend whole suite와 bootJar를 실행한다. Python/web 전체 테스트나 Compose 전체 빌드는 범위 밖이다. 공통 실행/정리는 `Implement.md`, 결과는 ignored `output/p2-05/`에 기록한다. Worker는 feature commit만, Head가 인수·통합·push한다.
+
 ### Phase 2 후속 실행 순서
 
 P2-01 이후에는 아래 순서로 Ticket 계약을 상세화하며, 한 번에 하나씩 인수한다.
