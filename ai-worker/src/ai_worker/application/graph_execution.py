@@ -18,6 +18,18 @@ from ai_worker.domain.advisory import AdvisoryFailure
 class GraphRequest:
     run_id: str
     context_hash: str
+    event: dict | None = None
+
+    @classmethod
+    def decode_resume(cls, data, message_id, content_type, event_type, encoding):
+        n=keys(strict_json(data,4096),{"schemaVersion","eventId","graphExecutionId","contextHash","workflowVersion","interruptId","reviewId","reviewVersion","checkpointId","checkpointHash"})
+        if (content_type,event_type,encoding)!=("application/json","InvoiceGraphResumeRequested","UTF-8") \
+                or n["schemaVersion"]!="graph-resume-request-v1" or n["workflowVersion"]!=GraphVersions().workflow \
+                or n["eventId"]!=message_id or type(n["reviewVersion"]) is not int or n["reviewVersion"]!=1 \
+                or type(n["interruptId"]) is not str or not 32<=len(n["interruptId"])<=64 \
+                or any(c not in "0123456789abcdef" for c in n["interruptId"]):raise WorkerFailure("INVALID_MESSAGE")
+        uuid(n["eventId"]);uuid(n["reviewId"]);uuid(n["checkpointId"]);digest(n["checkpointHash"])
+        return cls(uuid(n["graphExecutionId"]),digest(n["contextHash"]),n)
 
     @classmethod
     def decode(cls, data, message_id, content_type, event_type, encoding):
@@ -44,6 +56,8 @@ class GraphCore(Protocol):
     def waiting(self, request, token, proof) -> dict: ...
     def complete(self, request, token) -> dict: ...
     def failure(self, request, token, code) -> dict: ...
+    def defer(self, request) -> dict: ...
+    def resume(self, request, token) -> dict: ...
 
 
 class GraphRuntime(Protocol):
@@ -69,12 +83,20 @@ class GraphSession:
         self.model, self.plan, self.stopping = model, plan, stopping
         self.recognizer, self.embedding = recognizer, embedding
         self.monotonic, self.deadline = monotonic, monotonic() + wall_seconds
+        self.resume = None
+        if request.event is not None:
+            self.resume=keys(core.resume(request,token),{"reviewRef","checkpointId","checkpointHash","interruptId","reviewVersion","confirmation"})
+            for key,event_key in (("reviewRef","reviewId"),("checkpointId","checkpointId"),("checkpointHash","checkpointHash"),("interruptId","interruptId"),("reviewVersion","reviewVersion")):
+                if self.resume[key]!=request.event[event_key]:raise WorkerFailure("INVALID_PROTOCOL")
+            if not isinstance(self.resume["confirmation"],dict):raise WorkerFailure("INVALID_PROTOCOL")
         self.ledger = {}
         for saved in core.stages(request, token):
             keys(saved, {"ref", "stage", "hash", "payload"});uuid(saved["ref"]);digest(saved["hash"])
             if saved["stage"] in self.ledger or not isinstance(saved["payload"], dict):raise WorkerFailure("INVALID_PROTOCOL")
             self.ledger[saved["stage"]] = saved
         if len(self.ledger) > 32:raise WorkerFailure("GRAPH_LIMIT")
+        # Restored/resumed graphs may skip the execution node entirely.
+        if "execution" in self.ledger and self.saved("execution") != self.plan:raise AdvisoryFailure("AI_CONFIGURATION")
 
     def active(self):
         if self.stopping():raise WorkerFailure("SHUTTING_DOWN")
@@ -164,8 +186,7 @@ class ProcessGraph:
         if disposition in {"STALE", "ALREADY_FINISHED"}:return
         if disposition == "WAITING_HUMAN":
             self.wait_proof(claim["waiting"]);return
-        # P4-04 supplies durable BUSY deferral. Until then a BUSY delivery stays unacknowledged.
-        if disposition == "BUSY":raise WorkerFailure("GRAPH_BUSY")
+        if disposition == "BUSY":self.durable(self.core.defer(request));return
         if disposition != "CLAIMED":raise WorkerFailure("INVALID_PROTOCOL")
         token=uuid(claim["token"]);require_lease(claim["leaseUntil"])
         try:
@@ -178,9 +199,14 @@ class ProcessGraph:
                 digest(reply["payloadHash"])
             else:raise WorkerFailure("INVALID_PROTOCOL")
         except (AdvisoryFailure, WorkerFailure) as exc:
-            if exc.code not in {"GRAPH_SDK_FAILED", "GRAPH_LIMIT", "AI_CONFIGURATION", "AI_SCHEMA_INVALID", "AI_BUDGET_EXHAUSTED", "AI_INPUT_LIMIT", "AI_TOOL_DENIED", "OCR_CONFIGURATION", "OCR_LIMIT", "OCR_INVALID_RESPONSE", "SOURCE_MISMATCH"}:raise
-            reply=keys(self.core.failure(request,token,exc.code), {"disposition", "runStatus"})
-            if reply != {"disposition":"CHECKPOINTED", "runStatus":"FAILED"}:raise WorkerFailure("INVALID_PROTOCOL")
+            if exc.code in {"LEASE_CONFLICT","STALE_INPUT"}:self.durable(self.core.defer(request));return
+            if exc.code not in {"GRAPH_SDK_FAILED", "GRAPH_LIMIT", "GRAPH_REPEATED_INTERRUPT", "AI_CONFIGURATION", "AI_SCHEMA_INVALID", "AI_BUDGET_EXHAUSTED", "AI_INPUT_LIMIT", "AI_TOOL_DENIED", "OCR_CONFIGURATION", "OCR_LIMIT", "OCR_INVALID_RESPONSE", "SOURCE_MISMATCH", "AI_RATE_LIMIT", "AI_TIMEOUT", "AI_FAILED", "OCR_RATE_LIMIT", "OCR_TIMEOUT", "OCR_FAILED", "CORE_UNAVAILABLE", "CORE_TRANSIENT", "INVALID_PROTOCOL"}:raise
+            self.durable(self.core.failure(request,token,exc.code))
+
+    @staticmethod
+    def durable(reply):
+        keys(reply,{"disposition","runStatus"})
+        if reply["disposition"]!="CHECKPOINTED" or reply["runStatus"] not in {"QUEUED","RUNNING","WAITING_HUMAN","FAILED","STALE","COMPLETED"}:raise WorkerFailure("INVALID_PROTOCOL")
 
     @staticmethod
     def wait_proof(proof):

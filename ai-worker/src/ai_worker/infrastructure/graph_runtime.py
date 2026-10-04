@@ -8,7 +8,7 @@ from typing import TypedDict
 from langgraph.checkpoint.base import BaseCheckpointSaver, CheckpointTuple, WRITES_IDX_MAP
 from langgraph.errors import GraphRecursionError
 from langgraph.graph import StateGraph, START, END
-from langgraph.types import interrupt
+from langgraph.types import interrupt, Command
 
 from ai_worker.application.execution import WorkerFailure, keys, uuid, digest
 from ai_worker.application.graph_contract import GraphVersions
@@ -140,10 +140,24 @@ class LangGraphRuntime:
         config={"configurable":{"thread_id":session.request.run_id,"checkpoint_ns":""},"recursion_limit":32}
         try:
             existing=saver.get_tuple(config)
-            result=graph.invoke(None if existing else {"graphExecutionId":session.request.run_id,"contextHash":session.request.context_hash},
-                                config,durability="sync")
+            incoming=None if existing else {"graphExecutionId":session.request.run_id,"contextHash":session.request.context_hash}
+            if session.resume is not None:
+                if existing is None:raise WorkerFailure("INVALID_PROTOCOL")
+                proof=session.resume
+                original=saver._read(proof["checkpointId"])
+                if original["hash"]!=proof["checkpointHash"]:raise WorkerFailure("INVALID_PROTOCOL")
+                if existing.config["configurable"]["checkpoint_id"]==proof["checkpointId"]:
+                    # A saved __resume__ slot alone does not prove the human task completed.
+                    # Reapply the same immutable command until the exact review output is durable.
+                    if not any(channel=="reviewRef" and value==proof["reviewRef"] for _,channel,value in existing.pending_writes):
+                        incoming=Command(resume={proof["interruptId"]:{"reviewRef":proof["reviewRef"]}})
+                        config=saver._config_id(proof["checkpointId"])|{"recursion_limit":32}
+                    # None + explicit checkpoint_id means SDK time travel. Once the exact
+                    # human output is durable, continue the already-validated current head.
+            result=graph.invoke(incoming,config,durability="sync")
             interruptions=result.get("__interrupt__",())
             if interruptions:
+                if session.resume is not None:raise WorkerFailure("GRAPH_REPEATED_INTERRUPT")
                 if len(interruptions)!=1:raise WorkerFailure("GRAPH_LIMIT")
                 return {"disposition":"WAITING_HUMAN","waiting":saver.waiting(interruptions[0].id)}
             return {"disposition":"FINISHED"}

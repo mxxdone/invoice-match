@@ -725,6 +725,14 @@ JSON schema를 통과한 초안이라도 잘못된 정책 버전이나 금액을
 
 실제 broker·Core·설치된 Linux worker에 응답 유실과 프로세스 중단을 주입해 복구를 확인했다. 결정된 결과를 재생하는 멱등성과 외부 호출의 exactly-once는 서로 다른 보장이다.
 
+## P4-04 — 재개 명령 저장과 사람 노드 완료는 다른 경계다
+
+사람 확인의 resume write가 저장된 뒤 프로세스를 강제 종료하면, lease를 되찾아도 SDK가 사람 노드를 다시 실행할 수 있다. resume 슬롯 존재만으로 노드 완료를 판단하면 확인이 다시 interrupt로 끝난다. 또한 pin한 SDK의 `None + checkpoint_id`는 저장된 현재 작업의 이어가기와 달리 과거 checkpoint 재실행으로 해석된다. 예외로 응답 유실을 흉내 낸 테스트만으로는 실제 SIGKILL의 저장 경계를 충분히 검증하지 못했다.
+
+Core에 불변 확인·소비 identity를 저장하고 정확한 대기 checkpoint에 같은 resume 명령을 다시 적용한다. 정확한 review 출력이 이미 저장됐거나 head가 진행된 경우에는 현재 head에서 이어간다. 성공 단계와 호출 예약은 보존하며, 실제 broker·Core·설치된 Linux worker의 새 프로세스에서 SIGKILL과 lease reclaim 뒤 완료까지 확인했다. 복구 검증은 ACK만이 아니라 최종 결과와 기존 호출·예산의 보존까지 확인해야 한다.
+
+BUSY의 복구 delivery도 한 번 발행됐다는 이유로 재예약을 무시하면 후속 전달이 사라질 수 있다. 같은 실행 token의 defer는 이미 발행된 delivery까지 다시 READY로 만들고 다음 실행 시점을 저장한다. 진행 중인 발행의 옛 finalize는 token fencing으로 막는다. 소비 여부는 확인을 중복 생성하지 않는 기록이며, 아직 완료하지 못한 실행의 복구를 막는 표식으로 사용하지 않는다.
+
 ## 앞으로 추가할 때의 형식
 
 새 사례는 아래 항목을 중심으로 짧게 추가한다.

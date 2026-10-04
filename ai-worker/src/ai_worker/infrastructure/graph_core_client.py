@@ -32,6 +32,9 @@ class GraphCoreClient(ProposalCoreClient):
         if not document and isinstance(reply,list)!=(suffix in {"/writes","/stages/read"}):raise WorkerFailure("INVALID_PROTOCOL")
         return reply
     def stages(self,r,t):return self._call(r,"/stages/read",{"token":t})
+    def claim(self,r):return self._call(r,"/resume/claim",{"event":r.event}) if r.event is not None else self._call(r,"/claim",{})
+    def resume(self,r,t):return self._call(r,"/resume/read",{"token":t,"event":r.event})
+    def defer(self,r):return self._call(r,"/defer",{"segment":"RESUME" if r.event is not None else "START","event":r.event})
     def stage(self,r,t,name,payload):return self._call(r,"/stages",{"token":t,"stage":name,"payload":payload})
     def checkpoint(self,r,t,checkpoint):return self._call(r,"/checkpoints",{"token":t,"checkpoint":checkpoint})
     def read(self,r,t,checkpoint_id=None):

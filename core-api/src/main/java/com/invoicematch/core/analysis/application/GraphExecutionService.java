@@ -40,12 +40,13 @@ public class GraphExecutionService {
     private final RequestIdempotencyStore idempotency;
     private final AuditRecorder audit;
     private final Clock clock;
+    private final com.invoicematch.core.analysis.persistence.GraphDeliveryStore delivery;
     public GraphExecutionService(GraphStore store, ProposalStore inputs, ProposalContextFactory contexts,
             PolicyCatalogStore policies, GraphProperties properties, GraphPayloadValidator validator,
             ObjectMapper mapper, AuthorizationService authorization, RequestIdempotencyStore idempotency,
-            AuditRecorder audit, Clock clock) {
+            AuditRecorder audit, Clock clock,com.invoicematch.core.analysis.persistence.GraphDeliveryStore delivery) {
         this.store=store;this.inputs=inputs;this.contexts=contexts;this.policies=policies;this.properties=properties;
-        this.validator=validator;this.mapper=mapper;this.authorization=authorization;this.idempotency=idempotency;this.audit=audit;this.clock=clock;
+        this.validator=validator;this.mapper=mapper;this.authorization=authorization;this.idempotency=idempotency;this.audit=audit;this.clock=clock;this.delivery=delivery;
     }
     public record Reserved(UUID id, String status, String contextHash) {}
     public record Waiting(String interruptId, UUID checkpointId, String checkpointHash, UUID taskId,
@@ -55,7 +56,7 @@ public class GraphExecutionService {
     public record WriteView(UUID taskId, int index, int version, String previousHash, String hash, String channel, String taskPath, JsonNode payload) {}
     public record CheckpointView(UUID id, UUID parentId, String hash, JsonNode envelope, List<WriteView> writes) {}
 
-    /** Reservation seam for P4-02; no public start route or dispatch until the graph consumer exists. */
+    /** Reserve frozen graph input and its immutable start delivery atomically. */
     @Transactional
     public CommandResult<Reserved> reserve(UUID caseId, ProposalService.ReserveCommand command) {
         authorization.requireRole(Role.OPERATOR);
@@ -79,6 +80,8 @@ public class GraphExecutionService {
         if(existing.isPresent())response=new Reserved(existing.get().id(),existing.get().status(),hash);
         else {
             UUID id=UUID.randomUUID();store.insert(id,caseId,state.version(),source,canonical,hash,properties.costCeiling());
+            delivery.start(id,AnalysisCanonicalJson.canonicalize(mapper.createObjectNode().put("schemaVersion","graph-request-v1")
+                .put("eventId",id.toString()).put("graphExecutionId",id.toString()).put("workflowVersion",GraphRun.WORKFLOW).put("contextHash",hash)));
             response=new Reserved(id,"QUEUED",hash);
             audit.record(new AuditEvent(caseId,actor,AuditAction.AI_ANALYSIS_RESERVED,AuditTargetType.CASE,caseId.toString(),
                     state.version(),null,Map.of("graphExecutionId",id,"workflowVersion",GraphRun.WORKFLOW,"contextHash",hash),command.requestId(),clock.instant()));
@@ -92,9 +95,9 @@ public class GraphExecutionService {
         if(run.terminal())return new Claim("ALREADY_FINISHED",null,null,null,null);
         if(!current(run)) {store.terminal(id,"STALE",null);return new Claim("STALE",null,null,null,null);}
         if(run.status().equals("WAITING_HUMAN"))return new Claim("WAITING_HUMAN",null,null,null,waiting(store.waiting(id).orElseThrow()));
-        // P4-04 must claim a resume using the exact review/checkpoint identity, never a start delivery.
-        if(run.segment().equals("RESUME"))throw conflict("GRAPH_RESUME_NOT_READY");
-        if(run.leaseActive())return new Claim("BUSY",null,run.leaseUntil(),null,null);
+        // Resume ownership is granted only by the exact review/checkpoint claim.
+        if(run.segment().equals("RESUME"))return new Claim("ALREADY_FINISHED",null,null,null,null);
+        if(run.leaseActive() || !delivery.due(id))return new Claim("BUSY",null,run.leaseUntil(),null,null);
         if(run.attempts()>=3) {store.terminal(id,"FAILED","LEASE_EXPIRED");return new Claim("ALREADY_FINISHED",null,null,null,null);}
         UUID token=UUID.randomUUID();Instant until=store.claim(id,token,properties.leaseDuration());
         return new Claim("CLAIMED",token,until,parse(run.context()),null);
@@ -128,7 +131,14 @@ public class GraphExecutionService {
             validator.write(run,command);
             var decoded=validator.decode(command.payload(),0,true);
             if(command.channel().endsWith("StageRef"))reference(id,command.channel(),decoded.asText());
+            else if(command.channel().equals("reviewRef"))reviewReference(id,decoded);
             else references(id,decoded);
+            if(command.channel().equals("__resume__")) {
+                var wait=store.waiting(id).orElseThrow(()->conflict("GRAPH_RESUME_NOT_READY"));
+                if(!run.segment().equals("RESUME") || !command.checkpointId().equals(wait.checkpointId()))throw conflict("GRAPH_RESUME_IDENTITY_MISMATCH");
+                var reply=decoded.isObject()?decoded.path(wait.interruptId()):decoded.path(0);
+                GraphPayloadValidator.keys(reply,"reviewRef");reviewReference(id,reply.get("reviewRef"));
+            }
             if(command.channel().equals("__interrupt__") && !store.stages(id).isEmpty()) {
                 var request=decoded.path(0).path("value");
                 if(!request.has("documentStageRef") || !request.has("mappingStageRef"))throw conflict("GRAPH_STAGE_MISMATCH");
@@ -219,10 +229,14 @@ public class GraphExecutionService {
     private void references(UUID id,JsonNode value) {
         if(value.isObject())value.properties().forEach(e->{
             if(e.getKey().endsWith("StageRef"))reference(id,e.getKey(),e.getValue().asText());
-            else if(e.getKey().equals("reviewRef"))throw conflict("GRAPH_RESUME_NOT_READY");
+            else if(e.getKey().equals("reviewRef"))reviewReference(id,e.getValue());
             else references(id,e.getValue());
         });
         else if(value.isArray())value.forEach(v->references(id,v));
+    }
+    private void reviewReference(UUID id,JsonNode value) {
+        var review=store.review(id).orElseThrow(()->conflict("GRAPH_REVIEW_MISSING"));
+        if(!value.isTextual() || !review.id().toString().equals(value.asText()) || !store.reviewConsumed(id,review.id()))throw conflict("GRAPH_RESUME_IDENTITY_MISMATCH");
     }
     private void reference(UUID id,String key,String ref) {
         String stage=switch(key) {

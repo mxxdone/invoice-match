@@ -76,8 +76,12 @@ public class GraphPayloadValidator {
                 });
             }
             case "__resume__" -> {
-                if(command.index()!=-4 || !value.isArray() || value.size()!=1 || !value.get(0).has("reviewRef"))throw invalid();
-                state(run,value.get(0),false);
+                if(command.index()!=-4 || value.size()!=1)throw invalid();
+                if(value.isArray()) {keys(value.get(0),"reviewRef");state(run,value.get(0),false);}
+                else if(value.isObject()) {
+                    var e=value.properties().iterator().next();if(!e.getKey().matches("[0-9a-f]{32,64}"))throw invalid();
+                    keys(e.getValue(),"reviewRef");state(run,e.getValue(),false);
+                } else throw invalid();
             }
             case "__error__" -> { if(command.index()!=-1 || !value.isTextual() || !value.asText().matches("[A-Z_]{1,64}"))throw invalid(); }
             case "__scheduled__" -> { if(command.index()!=-2 || !value.isBoolean())throw invalid(); }

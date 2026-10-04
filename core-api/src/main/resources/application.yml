@@ -90,6 +90,18 @@ management:
 # enabled with an empty username/password. Lease/attempt times use DB time; the
 # lease always exceeds the bounded single-attempt deadline.
 analysis:
+  graph:
+    enabled: ${ANALYSIS_GRAPH_ENABLED:false}
+    lease-duration: ${ANALYSIS_GRAPH_LEASE_DURATION:120s}
+    cost-ceiling: ${ANALYSIS_GRAPH_COST_CEILING:}
+    relay:
+      enabled: ${ANALYSIS_GRAPH_RELAY_ENABLED:false}
+      rabbit:
+        host: ${ANALYSIS_RABBIT_HOST:localhost}
+        port: ${ANALYSIS_RABBIT_PORT:5672}
+        vhost: ${ANALYSIS_RABBIT_VHOST:/}
+        username: ${ANALYSIS_RABBIT_USERNAME:}
+        password: ${ANALYSIS_RABBIT_PASSWORD:}
   ai:
     enabled: ${ANALYSIS_AI_ENABLED:false}
     lease-duration: ${ANALYSIS_AI_LEASE_DURATION:120s}

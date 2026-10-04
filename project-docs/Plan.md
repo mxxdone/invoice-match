@@ -1,8 +1,8 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 P4-03 완료·P4-04 대기**
+문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 P4-04 완료·P4-05 대기**
 작성일: **2026-09-25**
-최신화: **2026-10-04**
+최신화: **2026-10-05**
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
 실행 방법: [`Implement.md`](./Implement.md)
 
@@ -18,7 +18,7 @@
 | 4 — Human-in-the-loop | 사람 대기와 재개를 안전하게 모델링 | LangGraph checkpoint, mapping interrupt, 새 증빙 재분석, resume 멱등성, stale 차단 | worker/message 점유 없이 정확한 version만 재개·반영 |
 | 5 — 최적화·장애 시연·포트폴리오 | 측정 가능한 개선과 재현 가능한 설명 완성 | 조회·인덱스 실험, 부하·경합·장애 주입, ERP 대사, 관측성, README/ERD/보고서 | 5~7분 시연, Docker Compose 재현, 성능·AI 평가 결과와 trade-off 설명 |
 
-Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4는 P4-00~03을 완료했으며 다음 Ticket은 P4-04다. API 설정 없이도 격리 provider fixture로 내구성 구현·검증을 진행할 수 있지만 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 착수 검토 때 상세화한다.
+Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4는 P4-00~04를 완료했으며 다음 Ticket은 P4-05다. API 설정 없이도 격리 provider fixture로 내구성 구현·검증을 진행할 수 있지만 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 착수 검토 때 상세화한다.
 
 ### 후속 설계 결정·보류 (2026-10-01)
 
@@ -247,11 +247,7 @@ Phase 4는 **P4-00~P4-07**을 Head가 순차 구현한다. 기존 Spec 8.3·14�
 
 ### P4-04 — resume relay·consumer·제한 복구
 
-**상태: 계획.** 의존: P4-02~03. 기존 bounded Rabbit publisher와 recovery 방식을 재사용하되 graph 시작/resume 이벤트를 workflow별 allowlist로 분리한다. resume 메시지는 불변 실행/interrupt/review/checkpoint identity만 전달하고 사람 payload는 인증된 Core에서 읽는다. v1 parser/proposal queue가 resume 이벤트를 처리하지 못하게 한다.
-
-claim은 case → graph/interrupt/dispatch 잠금 순서를 고정하고 currentness·reviewVersion·resume 소비 여부를 재확인한다. 해당 thread와 checkpoint로만 `Command(resume=...)`를 호출한다. busy 중복은 durable defer 후 ACK하며 완료·stale·이미 소비된 이벤트는 저장된 proof로 ACK한다. 네트워크/429/일시 실패는 구간 3회 안에서 복구하고 인증·schema·예산 오류는 영속 실패로 끝낸다. SDK 자동 retry와 broker retry를 겹쳐 외부 호출 수를 숨기지 않는다.
-
-인수: 실제 broker confirm 후 finalize 전 종료, 동일 event 중복/역순, resume 저장 응답 유실, worker kill/lease reclaim, 429·인증 실패·소진, old token fencing, 성공 checkpoint 재사용, 대기 시간/재시작 뒤 누적 예산 유지. ACK 전 durable proof와 confirm 실패 시 delivery 보존을 확인한다.
+**상태: 완료.** 시작/resume 전용 relay·consumer, 정확한 불변 identity의 재개와 ACK 전 durable 복구 책임 저장을 인수했다. 후속 진입점은 Core `GraphDeliveryService`·`GraphDeliveryStore`, worker `ProcessGraph`·`LangGraphRuntime`과 graph Compose profile이다. 사람 payload는 인증된 Core에서 읽으며 구간별 제한 재시도와 누적 예산을 유지한다. 정확한 대기 checkpoint에 재개 명령을 적용하고, 이미 저장된 사람 노드 출력은 현재 head에서 이어가 SDK의 과거 checkpoint 재실행을 피한다. 기본 비활성을 유지하며 업무 변경과 successor 연결은 P4-05에서 수행한다.
 
 ### P4-05 — 매핑·보완 successor와 stale 경합
 

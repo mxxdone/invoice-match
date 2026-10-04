@@ -133,6 +133,14 @@ public class GraphStore {
     public void queueResume(UUID id) {
         jdbc.update("update graph_run set status='QUEUED',active_segment='RESUME',updated_at=clock_timestamp() where id=?",id);
     }
+    public record Review(UUID id,String confirmation,String hash,String actor,String reason) {}
+    public Optional<Review> review(UUID id) {
+        return jdbc.query("select * from graph_review where run_id=?",(rs,n)->new Review(rs.getObject("id",UUID.class),
+            rs.getString("confirmation"),rs.getString("confirmation_hash"),rs.getString("actor"),rs.getString("reason")),id).stream().findFirst();
+    }
+    public boolean reviewConsumed(UUID id,UUID review) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("select exists(select 1 from graph_resume_consumption where run_id=? and review_id=?)",Boolean.class,id,review));
+    }
     /** Validation input only: does not create or mutate any v1 execution. */
     public com.invoicematch.core.analysis.domain.ProposalRun advisoryInput(UUID id) {
         return jdbc.queryForObject("select *,lease_until>clock_timestamp() lease_active from graph_run where id=?",(rs,n)->

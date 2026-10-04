@@ -55,6 +55,17 @@ def consume() -> None:
 
 
 def consume_proposals() -> None:
+    _consume_advisory(None)
+
+
+def consume_graphs(segment: str) -> None:
+    if segment not in {"start","resume"}:
+        from ai_worker.application.execution import WorkerFailure
+        raise WorkerFailure("INVALID_CONFIGURATION")
+    _consume_advisory(segment)
+
+
+def _consume_advisory(graph_segment) -> None:
     from ai_worker.application.execution import WorkerFailure
     from ai_worker.application.proposal_execution import ProcessProposal, ProposalRequest, execution_plan
     from ai_worker.application.recognition import RecognizeInvoice
@@ -68,13 +79,16 @@ def consume_proposals() -> None:
         value=os.environ.get(name,"")
         if not value or any(ord(c)<32 for c in value):raise WorkerFailure("INVALID_CONFIGURATION")
         return value
-    if os.environ.get("ANALYSIS_AI_ENABLED")!="true":raise WorkerFailure("INVALID_CONFIGURATION")
+    if os.environ.get("ANALYSIS_GRAPH_ENABLED" if graph_segment else "ANALYSIS_AI_ENABLED")!="true":raise WorkerFailure("INVALID_CONFIGURATION")
     try:
         url,model=required("AI_MODEL_URL"),required("AI_MODEL_NAME")
         parameter=os.environ.get("AI_MODEL_TOKEN_PARAMETER","max_completion_tokens")
         plan=execution_plan(url,model,required("AI_INPUT_PRICE_PER_MILLION"),required("AI_OUTPUT_PRICE_PER_MILLION"),required("AI_COST_CURRENCY"),required("AI_COST_CEILING"),parameter)
         adapter=ChatStructuredModel(url,required("AI_MODEL_KEY"),model,token_parameter=parameter,api_key_header=os.environ.get("AI_MODEL_API_KEY_HEADER")=="true")
-        core=ProposalCoreClient(required("CORE_API_URL"),required("ANALYSIS_WORKER_TOKEN"))
+        if graph_segment:
+            from ai_worker.infrastructure.graph_core_client import GraphCoreClient
+            core=GraphCoreClient(required("CORE_API_URL"),required("ANALYSIS_WORKER_TOKEN"))
+        else:core=ProposalCoreClient(required("CORE_API_URL"),required("ANALYSIS_WORKER_TOKEN"))
         embedding=None
         if any(os.environ.get(n) for n in ("AI_EMBEDDING_URL","AI_EMBEDDING_KEY","AI_EMBEDDING_MODEL","AI_EMBEDDING_VERSION","AI_EMBEDDING_DIMENSION","AI_EMBEDDING_PRICE_PER_MILLION")):
             from ai_worker.infrastructure.embedding_model import EmbeddingModel
@@ -92,14 +106,19 @@ def consume_proposals() -> None:
             "vhost":os.environ.get("ANALYSIS_RABBIT_VHOST","/"),"username":required("ANALYSIS_RABBIT_USERNAME"),"password":required("ANALYSIS_RABBIT_PASSWORD"),
             "exchange":"invoice.proposal","queue":"invoice.proposal.requests","routing_key":"ai-review-v1"}
         if not 1<=int(settings["port"])<=65535:raise WorkerFailure("INVALID_CONFIGURATION")
-        RabbitConsumer(ProcessProposal(core,adapter,plan,recognizer,embedding),settings,ProposalRequest.decode).run()
+        if graph_segment:
+            from ai_worker.application.graph_execution import GraphRequest
+            settings.update(exchange="invoice.graph",queue="invoice.graph."+graph_segment,routing_key="ai-review-v2."+graph_segment)
+            RabbitConsumer(build_graph_processor(core,adapter,plan,recognizer,embedding),settings,
+                GraphRequest.decode if graph_segment=="start" else GraphRequest.decode_resume).run()
+        else:RabbitConsumer(ProcessProposal(core,adapter,plan,recognizer,embedding),settings,ProposalRequest.decode).run()
     except AdvisoryFailure as exc:raise WorkerFailure(exc.code) from exc
     except WorkerFailure:raise
     except Exception as exc:raise WorkerFailure("WORKER_FAILED") from exc
 
 
 def build_graph_processor(core, model, plan, recognizer=None, embedding=None):
-    """Graph construction seam. Production dispatch/recovery is connected in P4-04."""
+    """SDK construction belongs to the composition root."""
     from ai_worker.application.graph_execution import ProcessGraph
     from ai_worker.infrastructure.graph_runtime import LangGraphRuntime
     return ProcessGraph(core, LangGraphRuntime(), model, plan, recognizer, embedding)

@@ -6,11 +6,14 @@ services:
     environment:
       ANALYSIS_AI_ENABLED: ${ANALYSIS_AI_ENABLED:-false}
       ANALYSIS_AI_RELAY_ENABLED: ${ANALYSIS_AI_ENABLED:-false}
-  proposal-worker:
+      ANALYSIS_GRAPH_ENABLED: ${ANALYSIS_GRAPH_ENABLED:-false}
+      ANALYSIS_GRAPH_RELAY_ENABLED: ${ANALYSIS_GRAPH_ENABLED:-false}
+      ANALYSIS_GRAPH_COST_CEILING: ${AI_COST_CEILING:-}
+  proposal-worker: &advisory-worker
     profiles: [ai]
     build: ./ai-worker
     command: ["ai-worker", "consume-proposals"]
-    environment:
+    environment: &advisory-environment
       ANALYSIS_AI_ENABLED: ${ANALYSIS_AI_ENABLED:-false}
       CORE_API_URL: http://core-api:8080
       ANALYSIS_WORKER_TOKEN: ${ANALYSIS_WORKER_TOKEN:-}
@@ -42,3 +45,13 @@ services:
         condition: service_healthy
     stop_grace_period: 60s
     restart: "on-failure:3"
+  graph-start-worker: &graph-worker
+    <<: *advisory-worker
+    profiles: [graph]
+    command: ["ai-worker", "consume-graphs", "start"]
+    environment:
+      <<: *advisory-environment
+      ANALYSIS_GRAPH_ENABLED: ${ANALYSIS_GRAPH_ENABLED:-false}
+  graph-resume-worker:
+    <<: *graph-worker
+    command: ["ai-worker", "consume-graphs", "resume"]

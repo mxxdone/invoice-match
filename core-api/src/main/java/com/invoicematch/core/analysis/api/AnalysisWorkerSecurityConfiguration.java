@@ -69,6 +69,7 @@ public class AnalysisWorkerSecurityConfiguration {
                             "/internal/proposal-runs/*/policies","/internal/proposal-runs/*/documents/*/source")
                         .hasAuthority(AnalysisWorkerAuthenticator.AUTHORITY)
                         .requestMatchers(HttpMethod.POST,"/internal/graph-runs/*/claim","/internal/graph-runs/*/heartbeat",
+                            "/internal/graph-runs/*/resume/claim","/internal/graph-runs/*/resume/read","/internal/graph-runs/*/defer",
                             "/internal/graph-runs/*/checkpoints","/internal/graph-runs/*/checkpoints/read",
                             "/internal/graph-runs/*/writes","/internal/graph-runs/*/waiting",
                             "/internal/graph-runs/*/stages","/internal/graph-runs/*/stages/read","/internal/graph-runs/*/calls",

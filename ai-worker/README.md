@@ -13,9 +13,9 @@ and policy evidence. Live provider quality remains unmeasured until APIs are con
 The Phase 4 graph runtime is pinned, with a closed JSON checkpoint codec and
 version gate. The infrastructure adapter uses Core stage references and durable
 checkpoints, returning from a human interrupt only after Core confirms its wait proof.
-Core human reviews atomically reserve immutable resume events. SDK resume and
-production consumer dispatch are subsequent tickets;
-there is no graph start/resume command yet. The workflow and persistence contract is in
+Core human reviews atomically reserve immutable resume events. Separate graph
+consumers dispatch starts and resume the exact confirmed checkpoint, preserving
+successful stages and cumulative budgets. The workflow and persistence contract is in
 [Spec 8.3](../project-docs/Spec.md#83-langgraph-상태).
 
 ## Consumer
@@ -111,3 +111,14 @@ warnings. PDF pages are 1-based with extracted text; XLSX sheets follow
 workbook order with 1-based sheet/row/column and cell coordinate, original
 value and type. No timestamp or random id is emitted, so identical bytes and
 metadata produce identical JSON.
+
+## Opt-in graph execution
+
+The graph workflow uses separate `consume-graphs start` and `consume-graphs resume`
+Linux consumers. Both fail closed unless `ANALYSIS_GRAPH_ENABLED=true`; Core also
+requires an explicit `ANALYSIS_GRAPH_COST_CEILING` and the separate relay switch.
+With the existing analysis/storage/documents and AI Compose overlays, enable the
+`graph` profile and set `AI_COST_CEILING` for the shared frozen provider plan.
+The graph profile leaves the v1 advisory consumer independently configurable.
+Start and resume queues are isolated on the graph exchange. Human confirmation
+stays in Core; the resume consumer reads it with the machine credential.

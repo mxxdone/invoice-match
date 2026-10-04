@@ -76,21 +76,23 @@ public class GraphStageService {
     }
     @Transactional public GraphStore.Result complete(UUID id,String hash,UUID token) {
         var run=execution.lock(id,hash);execution.active(run,token);
-        if(!run.segment().equals("START"))throw GraphExecutionService.conflict("GRAPH_RESUME_NOT_READY");
         var input=store.advisoryInput(id);var steps=store.validationSteps(id);
-        if(!humanReasons(steps).isEmpty())throw GraphExecutionService.conflict("GRAPH_HUMAN_REQUIRED");
+        if(run.segment().equals("START") && !humanReasons(steps).isEmpty())throw GraphExecutionService.conflict("GRAPH_HUMAN_REQUIRED");
         var assembled=assembler.assemble(input,steps);
         var result=(com.fasterxml.jackson.databind.node.ObjectNode)parse(assembled.canonical());
         result.put("schemaVersion","advisory-proposal-v2").put("graphVersion",com.invoicematch.core.analysis.domain.GraphRun.GRAPH);
+        if(run.segment().equals("RESUME")) {
+            var review=store.review(id).orElseThrow(()->GraphExecutionService.conflict("GRAPH_REVIEW_MISSING"));
+            var checkpoint=store.latest(id).orElseThrow(()->GraphExecutionService.conflict("GRAPH_CHECKPOINT_MISSING"));
+            var values=new GraphPayloadValidator(mapper).decode(parse(checkpoint.envelope()).path("body"),0,false).path("channel_values");
+            if(!store.reviewConsumed(id,review.id()) || !values.path("reviewRef").asText().equals(review.id().toString())
+                || !values.has("resolutionStageRef"))throw GraphExecutionService.conflict("GRAPH_RESUME_NOT_READY");
+            result.set("humanReview",mapper.createObjectNode().put("reviewId",review.id().toString()).put("confirmationHash",review.hash())
+                .set("confirmation",parse(review.confirmation())));
+        }
         String canonical=AnalysisCanonicalJson.canonicalize(result);
         bounded(canonical);store.complete(id,canonical,AnalysisCanonicalJson.sha256Hex(canonical),token);
         return store.result(id).orElseThrow();
-    }
-    @Transactional public String failure(UUID id,String hash,UUID token,String code) {
-        active(id,hash,token);
-        if(!Set.of("GRAPH_SDK_FAILED","GRAPH_LIMIT","AI_CONFIGURATION","AI_SCHEMA_INVALID","AI_BUDGET_EXHAUSTED","AI_INPUT_LIMIT",
-            "AI_TOOL_DENIED","OCR_CONFIGURATION","OCR_LIMIT","OCR_INVALID_RESPONSE","SOURCE_MISMATCH").contains(code))throw GraphPayloadValidator.invalid();
-        store.terminal(id,"FAILED",code);return "FAILED";
     }
     static Set<String> humanReasons(List<ProposalStore.Step> steps) {
         var result=new java.util.TreeSet<String>();var mapper=new ObjectMapper();

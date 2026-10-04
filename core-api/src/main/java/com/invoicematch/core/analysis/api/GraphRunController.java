@@ -21,9 +21,10 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/internal/graph-runs")
 public class GraphRunController {
     private final GraphExecutionService execution;
+    private final com.invoicematch.core.analysis.application.GraphDeliveryService delivery;
     private final com.invoicematch.core.analysis.application.GraphStageService stages;
     private final com.invoicematch.core.analysis.application.GraphSourceService sources;
-    public GraphRunController(GraphExecutionService execution,com.invoicematch.core.analysis.application.GraphStageService stages,com.invoicematch.core.analysis.application.GraphSourceService sources) { this.execution=execution;this.stages=stages;this.sources=sources; }
+    public GraphRunController(GraphExecutionService execution,com.invoicematch.core.analysis.application.GraphStageService stages,com.invoicematch.core.analysis.application.GraphSourceService sources,com.invoicematch.core.analysis.application.GraphDeliveryService delivery) { this.execution=execution;this.stages=stages;this.sources=sources;this.delivery=delivery; }
 
     @PostMapping("/{id}/stages/read") public ResponseEntity<Object> stages(@PathVariable UUID id,@RequestBody JsonNode n) {
         GraphPayloadValidator.keys(n,"contextHash","token");return ok(stages.read(id,hash(n),uuid(n,"token")));
@@ -61,7 +62,7 @@ public class GraphRunController {
     }
     @PostMapping("/{id}/failures") public ResponseEntity<Object> failure(@PathVariable UUID id,@RequestBody JsonNode n) {
         GraphPayloadValidator.keys(n,"contextHash","token","errorCode");
-        return ok(Map.of("disposition","CHECKPOINTED","runStatus",stages.failure(id,hash(n),uuid(n,"token"),text(n,"errorCode"))));
+        return ok(delivery.failure(id,hash(n),uuid(n,"token"),text(n,"errorCode")));
     }
 
     @PostMapping("/{id}/documents/{documentId}/source") public ResponseEntity<byte[]> source(@PathVariable UUID id,@PathVariable UUID documentId,@RequestBody JsonNode n) {
@@ -71,6 +72,17 @@ public class GraphRunController {
     }
     @PostMapping("/{id}/claim") public ResponseEntity<Object> claim(@PathVariable UUID id,@RequestBody JsonNode n) {
         GraphPayloadValidator.keys(n,"contextHash");return ok(execution.claim(id,hash(n)));
+    }
+    @PostMapping("/{id}/resume/claim") public ResponseEntity<Object> claimResume(@PathVariable UUID id,@RequestBody JsonNode n) {
+        GraphPayloadValidator.keys(n,"contextHash","event");return ok(delivery.claimResume(id,hash(n),n.get("event")));
+    }
+    @PostMapping("/{id}/resume/read") public ResponseEntity<Object> resume(@PathVariable UUID id,@RequestBody JsonNode n) {
+        GraphPayloadValidator.keys(n,"contextHash","token","event");return ok(delivery.resume(id,hash(n),uuid(n,"token"),n.get("event")));
+    }
+    @PostMapping("/{id}/defer") public ResponseEntity<Object> defer(@PathVariable UUID id,@RequestBody JsonNode n) {
+        GraphPayloadValidator.keys(n,"contextHash","segment","event");
+        if(!text(n,"segment").equals("START") && n.path("event").isNull())throw invalid();
+        return ok(delivery.defer(id,hash(n),text(n,"segment"),n.get("event").isNull()?null:n.get("event")));
     }
     @PostMapping("/{id}/heartbeat") public ResponseEntity<Object> heartbeat(@PathVariable UUID id,@RequestBody JsonNode n) {
         GraphPayloadValidator.keys(n,"contextHash","token");return ok(Map.of("leaseUntil",execution.heartbeat(id,hash(n),uuid(n,"token"))));

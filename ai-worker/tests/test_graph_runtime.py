@@ -80,7 +80,9 @@ class Core:
         if self.lost=="waiting":self.lost=None;raise WorkerFailure("CORE_UNAVAILABLE")
         return self.data["waiting"]
     def complete(self,r,t):self.data["status"]="COMPLETED";self.persist();return {"disposition":"COMPLETED","proposalId":r.run_id,"payloadHash":"d"*64}
-    def failure(self,r,t,code):self.data["failures"].append(code);self.data["status"]="FAILED";self.persist();return {"disposition":"CHECKPOINTED","runStatus":"FAILED"}
+    def failure(self,r,t,code):
+        if code=="CORE_UNAVAILABLE":raise WorkerFailure(code)  # Recovery API unavailable: ACK remains forbidden.
+        self.data["failures"].append(code);self.data["status"]="FAILED";self.persist();return {"disposition":"CHECKPOINTED","runStatus":"FAILED"}
 
 
 class Model:

@@ -94,7 +94,13 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
         this(properties,EVENT_TYPE);
     }
     public RabbitAnalysisRequestPublisher(AnalysisRelayProperties properties,String eventType) {
-        if(!java.util.Set.of(EVENT_TYPE,"InvoiceProposalRequested").contains(eventType)) throw new IllegalArgumentException("Unsupported analysis event type");
+        if(!java.util.Set.of(EVENT_TYPE,"InvoiceProposalRequested","InvoiceGraphRequested","InvoiceGraphResumeRequested").contains(eventType)) throw new IllegalArgumentException("Unsupported analysis event type");
+        if(eventType.equals("InvoiceGraphRequested") || eventType.equals("InvoiceGraphResumeRequested")) {
+            String segment=eventType.equals("InvoiceGraphRequested")?"start":"resume";
+            var rabbit=properties.rabbit();
+            if(!rabbit.exchange().equals("invoice.graph") || !rabbit.queue().equals("invoice.graph."+segment)
+                || !rabbit.routingKey().equals("ai-review-v2."+segment))throw new IllegalArgumentException("Graph event requires isolated graph topology");
+        }
         this.properties = properties;this.eventType=eventType;
     }
 
