@@ -1,0 +1,7 @@
+# Opt-in pgvector host. Use a fresh project/volume; never replace a demo DB implicitly.
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.6-pg18-bookworm
+  core-api:
+    environment:
+      ANALYSIS_AI_ENABLED: ${ANALYSIS_AI_ENABLED:-false}

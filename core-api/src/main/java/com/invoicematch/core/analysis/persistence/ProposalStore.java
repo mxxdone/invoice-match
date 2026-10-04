@@ -21,7 +21,7 @@ public class ProposalStore {
             String bundlePayload, String matchHash, String matchPayload, String purchasingHash,
             Instant submittedAt) {}
     public record Parsed(UUID documentId, String checksum, String payloadHash, String payload) {}
-    public record Item(String itemId, String itemName, String purchaseOrderLineId) {}
+    public record Item(String itemId, String itemName, String purchaseOrderLineId, int orderedQuantity, long unitPrice) {}
     public record Step(String stage, String hash, String payload) {}
     public record Saved(UUID id, UUID caseId, UUID bundleId, UUID matchId, String contextHash,
             String payloadHash, String payload) {}
@@ -56,10 +56,10 @@ public class ProposalStore {
                 rs.getObject(1,UUID.class),rs.getString(2),rs.getString(3),rs.getString(4)),parserRunId);
     }
     public List<Item> items(UUID caseId) {
-        return jdbc.query("select l.item_id,l.item_name,l.purchase_order_line_id from invoice_case c"
+        return jdbc.query("select l.item_id,l.item_name,l.purchase_order_line_id,l.ordered_quantity,l.unit_price from invoice_case c"
                 + " join purchase_order_line_snapshot l on l.purchase_order_id=c.purchase_order_id"
                 + " where c.id=? and l.active order by l.purchase_order_line_id limit 101",
-                (rs,n)->new Item(rs.getString(1),rs.getString(2),rs.getString(3)),caseId);
+                (rs,n)->new Item(rs.getString(1),rs.getString(2),rs.getString(3),rs.getInt(4),rs.getLong(5)),caseId);
     }
     public Optional<UUID> existing(UUID parser, UUID match) {
         return jdbc.query("select id from proposal_run where parser_run_id=? and match_result_id=?"

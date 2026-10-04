@@ -16,9 +16,11 @@ public class ProposalContextFactory {
     private final AnalysisManifestVerifier manifest;
     private final AnalysisResultValidator validator;
     private final ObjectMapper mapper;
+    private final com.invoicematch.core.analysis.persistence.PolicyCatalogStore policies;
     public ProposalContextFactory(ProposalStore store, AnalysisExecutionStore parserRuns,
-            AnalysisManifestVerifier manifest, AnalysisResultValidator validator, ObjectMapper mapper) {
-        this.store=store; this.parserRuns=parserRuns; this.manifest=manifest; this.validator=validator; this.mapper=mapper;
+            AnalysisManifestVerifier manifest, AnalysisResultValidator validator, ObjectMapper mapper,
+            com.invoicematch.core.analysis.persistence.PolicyCatalogStore policies) {
+        this.store=store; this.parserRuns=parserRuns; this.manifest=manifest; this.validator=validator; this.mapper=mapper; this.policies=policies;
     }
     public ObjectNode create(UUID caseId, ProposalStore.Source source) {
         var run=parserRuns.lockByRunId(source.parserRunId()).orElseThrow(()->conflict());
@@ -48,6 +50,11 @@ public class ProposalContextFactory {
         var items=store.items(caseId);
         if(items.size()>100) throw new AnalysisValidationException("AI_INPUT_LIMIT","Too many purchase order candidates");
         root.set("items",mapper.valueToTree(items));
+        policies.lockScopeRead(match.path("purchaseOrderId").asText());
+        var policyDocuments=policies.scope("company-demo",match.path("supplierId").asText(),match.path("purchaseOrderId").asText(),
+                java.time.LocalDate.parse(root.path("applicableDate").asText()));
+        if(policyDocuments.size()>20) throw new AnalysisValidationException("AI_INPUT_LIMIT","Too many applicable policy documents");
+        root.set("policyDocuments",mapper.valueToTree(policyDocuments));
         if(AnalysisCanonicalJson.canonicalize(root).getBytes(StandardCharsets.UTF_8).length>200000)
             throw new AnalysisValidationException("AI_INPUT_LIMIT","Frozen analysis context exceeds the limit");
         return root;

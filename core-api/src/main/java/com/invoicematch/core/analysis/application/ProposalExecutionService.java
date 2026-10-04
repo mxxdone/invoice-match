@@ -15,14 +15,15 @@ public class ProposalExecutionService {
     private final ProposalStore store;
     private final ProposalProperties properties;
     private final ProposalStageValidator stages;
-    public ProposalExecutionService(ProposalStore store,ProposalProperties properties,ProposalStageValidator stages) {
-        this.store=store;this.properties=properties;this.stages=stages;
+    private final ProposalCurrentness currentness;
+    public ProposalExecutionService(ProposalStore store,ProposalProperties properties,ProposalStageValidator stages,ProposalCurrentness currentness) {
+        this.store=store;this.properties=properties;this.stages=stages;this.currentness=currentness;
     }
     public record Claim(String disposition, UUID token, Instant leaseUntil, String context, List<ProposalStore.Step> steps) {}
     @Transactional
     public Claim claim(UUID id, String contextHash) {
         var run=lock(id,contextHash);
-        if(!store.current(run)) { store.stale(id);return new Claim("STALE",null,null,null,List.of()); }
+        if(!currentness.currentLocked(run)) { store.stale(id);return new Claim("STALE",null,null,null,List.of()); }
         if(java.util.Set.of("COMPLETED","FAILED","STALE").contains(run.status()))
             return new Claim("ALREADY_FINISHED",null,null,null,List.of());
         if((run.status().equals("RUNNING") && run.leaseActive()) || !run.due())
@@ -52,7 +53,7 @@ public class ProposalExecutionService {
     @Transactional
     public ProposalRun active(UUID id,String hash,UUID token) {
         var run=lock(id,hash);
-        if(!store.current(run)) throw conflict("STALE_INPUT");
+        if(!currentness.currentLocked(run)) throw conflict("STALE_INPUT");
         if(!run.status().equals("RUNNING") || !run.leaseActive() || token==null || !token.equals(run.executionToken()))
             throw conflict("LEASE_CONFLICT");
         return run;
@@ -60,7 +61,7 @@ public class ProposalExecutionService {
     @Transactional
     public String checkpoint(UUID id,String hash,UUID token,String stage,JsonNode payload) {
         var run=lock(id,hash);
-        if(!store.current(run)) { store.stale(id);return "STALE"; }
+        if(!currentness.currentLocked(run)) { store.stale(id);return "STALE"; }
         var checkpoints=store.steps(id);
         stages.validate(stage,payload,run,checkpoints);
         String canonical=AnalysisCanonicalJson.canonicalize(payload);

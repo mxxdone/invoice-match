@@ -28,7 +28,9 @@ import org.testcontainers.containers.PostgreSQLContainer;
 public abstract class AbstractPostgresIntegrationTest {
 
     private static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>("postgres:18-alpine").withCommand("postgres", "-c", "max_connections=400");
+            new PostgreSQLContainer<>(org.testcontainers.utility.DockerImageName.parse(
+                    System.getenv().getOrDefault("INVOICE_MATCH_TEST_POSTGRES_IMAGE","postgres:18-alpine"))
+                    .asCompatibleSubstituteFor("postgres")).withCommand("postgres", "-c", "max_connections=400");
 
     static {
         POSTGRES.start();

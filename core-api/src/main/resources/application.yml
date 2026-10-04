@@ -90,6 +90,9 @@ management:
 # enabled with an empty username/password. Lease/attempt times use DB time; the
 # lease always exceeds the bounded single-attempt deadline.
 analysis:
+  ai:
+    enabled: ${ANALYSIS_AI_ENABLED:false}
+    lease-duration: ${ANALYSIS_AI_LEASE_DURATION:120s}
   request:
     enabled: ${ANALYSIS_REQUEST_ENABLED:false}
   # P2-07 machine worker surface and execution lease.

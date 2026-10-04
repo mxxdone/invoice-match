@@ -1,6 +1,6 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 완료 · Phase 3 착수 · 현재 Ticket P3-03**
+문서 상태: **Phase 2 완료 · Phase 3 착수 · 현재 Ticket P3-05**
 작성일: **2026-09-25**
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
 실행 방법: [`Implement.md`](./Implement.md)
@@ -176,19 +176,15 @@ Phase 3는 **P3-00~P3-09**를 Head가 순차 구현한다. Spec 8·9·18·24.3�
 
 ### P3-03 — 사건 범위 읽기 전용 Tool
 
-**상태: 진행 중.** 사건에 연결된 발주·확정 검수·품목 후보·동일 공급사의 확정 매핑·계약 metadata를 제공한다. scope는 서버 context에서 파생하고 모델이 전달한 임의 사건/발주/공급사로 바꾸지 않는다. 결과 개수·문자 수·호출 수를 제한하고 사용자·비밀·저장소 key를 제외한다. deterministic matching 실행·승인·지급 쓰기는 노출하지 않는다.
-
-인수: 기계 인증/사람 권한 분리, 다른 사건/공급사 차단, stale context 차단, bounded 결과와 쓰기 Tool 부재.
+**상태: 완료.** `ProposalToolService`가 동결된 사건 자료와 승인된 과거 매핑만 제공하며 요청별 결과·호출 예산을 보존한다. 계약 metadata는 P3-04의 적용 scope를 사용한다. 기계 endpoint·인증 연결은 P3-07에서 이어간다.
 
 ### P3-04 — 정책 catalog와 exact pgvector hybrid 검색
 
-**상태: 예정.** 가상 계약/지침의 immutable 문서 version·유효 기간·페이지/문단과 계약 연결을 저장한다. 권한 있는 ingestion에서 chunk와 embedding model/version/dimension을 기록하고 검색 model과 일치시킨다. scope 필터 후 lexical + exact vector를 결합한다. 기존 일반 PostgreSQL/P2 실행은 AI 비활성 상태로 계속 동작하며 pgvector는 opt-in 구성과 실제 vector DB 검증을 둔다. HNSW/reranker/Redis는 측정 근거 없이 추가하지 않는다.
-
-인수: 실제 pgvector에서 회사·공급사·계약·유효일·version 필터, model/dimension 불일치, 동률 순서, top-k 제한, lexical/vector/hybrid 기준선. 근거 없음과 충돌을 별도로 반환한다.
+**상태: 완료.** 권한 있는 immutable catalog 등록과 회사·공급사·발주·유효일·최신 버전·읽기 권한을 적용한 lexical/exact vector/hybrid 검색을 인수했다. `PolicyCatalogService`, `PolicySearchService`, `ProposalCurrentness`가 후속 진입점이다. 명시적 허용/금지 metadata 충돌과 근거 없음을 구분하며 본문 의미 충돌은 Evidence/Resolution에서 검토한다. 모델/version/dimension과 정책 version을 입력에 묶고 scope publication 경합을 잠금으로 직렬화한다. 실제 pgvector와 일반 PostgreSQL의 AI-off 회귀를 검증했으며 실제 embedding 품질 평가는 P3-09에서 수행한다.
 
 ### P3-05 — Item Mapping Agent
 
-**상태: 예정.** 원문 품목과 읽기 전용 품목/과거 확정 매핑을 사용해 최대 3개 후보·이유·출처를 제시한다. 반환 ID는 서버가 제공한 후보에 속해야 하며 A3/A4·규격 차이와 복수 후보는 검토를 요구한다. confidence를 확정 권한으로 사용하지 않는다.
+**상태: 진행 중.** 원문 품목과 읽기 전용 품목/과거 확정 매핑을 사용해 최대 3개 후보·이유·출처를 제시한다. 반환 ID는 서버가 제공한 후보에 속해야 하며 A3/A4·규격 차이와 복수 후보는 검토를 요구한다. confidence를 확정 권한으로 사용하지 않는다.
 
 인수: 별칭·한국어·규격 혼동·없는 품목·과거 공급사 범위·모호함·후보 없음과 Recall@1/3 evaluator.
 

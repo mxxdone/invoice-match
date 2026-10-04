@@ -47,6 +47,8 @@ docker compose -f compose.yaml -f compose.storage.yaml -f compose.documents.yaml
 
 문서 비동기 파싱은 `.env`의 `ANALYSIS_RABBIT_USERNAME`, `ANALYSIS_RABBIT_PASSWORD`, 32자 이상의 `ANALYSIS_WORKER_TOKEN`을 설정하고 기존 세 Compose 파일에 `-f compose.analysis.yaml`을 추가해 실행한다. worker는 Linux에서 실행하며 저장소 secret을 받지 않는다. 일시적 장애는 DB checkpoint 후 최대 3회 실행하고 소진 시 `invoice.analysis.requests.dlq`로 보낸다. core 전체 장애·인증 오류로 checkpoint를 저장할 수 없으면 ACK 없이 중단한다. process 재시작도 3회로 제한하므로 원인을 해결한 뒤 같은 Compose 조합의 `restart ai-worker`로 재개한다.
 
+정책 검색용 pgvector는 새 Compose project에 `-f compose.ai.yaml`을 추가해 사용한다. AI는 기본 비활성화이며 `ANALYSIS_AI_ENABLED`로 명시적으로 켠다. 일반 PostgreSQL은 lexical 검색을 지원하고 vector/hybrid는 extension을 요구한다. 실제 vector 회귀는 `INVOICE_MATCH_TEST_POSTGRES_IMAGE=pgvector/pgvector:0.8.6-pg18-bookworm`을 설정해 같은 backend 테스트를 실행한다. embedding 모델·버전·차원을 고정하고 검색과 ingestion에서 일치시킨다.
+
 로컬 검증에는 Java 21, Node 24/npm, Docker가 필요하다. Windows의 Gradle 명령은 `gradlew.bat`을 사용한다.
 
 ```sh

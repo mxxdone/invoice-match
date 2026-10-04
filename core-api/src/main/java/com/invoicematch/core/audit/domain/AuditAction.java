@@ -1,7 +1,7 @@
 package com.invoicematch.core.audit.domain;
 
 /**
- * The audited business actions of the existing Phase 1 write surface. Only
+ * The audited actions of the implemented write surface. Only
  * actions that are actually implemented are emitted; approval is added by the
  * ticket that implements it (with its own migration), never reserved here.
  */
@@ -19,5 +19,6 @@ public enum AuditAction {
     DOCUMENT_UPLOAD_RESERVED,
     DOCUMENT_REGISTERED,
     ANALYSIS_RETRY_RESERVED,
+    POLICY_DOCUMENT_PUBLISHED,
     AI_ANALYSIS_RESERVED
 }
