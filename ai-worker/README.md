@@ -1,4 +1,4 @@
-# ai-worker — bounded PDF/XLSX analysis worker
+# ai-worker — bounded document parsing and advisory worker
 
 Python 3.12 document consumer and parser. It reads a PDF
 text layer and XLSX raw structure under hard resource bounds and emits the
@@ -6,8 +6,9 @@ deterministic `document-parse-v1` result. Contract and limits are fixed by
 [`P2-04`](../project-docs/Plan.md); this README only covers runtime, supported
 input scope and how to run it.
 
-Results are sent to the authenticated core-api machine surface. OCR and AI
-invoice field inference are later work.
+Results are sent to the authenticated core-api machine surface. A separate,
+opt-in advisory consumer supports Azure OCR, field extraction, item candidates
+and policy evidence. Live provider quality remains unmeasured until APIs are configured.
 
 ## Consumer
 
@@ -20,6 +21,12 @@ at most three execution attempts, and then the durable `.dlq` queue. Parser
 failures remain immutable results. Core/authentication outages without a saved
 checkpoint preserve the delivery and stop this process. Malformed messages are
 quarantined only after a confirm; the DLQ stores hash/size/code instead of raw input.
+
+`ai-worker consume-proposals` uses a separate queue and preserves successful
+steps and cumulative call reservations across retries. It requires Linux and
+explicit AI enablement, model credentials, token prices and a cost ceiling.
+Optional Azure and embedding settings are described in the [root README](../README.md)
+and `.env.example`. It produces advisory results; human actions still control mapping and approval.
 
 ## Layout and layer responsibilities
 

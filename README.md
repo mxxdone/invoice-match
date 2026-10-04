@@ -2,7 +2,7 @@
 
 매입 청구서를 발주·검수 자료와 비교하고, 사람이 검토해 지급요청으로 확정하는 업무 코어다. 승인·검수 잔량 배분·지급요청을 원자적으로 처리하고 Outbox로 외부 인계를 분리한다.
 
-Java 21 / Spring Boot / PostgreSQL / Next.js / MinIO / RabbitMQ / Python 파서를 사용한다. Mock ERP 인계 성공은 실제 송금이 아니다. 운영자는 `/operations/analysis`에서 실패 이력을 확인하고 원인 수정 후 재처리를 예약한다. AI 추출은 후속 작업이다.
+Java 21 / Spring Boot / PostgreSQL / Next.js / MinIO / RabbitMQ / Python 파서를 사용한다. Mock ERP 인계 성공은 실제 송금이 아니다. 운영자는 `/operations/analysis`에서 실패 이력을 확인하고 원인 수정 후 재처리를 예약한다. 선택적 AI 추출·매핑·정책 근거·처리 초안과 검토 화면을 구현했으며, AI는 기본 비활성화다. 실제 제공자 품질·비용 평가는 API 설정 후 수행한다.
 
 ## 로컬 실행
 

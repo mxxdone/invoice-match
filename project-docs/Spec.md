@@ -438,7 +438,7 @@ P2-01 접수 기준선은 PDF/XLSX 파일당 10MiB, 작성 차수당 완료 문�
 2. 브라우저가 S3 또는 MinIO로 직접 업로드한다.
 3. 업로드 완료 API가 object 크기·media type·checksum·소유 사건을 확인한다.
 4. 임시 객체를 별도의 불변 원본 키로 복사하고 Document를 등록한다. 새 파일은 새 식별자를 사용한다.
-5. PDF text layer를 먼저 읽는다. Phase 2는 빈 페이지를 경고로 남기고, 스캔 OCR은 Phase 3에서 추가한다.
+5. PDF text layer를 먼저 읽는다. 파서는 빈 페이지를 경고로 남기며, 선택적 AI 실행에서 설정된 Azure OCR로 스캔 문서를 인식한다. 파서 결과는 재작성하지 않는다.
 6. Excel은 셀·행·시트 구조를 직접 파싱한다.
 7. 파일 수, 크기, PDF 페이지 수, 압축 해제 크기에 상한을 둔다.
 8. opt-in 배치가 예약 만료 후 기본 24시간(최소 1시간)을 지난 정확한 임시 업로드 사본만 정리한다. 등록 원본·metadata·동결 참조는 보존한다.
@@ -457,8 +457,9 @@ flowchart LR
     R --> W[Python AI Worker]
     S --> O
     W -->|실행 권한 기반 원본 API| S
-    W -.-> L[External LLM · Phase 3]
-    S -.-> V[(pgvector · Phase 3)]
+    W -.-> L[External LLM · opt-in]
+    W -.-> A[Azure OCR · opt-in]
+    S -.-> V[(pgvector · opt-in)]
     W -->|Read-only Tools| S
     W -->|분석 결과 API| S
     S --> E[지급 HTTP Outbox Relay]
@@ -471,8 +472,8 @@ flowchart LR
 | 영역 | 선택 |
 |---|---|
 | 업무 백엔드 | Java 21, Spring Boot 3, Spring Data JPA, Spring Security |
-| Worker | Python 3.12 격리 parser·RabbitMQ consumer; LangGraph는 Phase 4 |
-| 데이터베이스 | PostgreSQL; pgvector는 Phase 3 |
+| Worker | Python 3.12 격리 parser·별도 파싱/AI RabbitMQ consumer; LangGraph는 Phase 4 |
+| 데이터베이스 | PostgreSQL; 선택적 정책 vector 검색은 pgvector |
 | 메시징 | RabbitMQ |
 | 파일 | S3 호환 저장소, 로컬 개발은 MinIO |
 | 프런트엔드 | Next.js + TypeScript |
@@ -484,7 +485,7 @@ flowchart LR
 
 - `web`: 업무 화면
 - `core-api`: Spring 업무 코어와 integration API
-- `ai-worker`: 문서 파싱 consumer; AI/RAG는 Phase 3, LangGraph는 Phase 4 확장
+- `ai-worker`: 문서 파싱 consumer와 opt-in AI/RAG consumer를 별도 process로 실행; LangGraph는 Phase 4 확장
 - `outbox-relay`: 초기에는 Spring process 내부 scheduler로 시작 가능
 - `postgres`
 - `rabbitmq`

@@ -2,6 +2,7 @@
 
 문서 상태: **Phase 2 완료 · Phase 3 구현·자동 통합 인수 완료 · 실제 제공자 품질 평가 대기**
 작성일: **2026-09-25**
+최신화: **2026-10-04**
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
 실행 방법: [`Implement.md`](./Implement.md)
 
@@ -17,7 +18,7 @@
 | 4 — Human-in-the-loop | 사람 대기와 재개를 안전하게 모델링 | LangGraph checkpoint, mapping interrupt, 새 증빙 재분석, resume 멱등성, stale 차단 | worker/message 점유 없이 정확한 version만 재개·반영 |
 | 5 — 최적화·장애 시연·포트폴리오 | 측정 가능한 개선과 재현 가능한 설명 완성 | 조회·인덱스 실험, 부하·경합·장애 주입, ERP 대사, 관측성, README/ERD/보고서 | 5~7분 시연, Docker Compose 재현, 성능·AI 평가 결과와 trade-off 설명 |
 
-Phase 2는 사용자 착수 지시(2026-10-02)에 따라 아래 Ticket 순서로 진행한다. Phase 1 자동 인수와 CI는 통과했으며, 사람의 5~7분 시연 미실측은 별도 확인 항목으로 유지한다. Phase 3의 Ticket은 아래 계약으로 구체화했다. Phase 4~5는 직전 Phase 완료 검토 후 상세화한다.
+Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4~5는 아직 착수하지 않았으며 다음 Phase 착수 검토 때 상세화한다.
 
 ### 후속 설계 결정·보류 (2026-10-01)
 
@@ -150,7 +151,7 @@ Phase 1이 동결한 인터페이스는 다음이며 Phase 2+가 조용히 바�
 
 ## 4. Phase 3 Backlog
 
-Phase 3는 **P3-00~P3-09**를 Head가 순차 구현한다. Spec 8·9·18·24.3절과 아래 계약을 따른다. 구현 세부 목록·실행 로그는 복제하지 않는다.
+Phase 3의 **P3-00~P3-09** 구현과 자동 통합 인수는 Head가 완료했다. P3-09의 실제 제공자 품질 평가와 사람 검수는 대기 중이다. Spec 8·9·18·24.3절과 아래 계약을 따르며 구현 세부 목록·실행 로그는 복제하지 않는다.
 
 ### 공통 계약
 
@@ -164,7 +165,7 @@ Phase 3는 **P3-00~P3-09**를 Head가 순차 구현한다. Spec 8·9·18·24.3�
 
 ### P3-00 — AI 실행과 immutable 처리 제안 계약
 
-**상태: 완료.** 검증된 parser·최신 대사에 묶인 AI 예약/context·실행 lease·누적 호출 예산·immutable 저장 계약을 인수했다. 권한·replay·동시성·감사 rollback·실제 lease 만료·stale·DB 제약은 실제 PostgreSQL로 검증했다. `ProposalService`, `ProposalExecutionService`가 후속 진입점이며 기계 endpoint는 단계별 validator를 연결한 뒤 연다.
+**상태: 완료.** 검증된 parser·최신 대사에 묶인 AI 예약/context·실행 lease·누적 호출 예산·immutable 저장 계약을 인수했다. 권한·replay·동시성·감사 rollback·실제 lease 만료·stale·DB 제약은 실제 PostgreSQL로 검증했다. `ProposalService`, `ProposalExecutionService`가 진입점이며 기계 endpoint와 단계별 validator 연결은 P3-07에서 완료했다.
 
 ### P3-01 — Azure 스캔 OCR adapter
 
@@ -176,7 +177,7 @@ Phase 3는 **P3-00~P3-09**를 Head가 순차 구현한다. Spec 8·9·18·24.3�
 
 ### P3-03 — 사건 범위 읽기 전용 Tool
 
-**상태: 완료.** `ProposalToolService`가 동결된 사건 자료와 승인된 과거 매핑만 제공하며 요청별 결과·호출 예산을 보존한다. 계약 metadata는 P3-04의 적용 scope를 사용한다. 기계 endpoint·인증 연결은 P3-07에서 이어간다.
+**상태: 완료.** `ProposalToolService`가 동결된 사건 자료와 승인된 과거 매핑만 제공하며 요청별 결과·호출 예산을 보존한다. 계약 metadata는 P3-04의 적용 scope를 사용한다. 기계 endpoint·인증 연결은 P3-07에서 완료했다.
 
 ### P3-04 — 정책 catalog와 exact pgvector hybrid 검색
 
