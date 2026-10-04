@@ -1,6 +1,6 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 완료 · Phase 3 착수 · 현재 Ticket P3-00**
+문서 상태: **Phase 2 완료 · Phase 3 착수 · 현재 Ticket P3-02**
 작성일: **2026-09-25**
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
 실행 방법: [`Implement.md`](./Implement.md)
@@ -159,24 +159,20 @@ Phase 3는 **P3-00~P3-09**를 Head가 순차 구현한다. Spec 8·9·18·24.3�
 - P2의 `document-parser-v1` wire/결과와 승인 API는 보존한다. AI 실행은 별도 `ai-review-v1` 작업과 RabbitMQ routing으로 격리한다. DB 예약·실행 lease·단계 결과·호출 예산을 보존하고 중복 전달에는 동일 결과를 재생한다. 외부 모델 호출 exactly-once는 주장하지 않는다.
 - application은 권한·검증·예산·transaction orchestration, persistence는 SQL·잠금·조건부 저장, infrastructure는 SDK/HTTP/broker/process를 맡는다. domain은 바깥 계층에 의존하지 않는다. Head가 실제 diff를 검수하고 새 architecture scanner는 만들지 않는다.
 - AI는 기본 비활성화다. 모델/provider/인증/요금 단가는 환경 설정이며 특정 모델이나 유료 전환을 가정하지 않는다. live OCR/LLM 평가는 사용자가 준비한 설정과 비용 한도에서만 실행한다. mock/offline 통과를 실제 AI 정확도로 보고하지 않는다.
-- 단일 시연 회사의 정책 scope를 서버에서 고정한다. 계약과 발주 연결, 공급사, 문서 version, 유효 기간, 읽기 권한을 검색 전에 적용한다. 청구서에서 추출한 계약번호·날짜만으로 scope를 넓히지 않는다. 적용일은 동결 제출일이며 실제 계약 적용 기준이 다른 경우 확정된 계약 metadata로 바꾼다.
+- 단일 시연 회사의 정책 scope를 서버에서 고정한다. 계약과 발주 연결, 공급사, 문서 version, 유효 기간, 읽기 권한을 검색 전에 적용한다. 청구서에서 추출한 계약번호·날짜만으로 scope를 넓히지 않는다. 적용일은 Asia/Seoul 기준 동결 제출일이며 실제 계약 적용 기준이 다른 경우 확정된 계약 metadata로 바꾼다.
 - 반복·도구·입출력 토큰·응답 크기·전체 wall time은 유한하다. 성공한 단계는 immutable checkpoint로 재사용하고, 불확실한 외부 호출도 예약 예산을 소비한다. 초과/근거 부족/충돌은 검토 필요 상태로 끝낸다.
 
 ### P3-00 — AI 실행과 immutable 처리 제안 계약
 
-**상태: 진행 중.** 현재 parser run + 특정 최신 MatchResult를 입력으로 하는 AI 예약·context hash·lease·실행 예산·단계 checkpoint·최종 Proposal 저장을 추가한다. OPERATOR 예약은 actor-scoped idempotency/audit와 같은 transaction이다. parser 실패·구버전·다른 사건·변경된 context는 거부한다. 새 대사/보완은 옛 제안을 조회 이력으로만 보존한다.
-
-인수: 실제 PostgreSQL에서 예약 replay/동시성/audit rollback, 입력 composite FK/identity·결과 immutable, 만료 token fencing, 예산 소진과 stale 결과 무효를 검증한다. 업무 case version/배분/지급 효과는 0이다.
+**상태: 완료.** 검증된 parser·최신 대사에 묶인 AI 예약/context·실행 lease·누적 호출 예산·immutable 저장 계약을 인수했다. 권한·replay·동시성·감사 rollback·실제 lease 만료·stale·DB 제약은 실제 PostgreSQL로 검증했다. `ProposalService`, `ProposalExecutionService`가 후속 진입점이며 기계 endpoint는 단계별 validator를 연결한 뒤 연다.
 
 ### P3-01 — Azure 스캔 OCR adapter
 
-**상태: 예정.** `prebuilt-invoice`의 고정 REST version으로 빈 text layer PDF를 처리한다. Core가 실행 권한과 frozen metadata를 검사하여 제공한 원본만 전송한다. F0의 4 MB·2페이지를 넘으면 유료 전환이나 조용한 잘림 없이 검토 필요로 처리한다. operation URL은 설정한 HTTPS origin/경로만 허용하고 polling·429/5xx·timeout·응답 크기를 제한한다. OCR text/field/page/span/좌표와 provider version은 별도 checkpoint이며 기존 parser 결과를 덮어쓰지 않는다.
-
-인수: 실제 local HTTP fixture로 submit/poll/정상·제한·실패·다른 origin·redirect·과대 응답과 위치 검증. 실제 Azure 품질은 설정 제공 후 평가셋에서 별도로 측정한다.
+**상태: 완료.** F0 admission·고정 origin binary submit/poll·provider 오류·시간/응답 한도와 page/span/좌표 검증 adapter를 인수했다. `RecognizeInvoice`와 `AzureInvoiceRecognizer`가 후속 진입점이다. 실제 local HTTP 및 설치된 Linux wheel로 검증했으며 live Azure 정확도·비용은 설정 제공 후 별도 평가한다. 원본 접근/consumer 연결은 P3-07이다.
 
 ### P3-02 — Document Agent와 구조·숫자·출처 검증
 
-**상태: 예정.** PDF text layer/XLSX cell/OCR의 출처를 유지한 header·line 후보를 구조화한다. 모델 출력은 strict schema로 받고 원문에서 찾을 수 있는 page/span 또는 sheet/cell을 요구한다. 날짜·통화·수량·단가 normalization과 산술 검사는 일반 코드다. 잘못된 출력 repair는 전체 예산 안에서 최대 한 번이며, 후보를 수동 청구 입력에 자동 반영하지 않는다.
+**상태: 진행 중.** PDF text layer/XLSX cell/OCR의 출처를 유지한 header·line 후보를 구조화한다. 모델 출력은 strict schema로 받고 원문에서 찾을 수 있는 page/span 또는 sheet/cell을 요구한다. 날짜·통화·수량·단가 normalization과 산술 검사는 일반 코드다. 잘못된 출력 repair는 전체 예산 안에서 최대 한 번이며, 후보를 수동 청구 입력에 자동 반영하지 않는다.
 
 인수: 한국어, 숫자 구분자·통화·날짜, 잘못된 page/cell/quote, 중복/unknown field, injection·과대 출력·timeout·repair 소진 회귀. 원문 부재는 추측으로 채우지 않는다.
 
