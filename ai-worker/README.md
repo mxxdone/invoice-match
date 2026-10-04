@@ -10,6 +10,11 @@ Results are sent to the authenticated core-api machine surface. A separate,
 opt-in advisory consumer supports Azure OCR, field extraction, item candidates
 and policy evidence. Live provider quality remains unmeasured until APIs are configured.
 
+The Phase 4 graph runtime is pinned, with a closed JSON checkpoint codec and
+version gate. Its Core persistence and consumer are pending; there is no graph
+start/resume command yet. The workflow and persistence contract is in
+[Spec 8.3](../project-docs/Spec.md#83-langgraph-상태).
+
 ## Consumer
 
 Use `ai-worker consume` on Linux with `CORE_API_URL`, `ANALYSIS_WORKER_TOKEN`

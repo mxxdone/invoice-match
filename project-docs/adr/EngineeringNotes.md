@@ -11,6 +11,12 @@
 - 자동 테스트나 재현 절차로 해결을 입증한 문제
 - 해결되지 않은 사항은 완료 사례처럼 쓰지 않고 `남은 고려사항`으로 명시
 
+## P4-00 — interrupt 복원과 닫힌 JSON 경계
+
+사람 대기를 JSON으로 저장한다는 것만으로 SDK checkpoint를 복원할 수 있지는 않다. LangGraph는 interrupt를 SDK DTO와 tuple로 pending writes에 저장하고, 재개할 때 interrupt 노드를 처음부터 실행한다. 기본 serializer에 모든 객체를 맡기면 복원 범위가 넓어지고, interrupt 노드에서 모델 호출이나 예산 예약을 수행하면 재개 시 중복 효과가 생긴다.
+
+pin한 SDK에서 JSON 값·tuple·Interrupt만 복원하는 닫힌 codec을 사용하고, 성공 단계와 예약을 interrupt 노드 밖의 불변 Core 참조로 분리했다. 실제 새 프로세스에서 interrupt ID를 보존해 재개했으며 노드 재실행에도 성공 모델 단계와 예약이 반복되지 않았다. reserved pending-write slot을 갱신하는 SDK 계약은 Core의 새 불변 version으로 표현하기로 했다. Core의 lease fencing·원자적 대기 확정·versioned 쓰기 검증은 후속 Ticket에서 구현하며, 이 SDK 검증만으로 메시지 ACK나 DB 내구성이 완성됐다고 보지 않는다.
+
 ## P2-04 — 파서 입력 크기보다 중요한 실행 자원 경계
 
 PDF/OOXML은 작은 입력에서도 큰 압축 해제와 SDK 할당을 유발할 수 있다. library의 파일 크기 검사만으로 wall time·메모리를 보장하지 않고, Linux child에서 SDK import 전에 RLIMIT_AS를 적용하며 parent가 입력 전달과 출력 수집을 동시에 제한하도록 했다. Windows library 검증과 실제 Linux OS 검증을 구분했다.

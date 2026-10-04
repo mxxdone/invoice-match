@@ -12,6 +12,8 @@ dependencies = [
     "defusedxml==0.7.1",
     "pika==1.4.4",
     "aiohttp==3.14.3",
+    "langgraph==1.2.12",
+    "langgraph-checkpoint==4.2.0",
 ]
 
 [project.optional-dependencies]

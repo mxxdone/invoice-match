@@ -228,21 +228,47 @@ flowchart TD
 
 ```text
 START
-  → parse_document
-  → validate_extraction
-      ├─ invalid/retryable → retry_parse (최대 1회)
-      ├─ invalid/non-retryable → human_document_review
-      └─ valid → collect_business_context
-  → deterministic_match
-      ├─ exact_match → compose_review_summary
-      ├─ ambiguous_item → suggest_item_mapping → human_mapping_review → deterministic_match
-      ├─ policy_question → retrieve_evidence → compose_resolution
-      └─ missing_evidence → compose_supplement_request
-  → persist_analysis_result
+  → read_frozen_parser_and_match_results
+  → validated_extraction_and_mapping_candidates
+      ├─ 원문 확인 필요 / 복수·없는 품목 후보 → single_human_interrupt
+      │    → 같은 입력의 후보 확인 → resume
+      └─ 정상 후보 → continue
+  → retrieve_policy_evidence
+  → compose_resolution_draft
+  → core_validate_and_persist_immutable_proposal
 END
 ```
 
-사람이 품목을 수정하거나 새 문서를 제출할 때 graph 실행 thread를 장시간 점유하지 않는다. checkpoint와 검토 요청을 저장하고 현재 메시지는 ack한다. 사람의 입력이 저장되면 별도의 resume 작업을 발행한다.
+graph는 기본 비활성인 `ai-review-v2` workflow이며 기존 `document-parser-v1`·`ai-review-v1` 실행과 분리한다. 파싱·수동 입력·품목 매핑 확정·대사는 Core의 기존 업무 action이다. graph는 성공한 파서 결과와 최신 대사를 동결해 읽고, 업무 변경 Tool을 갖지 않는다. 사람 확인은 AI 후보에 대한 의견이며 청구 입력을 변경하지 않는다. 한 번의 묶음 interrupt만 허용하고 동일 입력에서 사람 확인 loop를 만들지 않는다.
+
+서버 발급 graph 실행 ID가 thread ID다. 사건·caseVersion·증빙 version/hash·파서 결과·대사·구매·정책/매핑 watermark와 hash를 실행에 동결한다. 같은 입력의 확인만 같은 thread를 재개한다. 실제 매핑 변경·새 증빙·대사·구매/정책 변경은 옛 실행을 STALE로 만들며, parser 성공·최신 대사 이후 OPERATOR가 새 입력의 successor를 명시적으로 예약한다. successor는 provenance만 연결하며 성공 단계·사람 확인·예산을 계승하지 않는다.
+
+checkpoint ID와 interrupt ID는 pin한 SDK가 생성한 값을 해당 실행에 결합해 저장한다. checkpoint hash는 serializer/version·body·metadata·parent의 canonical JSON에 묶는다. Core가 발급한 reviewVersion은 pending interrupt의 기대 version이며, 한 번 소비한 확인 기록을 수정하지 않는다. 기계 쓰기는 현재 활성 lease token에 한정하고 사람 확인은 저장된 대기 참조에 한정한다. SDK config의 임의 metadata·다른 namespace·클라이언트 graph state는 저장하지 않는다.
+
+| 상태/구간 | 허용 전이와 실행 계약 |
+|---|---|
+| 최초 실행 | `QUEUED → RUNNING → WAITING_HUMAN` 또는 `COMPLETED` |
+| 사람 대기 | checkpoint와 pending writes, 정확한 interrupt 참조를 저장한 뒤 동일 transaction에서 `WAITING_HUMAN` 확정·lease 제거. durable proof를 받은 후 ACK·heartbeat 종료·consumer 반환 |
+| 사람 확인 | 권한·currentness·출처 검증 후 불변 확인 기록·감사·멱등 응답·resume Outbox를 한 transaction에 저장. `WAITING_HUMAN → QUEUED` |
+| 재개 | 정확한 thread/checkpoint/interrupt/review만 `QUEUED → RUNNING → COMPLETED`. 두 번째 interrupt는 영속 실패 |
+| 일시 장애 | 해당 활성 구간의 실행 예산 안에서 recovery 예약 후 `RUNNING → QUEUED`; checkpoint만 저장한 장애도 lease reclaim으로 복구 |
+| 종료 | 활성/대기 상태에서 `FAILED` 또는 `STALE`. 종료 상태에서 재개 금지. broker/worker 재시작만으로 사람 대기를 재개하지 않음 |
+
+| 예산 scope | 상한 |
+|---|---|
+| 구간 | 최초 실행·사람 재개 각 최대 3회, thread 전체 최대 6회 |
+| thread 누적 | 모델 호출 5회·입출력 토큰 40,000·Tool 8회·configured 비용 상한. 불확실한 외부 호출도 예약 예산 소비 |
+| 대기 | 실행 wall time·재시도 횟수 소비 없음. 재개·새 프로세스에서 누적 예산 초기화 금지 |
+| SDK 실행 | invoke당 recursion limit 32, 활성 실행 wall time 120초. SDK 자동 retry 없음 |
+| checkpoint 저장 | checkpoint/metadata envelope 또는 pending-write batch 각 256KiB, 깊이 64. thread당 checkpoint 128개·pending write 512개·총 직렬화 bytes 8MiB. DTO와 DB에서 모두 제한 |
+
+LangGraph와 checkpointer/serializer는 Python infrastructure에만 둔다. application은 SDK 독립 port를 사용하고 worker는 인증된 Core API로만 저장한다. worker DB 자격증명·임의 SQL·별도 DB·LangGraph Platform·LangSmith·Redis는 사용하지 않는다. graph state는 실행 identity와 검증된 단계 참조만 저장하며 원문·secret·파일 경로를 저장하지 않는다.
+
+`langgraph==1.2.12`·`langgraph-checkpoint==4.2.0`을 pin한다. JSON serializer `graph-checkpoint-json-v1`은 JSON 값과 SDK의 tuple/Interrupt만 닫힌 태그로 표현한다. Interrupt는 id/value만 허용하며 response schema 객체는 거부한다. pickle·임의 객체 생성·모듈 import는 금지한다. SDK 기본 serializer를 fallback으로 사용하지 않는다. DeltaChannel·subgraph·Send·외부 객체를 state에 넣지 않는다.
+
+Core checkpointer는 thread/namespace/checkpoint ID, parent checkpoint ID, SDK checkpoint의 `v/id/ts/channel_values/channel_versions/versions_seen/updated_channels`, metadata의 source/step/parents, new channel versions를 보존한다. pending writes는 checkpoint ID·task ID·SDK write index·channel·value·task path에 묶어 보존한다. SDK의 음수 reserved write index도 저장하며 interrupt와 resume writes를 일반 node 결과와 구분한다. checkpoint body/metadata/parent/graphVersion은 immutable하고 동일 hash replay만 허용한다. pending writes의 reserved slot 교체는 현재 lease에서 이전 hash/version을 검증한 새 불변 version으로 저장하고 교체 전·후 내용과 token을 보존한다. latest 조회와 정확한 checkpoint 조회를 지원하며 다른 실행/namespace는 거부한다.
+
+workflow·graph·serializer·SDK checkpoint schema는 각각 검증한다. 최초 graphVersion은 `invoice-review-graph-v1`이다. 기존 parser/v1 Proposal reader·consumer·hash는 보존하고 graph loader에 넘기지 않는다. 지원하지 않는 graph/serializer/schema는 fail-closed하며 기존 기록을 재작성하거나 새 graph 코드로 자동 재개하지 않는다. 향후 버전 변경 시 읽기 adapter나 명시적 새 실행 정책을 먼저 확정한다.
 
 최종 업무 승인은 LangGraph 밖의 Spring 승인 workflow에서 수행한다. Human-in-the-loop를 썼다는 이유로 모든 사람 업무를 graph 안에 넣지 않는다.
 
@@ -401,7 +427,7 @@ Redis 분산락은 사용하지 않는다. V1의 핵심 공유 자원은 단일 
 | 이벤트 | 생산자 | 소비자 | 목적 |
 |---|---|---|---|
 | `InvoiceAnalysisRequested` | Spring 업무 코어 | Python worker | 증빙 분석 시작 |
-| `AnalysisResumeRequested` | Spring 업무 코어 | Python worker | 사람 수정 이후 graph 재개 |
+| `AnalysisResumeRequested` | Spring 업무 코어 | Python graph worker | 같은 동결 입력의 후보 확인 이후 정확한 graph 재개 |
 | `PaymentRequestExportRequested` | Spring integration | ERP adapter | 지급요청 인계 |
 | `PaymentExportResultReceived` | Webhook controller | Spring integration | 외부 결과 반영 |
 
@@ -414,12 +440,14 @@ Redis 분산락은 사용하지 않는다. V1의 핵심 공유 자원은 단일 
 | 업로드 완료 | `invoiceCaseId + documentId + checksum` |
 | 분석 실행 | `invoiceCaseId + evidenceBundleVersion + workflowVersion` |
 | 문서 파싱 결과 반영 | `analysisRunId + documentId` (같은 원본·parser version·결과 hash의 replay만 허용) |
-| Human interrupt 재개 | `analysisRunId + interruptId + reviewVersion` |
+| Human interrupt 재개 | `graphExecutionId + interruptId + reviewVersion` (저장된 정확한 checkpoint ID/hash에 결합) |
 | 지급요청 생성 | `invoiceCaseId + reviewSnapshotId` |
 | ERP 인계 | `paymentRequestId + exportVersion` |
 | Webhook 수신 | `provider + externalEventId` |
 
 같은 key로 다른 payload가 도착하면 성공으로 간주하지 않고 충돌로 기록한다.
+
+graph 확인 요청은 actor-scoped requestId와 기대 caseVersion·graph 실행 ID·interrupt ID·checkpoint hash·reviewVersion에 묶인다. 한 interrupt는 한 번만 소비하며 같은 key/body replay는 같은 응답, 다른 body는 409와 효과 0이다. resume 메시지는 실행/interrupt/review/checkpoint identity만 전달하고 확인 payload는 인증된 Core에서 읽는다. 클라이언트 임의 graph state와 다른 사건/thread/checkpoint 재개는 거부한다. 사람 확인 저장 성공과 graph 재개 완료를 구분한다.
 
 ### 14.3 재시도와 DLQ
 

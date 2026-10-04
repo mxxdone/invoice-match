@@ -1,6 +1,6 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 상세 계획 작성 완료·구현 미착수**
+문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 P4-00 완료·P4-01 대기**
 작성일: **2026-09-25**
 최신화: **2026-10-04**
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
@@ -18,7 +18,7 @@
 | 4 — Human-in-the-loop | 사람 대기와 재개를 안전하게 모델링 | LangGraph checkpoint, mapping interrupt, 새 증빙 재분석, resume 멱등성, stale 차단 | worker/message 점유 없이 정확한 version만 재개·반영 |
 | 5 — 최적화·장애 시연·포트폴리오 | 측정 가능한 개선과 재현 가능한 설명 완성 | 조회·인덱스 실험, 부하·경합·장애 주입, ERP 대사, 관측성, README/ERD/보고서 | 5~7분 시연, Docker Compose 재현, 성능·AI 평가 결과와 trade-off 설명 |
 
-Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4는 아래 상세 계획까지 작성했으며 구현은 미착수다. API 설정 없이도 격리 provider fixture로 내구성 구현·검증을 진행할 수 있지만 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 착수 검토 때 상세화한다.
+Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4는 P4-00을 완료했으며 다음 Ticket은 P4-01이다. API 설정 없이도 격리 provider fixture로 내구성 구현·검증을 진행할 수 있지만 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 착수 검토 때 상세화한다.
 
 ### 후속 설계 결정·보류 (2026-10-01)
 
@@ -231,11 +231,7 @@ Phase 4는 **P4-00~P4-07**을 Head가 순차 구현한다. 기존 Spec 8.3·14�
 
 ### P4-00 — graph 영속화와 버전 계약 확정
 
-**상태: 계획.** 의존: P3-07~P3-09 자동 인수. 실행별 schema/version, 상태 전이, checkpoint/interrupt/review/resume identity와 ACK 조건을 확정한다. `ai-review-v2`를 새 workflow로 사용하고 v1 reader/consumer는 보존한다. Spec 8.3의 개념 흐름을 실제 Core 대사 경계에 맞추고, 14절의 generic `analysisRunId` 재개 key를 graph 실행 ID·interrupt ID·reviewVersion으로 명확히 한다. 제품 용어를 추가할 때만 CONTEXT를 갱신한다.
-
-SDK 검증: pin할 LangGraph 버전을 공식 문서/패키지로 확인하고 작은 실제 graph에서 interrupt → 직렬화 → 새 프로세스 복원 → `Command(resume=...)`를 실행한다. Core API checkpointer에 필요한 checkpoint/pending writes/parent metadata를 목록화하고 JSON 허용 타입만 사용한다. pickle·임의 객체 생성·임의 모듈 import·secret/path 저장은 허용하지 않는다. SDK 크기·타입이 이 계약과 충돌하면 P4-01 착수 전에 충돌을 보고하고 경계를 수정한다.
-
-인수: interrupt 전 노드가 재실행돼도 저장한 단계/예약이 보존되는 실제 SDK 증거, 구버전 graph의 읽기/거부 정책, 상태·재개 key·예산 표의 Spec 일치. 검증 코드를 제품 실행 경로와 공유하되 데모·보고서 파일을 추가하지 않는다.
+**상태: 완료.** 실제 pin한 SDK의 interrupt·새 프로세스 복원·재개와 성공 단계/예약 보존을 인수했다. Spec 8.3·14절에 Core 업무 경계·상태·재개 identity·누적 예산·ACK·버전 정책을 확정했다. 후속 진입점은 `application/graph_contract.py`, `infrastructure/graph_serializer.py`, `tests/test_graph_checkpoint.py`다. Core 저장·consumer는 P4-01~02에서 연결한다. SDK reserved pending-write slot은 이전 hash/version을 검증한 새 불변 version으로 저장하며 기존 기록을 덮어쓰지 않는다.
 
 ### P4-01 — Core graph 상태·checkpoint·대기 저장
 
