@@ -28,3 +28,12 @@ class SourceSegment:
     sheet: int | None = None
     cell: str | None = None
 
+
+@dataclass(frozen=True)
+class ModelReply:
+    payload: dict
+    model: str
+    input_tokens: int
+    output_tokens: int
+    latency_ms: int
+

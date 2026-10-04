@@ -108,6 +108,25 @@ class ProposalIntegrationTest extends AbstractAnalysisExecutionIntegrationTest {
         assertThat(jdbc.queryForObject("select status from proposal_run where id=?",String.class,old.id())).isEqualTo("STALE");
         assertThat(count("analysis_document_result")).isEqualTo(1);
     }
+    @Test void checkpointIsImmutableReplayableAndRejectsSourceForgeryWithoutEffects() {
+        var f=ready();var r=reserve(f);var c=ai.claim(r.id(),r.contextHash());
+        ai.reserveCall(r.id(),r.contextHash(),c.token(),UUID.randomUUID(),1000);
+        var output=json.createObjectNode().put("schemaVersion","invoice-extraction-v1").put("promptVersion","invoice-advisory-1");
+        output.putArray("calls").addObject().put("model","fixture-v1").put("inputTokens",100).put("outputTokens",100).put("latencyMs",1);
+        var result=output.putObject("result");var field=result.putArray("fields").addObject().put("name","supplierName")
+                .put("value","Premium Copy Paper A4");
+        field.putObject("source").put("segmentId",f.documents().getFirst().documentId()+":page:1").put("start",0).put("end",21);
+        result.putArray("lines");result.putArray("warnings");
+        assertThat(ai.checkpoint(r.id(),r.contextHash(),c.token(),"document",output)).isEqualTo("ACCEPTED");
+        assertThat(ai.checkpoint(r.id(),r.contextHash(),UUID.randomUUID(),"document",output)).isEqualTo("REPLAYED");
+        var before=jdbc.queryForList("select * from proposal_step");
+        field.put("value","forged");
+        assertThatThrownBy(()->ai.checkpoint(r.id(),r.contextHash(),c.token(),"document",output)).isInstanceOf(AnalysisValidationException.class);
+        assertThat(jdbc.queryForList("select * from proposal_step")).isEqualTo(before);
+        match(f);field.put("value","Premium Copy Paper A4");
+        assertThat(ai.checkpoint(r.id(),r.contextHash(),c.token(),"document",output)).isEqualTo("STALE");
+        assertThat(jdbc.queryForList("select * from proposal_step")).isEqualTo(before);
+    }
     @Test void databaseRejectsInputMutationCrossCaseAndImmutableResultChanges() {
         var f=ready();var r=reserve(f);var other=ready();
         assertDatabaseRejects("23000",()->jdbc.update("update proposal_run set context_hash=? where id=?","0".repeat(64),r.id()));

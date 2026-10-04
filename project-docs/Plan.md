@@ -1,6 +1,6 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 완료 · Phase 3 착수 · 현재 Ticket P3-02**
+문서 상태: **Phase 2 완료 · Phase 3 착수 · 현재 Ticket P3-03**
 작성일: **2026-09-25**
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
 실행 방법: [`Implement.md`](./Implement.md)
@@ -172,13 +172,11 @@ Phase 3는 **P3-00~P3-09**를 Head가 순차 구현한다. Spec 8·9·18·24.3�
 
 ### P3-02 — Document Agent와 구조·숫자·출처 검증
 
-**상태: 진행 중.** PDF text layer/XLSX cell/OCR의 출처를 유지한 header·line 후보를 구조화한다. 모델 출력은 strict schema로 받고 원문에서 찾을 수 있는 page/span 또는 sheet/cell을 요구한다. 날짜·통화·수량·단가 normalization과 산술 검사는 일반 코드다. 잘못된 출력 repair는 전체 예산 안에서 최대 한 번이며, 후보를 수동 청구 입력에 자동 반영하지 않는다.
-
-인수: 한국어, 숫자 구분자·통화·날짜, 잘못된 page/cell/quote, 중복/unknown field, injection·과대 출력·timeout·repair 소진 회귀. 원문 부재는 추측으로 채우지 않는다.
+**상태: 완료.** 원문 위치와 숫자·날짜 normalization을 검증하는 후보 추출 및 제한된 repair를 인수했다. `DocumentAgent`, `ChatStructuredModel`, `ProposalStageValidator`가 후속 진입점이다. Core가 출처·값·schema·예산을 독립 검증하며 성공 단계는 immutable checkpoint로 재생한다. 실제 모델 품질 평가는 P3-09에서 별도 수행한다.
 
 ### P3-03 — 사건 범위 읽기 전용 Tool
 
-**상태: 예정.** 사건에 연결된 발주·확정 검수·품목 후보·동일 공급사의 확정 매핑·계약 metadata를 제공한다. scope는 서버 context에서 파생하고 모델이 전달한 임의 사건/발주/공급사로 바꾸지 않는다. 결과 개수·문자 수·호출 수를 제한하고 사용자·비밀·저장소 key를 제외한다. deterministic matching 실행·승인·지급 쓰기는 노출하지 않는다.
+**상태: 진행 중.** 사건에 연결된 발주·확정 검수·품목 후보·동일 공급사의 확정 매핑·계약 metadata를 제공한다. scope는 서버 context에서 파생하고 모델이 전달한 임의 사건/발주/공급사로 바꾸지 않는다. 결과 개수·문자 수·호출 수를 제한하고 사용자·비밀·저장소 key를 제외한다. deterministic matching 실행·승인·지급 쓰기는 노출하지 않는다.
 
 인수: 기계 인증/사람 권한 분리, 다른 사건/공급사 차단, stale context 차단, bounded 결과와 쓰기 Tool 부재.
 
