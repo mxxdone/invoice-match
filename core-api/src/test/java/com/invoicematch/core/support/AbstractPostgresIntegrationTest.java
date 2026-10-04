@@ -30,7 +30,8 @@ public abstract class AbstractPostgresIntegrationTest {
     private static final PostgreSQLContainer<?> POSTGRES =
             new PostgreSQLContainer<>(org.testcontainers.utility.DockerImageName.parse(
                     System.getenv().getOrDefault("INVOICE_MATCH_TEST_POSTGRES_IMAGE","postgres:18-alpine"))
-                    .asCompatibleSubstituteFor("postgres")).withCommand("postgres", "-c", "max_connections=400");
+                    .asCompatibleSubstituteFor("postgres")).withCommand("postgres", "-c", "max_connections=400")
+                    .withLabel("invoice-match.test-run",System.getenv().getOrDefault("INVOICE_MATCH_TEST_RUN_ID","unmanaged"));
 
     static {
         POSTGRES.start();

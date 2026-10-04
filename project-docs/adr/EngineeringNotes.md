@@ -11,6 +11,14 @@
 - 자동 테스트나 재현 절차로 해결을 입증한 문제
 - 해결되지 않은 사항은 완료 사례처럼 쓰지 않고 `남은 고려사항`으로 명시
 
+## P4-01 — 잠금 대기 후 실행 권한을 다시 확인하기
+
+실행 token과 lease를 조회한 뒤 구매·정책 scope 잠금을 기다리면, 처음 조회한 lease 유효성이 잠금 획득 시점에는 이미 사라질 수 있다. 처음의 상태 값만 믿는 checkpoint 읽기는 만료된 worker에 저장 내용을 내줄 수 있다.
+
+사건·graph·scope 잠금 순서를 유지하면서 currentness를 확인한 뒤 DB의 현재 시각으로 token 소유권을 다시 검사했다. 저장은 DB admission guard에서도 실행 token과 만료를 검증하고, 사람 대기는 정확한 불변 checkpoint/write 참조 저장과 lease 해제를 한 transaction으로 묶었다. 저장 응답 유실 replay와 신규 저장의 실행 권한은 별도로 확인한다.
+
+실제 PostgreSQL에서 scope 잠금을 선점해 checkpoint 읽기를 막고, 실제 lease 만료 후 잠금을 풀었을 때 읽기가 거부되는 것을 검증했다. 대기 전환 중 DB 오류를 주입해 interrupt 삽입까지 rollback되고 기존 checkpoint와 lease가 보존되는 것도 확인했다. 동시성 검증에서는 작업 시작 당시의 권한뿐 아니라 마지막 잠금 이후의 권한과 transaction 효과를 함께 확인해야 한다.
+
 ## P4-00 — interrupt 복원과 닫힌 JSON 경계
 
 사람 대기를 JSON으로 저장한다는 것만으로 SDK checkpoint를 복원할 수 있지는 않다. LangGraph는 interrupt를 SDK DTO와 tuple로 pending writes에 저장하고, 재개할 때 interrupt 노드를 처음부터 실행한다. 기본 serializer에 모든 객체를 맡기면 복원 범위가 넓어지고, interrupt 노드에서 모델 호출이나 예산 예약을 수행하면 재개 시 중복 효과가 생긴다.

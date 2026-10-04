@@ -1,6 +1,6 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 P4-00 완료·P4-01 대기**
+문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 P4-01 완료·P4-02 대기**
 작성일: **2026-09-25**
 최신화: **2026-10-04**
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
@@ -18,7 +18,7 @@
 | 4 — Human-in-the-loop | 사람 대기와 재개를 안전하게 모델링 | LangGraph checkpoint, mapping interrupt, 새 증빙 재분석, resume 멱등성, stale 차단 | worker/message 점유 없이 정확한 version만 재개·반영 |
 | 5 — 최적화·장애 시연·포트폴리오 | 측정 가능한 개선과 재현 가능한 설명 완성 | 조회·인덱스 실험, 부하·경합·장애 주입, ERP 대사, 관측성, README/ERD/보고서 | 5~7분 시연, Docker Compose 재현, 성능·AI 평가 결과와 trade-off 설명 |
 
-Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4는 P4-00을 완료했으며 다음 Ticket은 P4-01이다. API 설정 없이도 격리 provider fixture로 내구성 구현·검증을 진행할 수 있지만 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 착수 검토 때 상세화한다.
+Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4는 P4-00~01을 완료했으며 다음 Ticket은 P4-02다. API 설정 없이도 격리 provider fixture로 내구성 구현·검증을 진행할 수 있지만 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 착수 검토 때 상세화한다.
 
 ### 후속 설계 결정·보류 (2026-10-01)
 
@@ -231,15 +231,11 @@ Phase 4는 **P4-00~P4-07**을 Head가 순차 구현한다. 기존 Spec 8.3·14�
 
 ### P4-00 — graph 영속화와 버전 계약 확정
 
-**상태: 완료.** 실제 pin한 SDK의 interrupt·새 프로세스 복원·재개와 성공 단계/예약 보존을 인수했다. Spec 8.3·14절에 Core 업무 경계·상태·재개 identity·누적 예산·ACK·버전 정책을 확정했다. 후속 진입점은 `application/graph_contract.py`, `infrastructure/graph_serializer.py`, `tests/test_graph_checkpoint.py`다. Core 저장·consumer는 P4-01~02에서 연결한다. SDK reserved pending-write slot은 이전 hash/version을 검증한 새 불변 version으로 저장하며 기존 기록을 덮어쓰지 않는다.
+**상태: 완료.** 실제 pin한 SDK의 interrupt·새 프로세스 복원·재개와 성공 단계/예약 보존을 인수했다. Spec 8.3·14절에 Core 업무 경계·상태·재개 identity·누적 예산·ACK·버전 정책을 확정했다. 후속 진입점은 `application/graph_contract.py`, `infrastructure/graph_serializer.py`, `tests/test_graph_checkpoint.py`다. Core 저장은 P4-01에서 인수했으며 adapter·consumer 연결은 후속 Ticket이다. SDK reserved pending-write slot은 이전 hash/version을 검증한 새 불변 version으로 저장하며 기존 기록을 덮어쓰지 않는다.
 
 ### P4-01 — Core graph 상태·checkpoint·대기 저장
 
-**상태: 계획.** 의존: P4-00. 새 migration으로 graph 실행, versioned checkpoint/pending writes, interrupt와 불변 참조를 저장한다. 실행 상태는 `QUEUED → RUNNING → WAITING_HUMAN → QUEUED → RUNNING → COMPLETED` 및 FAILED/STALE 종료로 제한한다. 활성 구간·실행 lease·token과 thread 누적 예산을 분리해 저장하고 대기에 lease를 남기지 않는다.
-
-Core 기계 API는 해당 실행과 유효 token으로만 checkpoint를 읽고 쓴다. 동일 checkpoint ID/hash의 replay만 허용하고 서로 다른 내용·parent·graphVersion은 충돌로 거부한다. 저장 bytes와 개수에 유한한 상한을 고정하고 DTO와 DB 양쪽에서 적용한다. 대기 확정은 저장된 정확한 interrupt checkpoint/hash를 검증한 transaction에서 수행한다. checkpoint만 저장하고 종료된 실행은 lease reclaim으로 복구해 대기 확정까지 수렴한다.
-
-인수: 실제 PostgreSQL migration 전후 v1 payload/hash 보존, FK·unique·immutable/상태 guard, 다른 thread/사건·가짜 checkpoint·expired token 거부, 저장 응답 유실 replay, 대기 전 장애 reclaim, 대기 후 lease 부재. SQLSTATE와 효과 0을 검증한다.
+**상태: 완료.** 기본 비활성인 별도 graph 저장과 실행 token·currentness 검증, 불변 checkpoint/pending-write replay, 저장 상한과 원자적 사람 대기를 인수했다. 후속 진입점은 Core `GraphExecutionService`, `GraphPayloadValidator`, `GraphStore`와 V21 migration이다. SDK adapter는 P4-02에서 연결하며, 대기 후 재개는 P4-03의 불변 사람 확인 원장 없이는 허용하지 않는다. 기존 v1 입력·완료 제안·hash와 업무 흐름은 유지한다.
 
 ### P4-02 — LangGraph adapter와 durable interrupt 연결
 
