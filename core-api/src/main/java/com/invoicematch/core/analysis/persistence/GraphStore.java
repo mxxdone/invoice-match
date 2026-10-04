@@ -117,6 +117,22 @@ public class GraphStore {
                 wait.interruptId(),id);
     }
     public int jsonBytes(String value) { return jdbc.queryForObject("select octet_length(cast(? as jsonb)::text)",Integer.class,value); }
+    public void review(UUID id,Waiting wait,UUID reviewId,UUID eventId,String actor,String requestId,String confirmation,String hash,String reason) {
+        jdbc.update("""
+            insert into graph_review(id,run_id,interrupt_id,checkpoint_id,checkpoint_hash,review_version,resume_event_id,
+                actor,request_id,confirmation,confirmation_hash,reason)
+            values(?,?,?,?,?,?,?,?,?,cast(? as jsonb),?,?)
+            """,reviewId,id,wait.interruptId(),wait.checkpointId(),wait.checkpointHash(),wait.reviewVersion(),eventId,actor,requestId,confirmation,hash,reason);
+    }
+    public void resumeEvent(UUID eventId,UUID id,UUID reviewId,Waiting wait,String payload) {
+        jdbc.update("""
+            insert into graph_resume_outbox(id,run_id,review_id,interrupt_id,checkpoint_id,checkpoint_hash,review_version,payload)
+            values(?,?,?,?,?,?,?,cast(? as jsonb))
+            """,eventId,id,reviewId,wait.interruptId(),wait.checkpointId(),wait.checkpointHash(),wait.reviewVersion(),payload);
+    }
+    public void queueResume(UUID id) {
+        jdbc.update("update graph_run set status='QUEUED',active_segment='RESUME',updated_at=clock_timestamp() where id=?",id);
+    }
     /** Validation input only: does not create or mutate any v1 execution. */
     public com.invoicematch.core.analysis.domain.ProposalRun advisoryInput(UUID id) {
         return jdbc.queryForObject("select *,lease_until>clock_timestamp() lease_active from graph_run where id=?",(rs,n)->

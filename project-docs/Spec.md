@@ -241,6 +241,8 @@ END
 
 graph는 기본 비활성인 `ai-review-v2` workflow이며 기존 `document-parser-v1`·`ai-review-v1` 실행과 분리한다. 파싱·수동 입력·품목 매핑 확정·대사는 Core의 기존 업무 action이다. graph는 성공한 파서 결과와 최신 대사를 동결해 읽고, 업무 변경 Tool을 갖지 않는다. 사람 확인은 AI 후보에 대한 의견이며 청구 입력을 변경하지 않는다. 한 번의 묶음 interrupt만 허용하고 동일 입력에서 사람 확인 loop를 만들지 않는다.
 
+원문 확인은 저장된 추출 결과에 대한 확인 또는 수정 필요 의견을 남긴다. 품목 확인은 pending interrupt의 원문 위치와 후보 목록에 한정하며, 후보가 없거나 판단하기 어려우면 미해결 의견을 보존한다. 실제 값 수정·매핑 확정은 기존 업무 action을 사용한다. 확인 저장 응답은 재개 예약을 뜻하며 graph 재개 완료나 업무 승인을 뜻하지 않는다.
+
 서버 발급 graph 실행 ID가 thread ID다. 사건·caseVersion·증빙 version/hash·파서 결과·대사·구매·정책/매핑 watermark와 hash를 실행에 동결한다. 같은 입력의 확인만 같은 thread를 재개한다. 실제 매핑 변경·새 증빙·대사·구매/정책 변경은 옛 실행을 STALE로 만들며, parser 성공·최신 대사 이후 OPERATOR가 새 입력의 successor를 명시적으로 예약한다. successor는 provenance만 연결하며 성공 단계·사람 확인·예산을 계승하지 않는다.
 
 checkpoint ID와 interrupt ID는 pin한 SDK가 생성한 값을 해당 실행에 결합해 저장한다. checkpoint hash는 serializer/version·body·metadata·parent의 canonical JSON에 묶는다. Core가 발급한 reviewVersion은 pending interrupt의 기대 version이며, 한 번 소비한 확인 기록을 수정하지 않는다. 기계 쓰기는 현재 활성 lease token에 한정하고 사람 확인은 저장된 대기 참조에 한정한다. SDK config의 임의 metadata·다른 namespace·클라이언트 graph state는 저장하지 않는다.

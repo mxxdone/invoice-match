@@ -13,7 +13,8 @@ and policy evidence. Live provider quality remains unmeasured until APIs are con
 The Phase 4 graph runtime is pinned, with a closed JSON checkpoint codec and
 version gate. The infrastructure adapter uses Core stage references and durable
 checkpoints, returning from a human interrupt only after Core confirms its wait proof.
-Human review/resume and production consumer dispatch are subsequent tickets;
+Core human reviews atomically reserve immutable resume events. SDK resume and
+production consumer dispatch are subsequent tickets;
 there is no graph start/resume command yet. The workflow and persistence contract is in
 [Spec 8.3](../project-docs/Spec.md#83-langgraph-상태).
 

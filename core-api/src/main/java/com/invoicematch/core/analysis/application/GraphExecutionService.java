@@ -92,6 +92,8 @@ public class GraphExecutionService {
         if(run.terminal())return new Claim("ALREADY_FINISHED",null,null,null,null);
         if(!current(run)) {store.terminal(id,"STALE",null);return new Claim("STALE",null,null,null,null);}
         if(run.status().equals("WAITING_HUMAN"))return new Claim("WAITING_HUMAN",null,null,null,waiting(store.waiting(id).orElseThrow()));
+        // P4-04 must claim a resume using the exact review/checkpoint identity, never a start delivery.
+        if(run.segment().equals("RESUME"))throw conflict("GRAPH_RESUME_NOT_READY");
         if(run.leaseActive())return new Claim("BUSY",null,run.leaseUntil(),null,null);
         if(run.attempts()>=3) {store.terminal(id,"FAILED","LEASE_EXPIRED");return new Claim("ALREADY_FINISHED",null,null,null,null);}
         UUID token=UUID.randomUUID();Instant until=store.claim(id,token,properties.leaseDuration());
@@ -186,18 +188,22 @@ public class GraphExecutionService {
         if(!store.supported(id))throw conflict("GRAPH_VERSION_UNSUPPORTED");
         if(!GraphPayloadValidator.hash(hash) || !run.contextHash().equals(hash))throw conflict("GRAPH_INPUT_MISMATCH");return run;
     }
-    private void enabled() {if(!properties.enabled())throw conflict("GRAPH_DISABLED");}
+    void enabled() {if(!properties.enabled())throw conflict("GRAPH_DISABLED");}
     void active(GraphRun run,UUID token) {
         if(!run.status().equals("RUNNING") || token==null || !token.equals(run.token()) || !run.leaseActive())throw conflict("LEASE_CONFLICT");
         if(!current(run))throw conflict("STALE_INPUT");
         // Scope locks can block past lease expiry. Recheck database time after acquiring them.
         if(!store.owned(run.id(),token))throw conflict("LEASE_CONFLICT");
     }
-    private boolean current(GraphRun run) {
+    boolean current(GraphRun run) {
         var context=parse(run.context());var match=context.path("matchResult");
         policies.lockScopeRead(match.path("purchaseOrderId").asText());
         return store.current(run) && context.path("policyDocuments").equals(mapper.valueToTree(policies.scope(context.path("companyId").asText(),
                 match.path("supplierId").asText(),match.path("purchaseOrderId").asText(),LocalDate.parse(context.path("applicableDate").asText()))));
+    }
+    GraphRun reviewRun(UUID caseId,UUID id) {
+        var run=store.lock(id).filter(r->r.caseId().equals(caseId)).orElseThrow(()->new AnalysisRunNotFoundException(id));
+        if(!store.supported(id))throw conflict("GRAPH_VERSION_UNSUPPORTED");return run;
     }
     private String bounded(JsonNode value) {
         String canonical=AnalysisCanonicalJson.canonicalize(value);

@@ -77,7 +77,7 @@ node scripts/compose-smoke-p1-11.mjs
 
 Phase 3 복구 흐름도 같은 스크립트에서 `VERIFY_PROPOSALS=true`로 검증한다. 설치된 Linux worker·Core·RabbitMQ와 격리 HTTPS 모델 fixture를 사용해 중복, 외부 실패, 저장 응답 유실, 워커 중단과 stale을 확인한다. 유료 제공자 API를 호출하지 않으며 실제 모델 품질 평가와 구분한다.
 
-Phase 4는 별도 graph의 Core 영속화와 worker adapter·내구성 있는 사람 대기를 구현했다. 사람 확인·resume 예약과 운영 consumer 연결은 후속 Ticket이다. graph는 기본 비활성이고 기존 parser·v1 제안·사람 검토를 유지한다. 상태·저장·재개 계약은 [Spec 8.3](project-docs/Spec.md#83-langgraph-상태), 현재 진입점은 [Plan](project-docs/Plan.md)을 따른다.
+Phase 4는 별도 graph의 Core 영속화와 worker adapter·내구성 있는 사람 대기·사람 확인 및 resume 예약을 구현했다. 실제 resume 발행·실행과 운영 consumer·화면 연결은 후속 Ticket이다. graph는 기본 비활성이고 기존 parser·v1 제안·사람 검토를 유지한다. 상태·저장·재개 계약은 [Spec 8.3](project-docs/Spec.md#83-langgraph-상태), 현재 진입점은 [Plan](project-docs/Plan.md)을 따른다.
 
 AI 평가 기준선은 `python scripts/evaluate-p3.py`로 실행한다. 고정된 64개 합성 사례를 사용하며 결과는 ignored `output/p3/evaluation/offline.json`에 저장한다. 실제 측정 결과는 `--ai-predictions <파일>`로 같은 사례와 비교한다. 실패·누락도 분모에 포함하고 호출 사용량과 누적 예약 예산을 구분한다. 합성 OCR 자료는 Azure 정확도 근거가 아니며, API 미설정 시 AI 품질·비용·사람 검토시간은 미측정으로 남긴다.
 

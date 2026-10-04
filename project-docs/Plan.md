@@ -1,6 +1,6 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 P4-02 완료·P4-03 대기**
+문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 P4-03 완료·P4-04 대기**
 작성일: **2026-09-25**
 최신화: **2026-10-04**
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
@@ -18,7 +18,7 @@
 | 4 — Human-in-the-loop | 사람 대기와 재개를 안전하게 모델링 | LangGraph checkpoint, mapping interrupt, 새 증빙 재분석, resume 멱등성, stale 차단 | worker/message 점유 없이 정확한 version만 재개·반영 |
 | 5 — 최적화·장애 시연·포트폴리오 | 측정 가능한 개선과 재현 가능한 설명 완성 | 조회·인덱스 실험, 부하·경합·장애 주입, ERP 대사, 관측성, README/ERD/보고서 | 5~7분 시연, Docker Compose 재현, 성능·AI 평가 결과와 trade-off 설명 |
 
-Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4는 P4-00~02를 완료했으며 다음 Ticket은 P4-03이다. API 설정 없이도 격리 provider fixture로 내구성 구현·검증을 진행할 수 있지만 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 착수 검토 때 상세화한다.
+Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4는 P4-00~03을 완료했으며 다음 Ticket은 P4-04다. API 설정 없이도 격리 provider fixture로 내구성 구현·검증을 진행할 수 있지만 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 착수 검토 때 상세화한다.
 
 ### 후속 설계 결정·보류 (2026-10-01)
 
@@ -243,11 +243,7 @@ Phase 4는 **P4-00~P4-07**을 Head가 순차 구현한다. 기존 Spec 8.3·14�
 
 ### P4-03 — 사람 확인과 원자적 resume 예약
 
-**상태: 계획.** 의존: P4-01~02. OPERATOR만 현재 사건의 pending interrupt에 확인 값을 저장할 수 있다. 요청은 requestId·기대 caseVersion·graph ID·interrupt ID·checkpoint hash·reviewVersion과 확인 값/사유를 포함한다. 서버가 actor·읽기 권한·currentness·후보/출처를 검증한다. APPROVER의 승인 권한을 OPERATOR 확인으로 대체하지 않는다.
-
-동일 transaction에서 불변 사람 확인 기록·감사·actor-scoped 멱등 응답·resume Outbox를 저장한다. 한 interrupt는 한 번만 소비하며 같은 request/body replay는 동일 응답, 같은 key의 다른 값은 409와 효과 0이다. 같은 thread에서 동시 확인은 단일 승자만 허용한다. 사람 확인 결과는 AI 후보에 대한 의견이며 기존 업무 필드를 자동 수정하지 않는다.
-
-인수: 실제 DB 동시 확인, request replay/body 충돌, 타 사건·권한·구버전·변조 hash 거부, audit 실패 시 확인/Outbox/멱등 응답 전체 rollback, 정확한 resume key의 unique 보장. 사람의 저장 성공과 graph 재개 완료는 서로 다른 응답 상태로 표시한다.
+**상태: 완료.** OPERATOR의 현재 pending interrupt 확인, 불변 원장·감사·actor-scoped 멱등 응답·resume Outbox의 원자적 저장을 인수했다. 후속 진입점은 `GraphReviewService`, `GraphReviewValidator`, `GraphReviewController`, `GraphStore`와 V23 migration이다. 사람 확인은 동결한 원문·후보에 대한 의견이며 기존 업무 입력·매핑·승인을 변경하지 않는다. 저장 성공은 재개 예약이며 실제 메시지 발행·SDK 재개는 P4-04, 화면 연결은 P4-06에서 수행한다. 이전 시작 메시지는 resume 구간을 claim할 수 없다.
 
 ### P4-04 — resume relay·consumer·제한 복구
 
