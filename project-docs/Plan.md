@@ -1,6 +1,6 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 완료 · Phase 3 구현·자동 통합 인수 완료 · 실제 제공자 품질 평가 대기**
+문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 상세 계획 작성 완료·구현 미착수**
 작성일: **2026-09-25**
 최신화: **2026-10-04**
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
@@ -18,7 +18,7 @@
 | 4 — Human-in-the-loop | 사람 대기와 재개를 안전하게 모델링 | LangGraph checkpoint, mapping interrupt, 새 증빙 재분석, resume 멱등성, stale 차단 | worker/message 점유 없이 정확한 version만 재개·반영 |
 | 5 — 최적화·장애 시연·포트폴리오 | 측정 가능한 개선과 재현 가능한 설명 완성 | 조회·인덱스 실험, 부하·경합·장애 주입, ERP 대사, 관측성, README/ERD/보고서 | 5~7분 시연, Docker Compose 재현, 성능·AI 평가 결과와 trade-off 설명 |
 
-Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4~5는 아직 착수하지 않았으며 다음 Phase 착수 검토 때 상세화한다.
+Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4는 아래 상세 계획까지 작성했으며 구현은 미착수다. API 설정 없이도 격리 provider fixture로 내구성 구현·검증을 진행할 수 있지만 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 착수 검토 때 상세화한다.
 
 ### 후속 설계 결정·보류 (2026-10-01)
 
@@ -211,7 +211,91 @@ Phase 3의 **P3-00~P3-09** 구현과 자동 통합 인수는 Head가 완료했�
 
 인수: backend 전체 test/bootJar, Web lint/test/build, 실제 Linux worker/wheel/CLI, 실제 pgvector/broker 연결 및 AI 오류 회귀. code-verifiable 설명을 늘리지 않고 기존 Spec/Plan/README와 의미 있는 EngineeringNotes만 갱신한다. 실제 AI 품질이 채택 기준을 충족하기 전 기본 활성화하지 않는다.
 
-## 5. Ticket 의존성
+## 5. Phase 4 Backlog
+
+Phase 4는 **P4-00~P4-07**을 Head가 순차 구현한다. 기존 Spec 8.3·14절과 Phase 3의 출처·예산·선택적 freeze 계약을 따른다. 구현 목표는 사람이 검토하는 동안 process와 메시지를 점유하지 않고, 저장된 정확한 입력에만 재개를 적용하는 것이다.
+
+### 공통 계약
+
+- 기본 비활성인 새 graph workflow를 기존 `document-parser-v1`·`ai-review-v1`과 분리한다. 기존 완료 Proposal, checkpoint, hash와 승인 동작을 재작성하지 않는다. graph 기능이 꺼져 있어도 기존 실행·조회·사람 검토는 유지한다.
+- graph의 흐름은 파서 결과 읽기 → 추출/매핑 후보 → 필요 시 사람 확인 → 정책 근거/처리 초안 → 검증된 제안 저장이다. 파싱·대사·매핑 확정·승인은 기존 Core가 담당한다. graph는 동결된 Core 결과를 읽으며 업무 변경 Tool을 갖지 않는다.
+- LangGraph SDK·`interrupt`·`Command`·serializer·checkpointer 구현은 Python infrastructure에만 둔다. application은 SDK 독립 DTO/port로 분기·예산·검증을 담당하고 domain은 바깥 계층에 의존하지 않는다. Core application은 권한·currentness·상태·transaction, persistence는 SQL·잠금·조건부 저장을 담당한다. 기존 architecture test와 Head diff 검수를 사용한다.
+- graph checkpoint도 인증된 Core 기계 API를 통해 PostgreSQL에 저장한다. worker에 DB 자격증명이나 임의 SQL 권한을 주지 않는다. SDK checkpoint와 pending writes의 저장 형태는 P4-00에서 실제 SDK로 검증하며 별도 DB·LangGraph Platform·LangSmith·Redis는 추가하지 않는다.
+- thread는 서버가 발급한 graph 실행 ID에 1:1로 묶는다. 입력에는 사건·증빙·파서·대사·구매·정책/매핑 watermark와 hash, graph/schema/version을 고정한다. 다른 사건·thread·checkpoint를 지정한 재개나 클라이언트가 제출한 임의 graph state를 거부한다.
+- 사람 대기는 `WAITING_HUMAN`으로 저장한다. checkpoint·interrupt 참조·대기 상태가 모두 영속화된 후에만 ACK하며 lease·heartbeat·consumer 호출은 종료한다. 대기 시간은 실행 timeout·재시도 횟수를 소비하지 않는다. 대기 중 broker/worker 재시작만으로 resume를 발행하지 않는다.
+- 같은 입력에서의 사람 확인만 같은 thread를 재개한다. 실제 품목 매핑은 기존 `ReviewService`의 사람 action으로 확정한다. 이 action은 사건 version 증가·재대사·후속 snapshot 동결을 이미 수행하므로 worker가 다시 실행하지 않는다. 입력이 바뀌면 옛 thread는 STALE이며 새 입력으로 별도 실행을 예약한다.
+- 새 증빙은 기존 보완 작성·제출·P2 parser 성공·최신 대사를 거친다. 옛 thread에 새 파일·context를 끼워 넣지 않는다. 새 실행은 이전 실행과 successor 관계만 보존하며 이전 성공 단계를 다른 입력의 결과로 가장하지 않는다.
+- 확인 대상은 한 번에 필요한 문서/품목 후보를 묶은 단일 interrupt로 제한한다. 같은 입력의 반복 사람 확인 loop는 만들지 않는다. 추출값 확인은 참고 자료이며 수동 청구 입력을 바꾸지 않는다. 금액·수량·원문 위치·후보 ID는 Core가 다시 검증한다.
+- 한 thread는 최초 실행과 사람 재개 두 구간만 허용한다. 각 구간 최대 3회 실행, thread 전체 최대 6회이며 호출 5회·토큰 40,000·Tool 8회·configured 비용 상한은 thread 전체에서 누적한다. 대기·재개·새 프로세스가 예약 예산을 초기화하지 않는다. 새 입력의 successor는 명시적인 OPERATOR 예약으로만 새 예산을 부여한다.
+- graph checkpoint는 업무 승인 근거 자체가 아니다. 최종 제안은 Core가 원문·수치·사람 확인·정책 근거를 재검증해 별도 immutable payload로 완성하고, 승인자는 기존 화면에서 정확한 Proposal/hash를 선택해 freeze한다. 최종 승인·배분·지급은 graph 밖에 유지한다.
+
+### P4-00 — graph 영속화와 버전 계약 확정
+
+**상태: 계획.** 의존: P3-07~P3-09 자동 인수. 실행별 schema/version, 상태 전이, checkpoint/interrupt/review/resume identity와 ACK 조건을 확정한다. `ai-review-v2`를 새 workflow로 사용하고 v1 reader/consumer는 보존한다. Spec 8.3의 개념 흐름을 실제 Core 대사 경계에 맞추고, 14절의 generic `analysisRunId` 재개 key를 graph 실행 ID·interrupt ID·reviewVersion으로 명확히 한다. 제품 용어를 추가할 때만 CONTEXT를 갱신한다.
+
+SDK 검증: pin할 LangGraph 버전을 공식 문서/패키지로 확인하고 작은 실제 graph에서 interrupt → 직렬화 → 새 프로세스 복원 → `Command(resume=...)`를 실행한다. Core API checkpointer에 필요한 checkpoint/pending writes/parent metadata를 목록화하고 JSON 허용 타입만 사용한다. pickle·임의 객체 생성·임의 모듈 import·secret/path 저장은 허용하지 않는다. SDK 크기·타입이 이 계약과 충돌하면 P4-01 착수 전에 충돌을 보고하고 경계를 수정한다.
+
+인수: interrupt 전 노드가 재실행돼도 저장한 단계/예약이 보존되는 실제 SDK 증거, 구버전 graph의 읽기/거부 정책, 상태·재개 key·예산 표의 Spec 일치. 검증 코드를 제품 실행 경로와 공유하되 데모·보고서 파일을 추가하지 않는다.
+
+### P4-01 — Core graph 상태·checkpoint·대기 저장
+
+**상태: 계획.** 의존: P4-00. 새 migration으로 graph 실행, versioned checkpoint/pending writes, interrupt와 불변 참조를 저장한다. 실행 상태는 `QUEUED → RUNNING → WAITING_HUMAN → QUEUED → RUNNING → COMPLETED` 및 FAILED/STALE 종료로 제한한다. 활성 구간·실행 lease·token과 thread 누적 예산을 분리해 저장하고 대기에 lease를 남기지 않는다.
+
+Core 기계 API는 해당 실행과 유효 token으로만 checkpoint를 읽고 쓴다. 동일 checkpoint ID/hash의 replay만 허용하고 서로 다른 내용·parent·graphVersion은 충돌로 거부한다. 저장 bytes와 개수에 유한한 상한을 고정하고 DTO와 DB 양쪽에서 적용한다. 대기 확정은 저장된 정확한 interrupt checkpoint/hash를 검증한 transaction에서 수행한다. checkpoint만 저장하고 종료된 실행은 lease reclaim으로 복구해 대기 확정까지 수렴한다.
+
+인수: 실제 PostgreSQL migration 전후 v1 payload/hash 보존, FK·unique·immutable/상태 guard, 다른 thread/사건·가짜 checkpoint·expired token 거부, 저장 응답 유실 replay, 대기 전 장애 reclaim, 대기 후 lease 부재. SQLSTATE와 효과 0을 검증한다.
+
+### P4-02 — LangGraph adapter와 durable interrupt 연결
+
+**상태: 계획.** 의존: P4-01. 기존 Document/Item Mapping/Evidence/Resolution 로직과 Core 검증을 재사용해 유한한 graph를 연결한다. SDK graph builder/checkpointer는 infrastructure에서 application port를 호출하고 composition에서 조립한다. SDK state에는 실행 identity와 검증된 단계 참조를 우선 저장해 원본·대형 payload 중복을 피한다.
+
+원문 확인 필요·복수/없는 품목 후보만 사람 확인으로 보낸다. 정상 후보는 정책/초안으로 이어가며 근거 없음·충돌은 검토 필요 결과를 보존한다. interrupt 노드에는 모델 호출·외부 변경·새 예약을 넣지 않는다. interrupt 발생 후 Core 대기 proof를 받으면 consumer가 ACK하고 반환한다. SDK 오류를 typed code로 매핑하고 비밀/문서 본문을 로그에 남기지 않는다.
+
+인수: 실제 설치 Linux wheel과 새 프로세스에서 checkpoint 복원, 사람이 없는 동안 consumer가 다른 사건 처리, SDK replay 시 성공 모델 단계 재호출 0, Core 대기 저장 실패 시 ACK 0, graph step/bytes/wall-time/호출 상한과 v1 consumer 회귀. 제공자는 격리 fixture를 사용한다.
+
+### P4-03 — 사람 확인과 원자적 resume 예약
+
+**상태: 계획.** 의존: P4-01~02. OPERATOR만 현재 사건의 pending interrupt에 확인 값을 저장할 수 있다. 요청은 requestId·기대 caseVersion·graph ID·interrupt ID·checkpoint hash·reviewVersion과 확인 값/사유를 포함한다. 서버가 actor·읽기 권한·currentness·후보/출처를 검증한다. APPROVER의 승인 권한을 OPERATOR 확인으로 대체하지 않는다.
+
+동일 transaction에서 불변 사람 확인 기록·감사·actor-scoped 멱등 응답·resume Outbox를 저장한다. 한 interrupt는 한 번만 소비하며 같은 request/body replay는 동일 응답, 같은 key의 다른 값은 409와 효과 0이다. 같은 thread에서 동시 확인은 단일 승자만 허용한다. 사람 확인 결과는 AI 후보에 대한 의견이며 기존 업무 필드를 자동 수정하지 않는다.
+
+인수: 실제 DB 동시 확인, request replay/body 충돌, 타 사건·권한·구버전·변조 hash 거부, audit 실패 시 확인/Outbox/멱등 응답 전체 rollback, 정확한 resume key의 unique 보장. 사람의 저장 성공과 graph 재개 완료는 서로 다른 응답 상태로 표시한다.
+
+### P4-04 — resume relay·consumer·제한 복구
+
+**상태: 계획.** 의존: P4-02~03. 기존 bounded Rabbit publisher와 recovery 방식을 재사용하되 graph 시작/resume 이벤트를 workflow별 allowlist로 분리한다. resume 메시지는 불변 실행/interrupt/review/checkpoint identity만 전달하고 사람 payload는 인증된 Core에서 읽는다. v1 parser/proposal queue가 resume 이벤트를 처리하지 못하게 한다.
+
+claim은 case → graph/interrupt/dispatch 잠금 순서를 고정하고 currentness·reviewVersion·resume 소비 여부를 재확인한다. 해당 thread와 checkpoint로만 `Command(resume=...)`를 호출한다. busy 중복은 durable defer 후 ACK하며 완료·stale·이미 소비된 이벤트는 저장된 proof로 ACK한다. 네트워크/429/일시 실패는 구간 3회 안에서 복구하고 인증·schema·예산 오류는 영속 실패로 끝낸다. SDK 자동 retry와 broker retry를 겹쳐 외부 호출 수를 숨기지 않는다.
+
+인수: 실제 broker confirm 후 finalize 전 종료, 동일 event 중복/역순, resume 저장 응답 유실, worker kill/lease reclaim, 429·인증 실패·소진, old token fencing, 성공 checkpoint 재사용, 대기 시간/재시작 뒤 누적 예산 유지. ACK 전 durable proof와 confirm 실패 시 delivery 보존을 확인한다.
+
+### P4-05 — 매핑·보완 successor와 stale 경합
+
+**상태: 계획.** 의존: P4-03~04. 기존 사람 매핑 action, 보완 제출, 새 대사와 구매/정책 version 변경이 pending/running graph를 무효화하도록 currentness를 연결한다. 업무 변경 성공과 옛 실행 취소를 같은 Core transaction으로 묶을 수 있는 경계만 적용하고 외부 API를 잠금 안에서 호출하지 않는다.
+
+옛 대기/lease/미발행 resume는 취소하고 이미 발행된 이벤트는 consumer currentness로 막는다. 새 매핑의 재대사 결과 또는 새 증빙의 파서 성공·최신 대사로 OPERATOR가 successor를 예약한다. parser pending/실패에는 예약을 거부하고 수동 검토는 허용한다. successor는 provenance를 연결하지만 새 thread/context이며 옛 모델 단계와 사람 확인을 자동 계승하지 않는다.
+
+인수: 실제 매핑·보완 흐름, resume와 매핑/정책 publication/승인 경합, 업무 action audit 실패 rollback, 옛 이벤트 지연 전달, 새 parser 실패, successor 중복 예약. 옛 thread 완료·새 Proposal 편입·배분/지급 자동 생성은 0이어야 한다. 기존 approval/legacy freeze 전체 회귀를 유지한다.
+
+### P4-06 — 사람 확인 UI와 대기·재개 이력
+
+**상태: 계획.** 의존: P4-03~05. 기존 사건 상세의 AI 패널에 대기 사유·원문 위치·후보·확인 기록·재개 상태를 표시한다. OPERATOR는 후보/원문을 확인하고 확인 값/사유를 저장한다. 실제 품목 변경은 기존 매핑 action으로 이동하며 새 대사 후 successor 예약을 안내한다. 보완은 기존 사람 보완/제출 action을 사용한다.
+
+확인 저장 중·저장됨/재개 대기·재개 실행·완료/실패·stale을 구분한다. 응답 불명에는 같은 intent/requestId/body를 유지하고 임의 재확인을 새 요청으로 만들지 않는다. session/case/interrupt/version 교체와 늦은 조회 응답은 기존 abort/generation 방식으로 차단한다. 모델 텍스트는 escape하고 브라우저가 계산/권한/최신성을 확정하지 않는다. 승인자는 완성된 제안만 기존 선택적 freeze로 편입한다.
+
+인수: 역할별 화면·후보 없음/모호함·단일 확인·응답 유실 재시도·늦은 응답/세션 교체 테스트. 실제 브라우저에서 확인 저장 → worker 중단/재시작 → 재개 완료, 매핑 변경 → stale/successor, AI-off 기존 검토·승인 흐름을 확인한다.
+
+### P4-07 — Phase 4 통합 인수
+
+**상태: 계획.** 의존: P4-00~06. 기존 검증 harness를 확장해 격리 Core/PostgreSQL/RabbitMQ/설치 Linux worker와 실제 LangGraph를 사용한다. 모델 fixture는 품목 모호함과 정상/오류를 결정적으로 재현하고 live 제공자 품질 검증과 구분한다.
+
+인수: 여러 사건 중 하나만 사람 대기, 대기 상태에서 모든 worker 종료 후 복원, 동일/역순 resume, checkpoint/사람 저장/confirm/완료 응답 유실, lease 회수, 실패 소진·누적 예산, 새 매핑/증빙/정책 경합과 오래된 승인 근거 거부. backend 전체 test/bootJar, Web lint/test/build, 실제 Linux wheel/CLI·broker·pgvector 회귀와 브라우저 흐름을 통과한다. 자신이 만든 자원은 성공/실패 모두 회수한다.
+
+완료 후 기존 Spec/Plan/README를 필요한 만큼만 갱신한다. 새로운 설계 결정이 생겼을 때만 관련 ADR을 작성하고 EngineeringNotes에는 의미 있는 원인·선택·교훈만 남긴다. P3-09 실제 품질 평가·원격 CI·PC 인쇄 미리보기·사람 시연 대기는 별도로 유지한다. Phase 5를 자동 착수하지 않는다.
+
+공식 SDK 참고: [interrupt와 노드 재실행](https://docs.langchain.com/oss/python/langgraph/interrupts), [checkpoint persistence](https://docs.langchain.com/oss/python/langgraph/persistence). 구현 때 pin한 버전의 API와 실제 저장·복원 동작을 다시 확인한다.
+
+## 6. Ticket 의존성
 
 ```mermaid
 flowchart TD
@@ -233,7 +317,9 @@ flowchart TD
     P110 --> P111[P1-11 통합 인수]
 ```
 
-## 6. 유지보수 Ticket
+Phase 4 순서: P4-00 → P4-01 → P4-02 → P4-03 → P4-04 → P4-05 → P4-06 → P4-07. P3-09 live 평가 대기는 AI 기본 비활성 상태의 Phase 4 구현을 막지 않는다.
+
+## 7. 유지보수 Ticket
 
 ### R1-01 — 백엔드 3계층/클린코드 정리
 
