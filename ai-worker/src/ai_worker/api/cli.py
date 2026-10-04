@@ -74,6 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("version", help="print the fixed parser version")
     subparsers.add_parser("consume", help="consume analysis requests on Linux")
+    subparsers.add_parser("consume-proposals", help="consume advisory requests on Linux")
 
     parse = subparsers.add_parser("parse", help="parse via the isolated production process")
     parse.add_argument("input", help="path to a PDF or XLSX file")
@@ -87,10 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.command == "consume":
+    if args.command in {"consume","consume-proposals"}:
         from ai_worker.application.execution import WorkerFailure
         try:
-            composition.consume()
+            (composition.consume if args.command=="consume" else composition.consume_proposals)()
             return 0
         except WorkerFailure as exc:
             sys.stderr.write(json.dumps({"error": {"code": exc.code}}) + "\n")

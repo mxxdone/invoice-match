@@ -18,10 +18,53 @@ public class ProposalStageValidator {
     public ProposalStageValidator(ProposalSourceCatalog catalog) { this.catalog=catalog; }
     public void validate(String stage,JsonNode value,ProposalRun run,List<ProposalStore.Step> steps) {
         bounded(value,0,new int[]{0});
-        if(stage!=null && stage.startsWith("ocr:")) validateOcr(stage,value,run);
+        if("execution".equals(stage)) validateExecution(value);
+        else if("embedding".equals(stage)) validateEmbedding(value,run,steps);
+        else if(stage!=null && stage.startsWith("ocr:")) validateOcr(stage,value,run);
         else if("document".equals(stage)) validateDocument(value,run,steps);
         else if("mapping".equals(stage)) ProposalMappingValidator.validate(value,run,steps,catalog);
+        else if("evidence".equals(stage) || "resolution".equals(stage)) ProposalResolutionValidator.validate(stage,value,run,steps,catalog);
         else throw ProposalSourceCatalog.invalid();
+    }
+    private void validateExecution(JsonNode n) {
+        keys(n,"schemaVersion","model","providerFingerprint","inputPricePerMillion","outputPricePerMillion","currency","costCeiling","embedding","tokenParameter","promptVersion");
+        if(!n.path("schemaVersion").asText().equals("ai-execution-plan-v1") || !n.path("promptVersion").asText().equals("invoice-advisory-1")
+            || !text(n.get("providerFingerprint"),64).matches("[0-9a-f]{64}")
+            || !Set.of("USD","KRW").contains(text(n.get("currency"),3))
+            || !Set.of("max_tokens","max_completion_tokens").contains(text(n.get("tokenParameter"),30))) throw ProposalSourceCatalog.invalid();
+        text(n.get("model"),100);
+        for(String key:List.of("inputPricePerMillion","outputPricePerMillion","costCeiling")) {
+            var value=n.get(key);
+            if(value==null || !value.isNumber() || !Double.isFinite(value.doubleValue()) || value.decimalValue().signum()<0
+                || value.decimalValue().compareTo(BigDecimal.valueOf(1000000))>0 || value.decimalValue().scale()>8) throw ProposalSourceCatalog.invalid();
+        }
+        if(n.path("costCeiling").decimalValue().signum()<=0) throw ProposalSourceCatalog.invalid();
+        var e=n.path("embedding");
+        if(!e.isNull()) {
+            keys(e,"model","version","dimension","providerFingerprint","pricePerMillion");
+            text(e.get("model"),100);text(e.get("version"),100);integer(e.get("dimension"),1,3072);
+            if(!text(e.get("providerFingerprint"),64).matches("[0-9a-f]{64}") || !e.path("pricePerMillion").isNumber()
+                || !Double.isFinite(e.path("pricePerMillion").doubleValue()) || e.path("pricePerMillion").decimalValue().signum()<0
+                || e.path("pricePerMillion").decimalValue().compareTo(BigDecimal.valueOf(1000000))>0 || e.path("pricePerMillion").decimalValue().scale()>8) throw ProposalSourceCatalog.invalid();
+        }
+    }
+    private void validateEmbedding(JsonNode n,ProposalRun run,List<ProposalStore.Step> steps) {
+        keys(n,"schemaVersion","query","model","version","dimension","embedding","calls");
+        if(!n.path("schemaVersion").asText().equals("ai-query-embedding-v1")) throw ProposalSourceCatalog.invalid();
+        var context=catalog.context(run);boolean price=false;
+        for(var exception:context.path("matchResult").path("exceptions")) if(exception.path("type").asText().contains("PRICE")) price=true;
+        if(context.path("matchResult").path("normal").asBoolean() || !n.path("query").asText().equals(price?"단가":"분할")) throw ProposalSourceCatalog.invalid();
+        var config=ProposalResolutionValidator.step("execution",steps,catalog).path("embedding");
+        if(config.isNull() || !config.path("model").equals(n.path("model")) || !config.path("version").equals(n.path("version"))
+            || integer(n.get("dimension"),1,3072)!=config.path("dimension").asInt()) throw ProposalSourceCatalog.invalid();
+        int dimension=n.path("dimension").asInt();array(n.path("embedding"),dimension,dimension);float[] vector=new float[dimension];
+        for(int i=0;i<dimension;i++) {var v=n.path("embedding").get(i);if(!v.isNumber() || !Double.isFinite(v.doubleValue())) throw ProposalSourceCatalog.invalid();vector[i]=v.floatValue();}
+        PolicySearchService.validateEmbedding(text(n.get("model"),100),vector);
+        array(context.path("policyDocuments"),1,20);
+        for(var d:context.path("policyDocuments")) if(!d.path("embeddingModel").equals(n.path("model")) || !d.path("embeddingVersion").equals(n.path("version"))
+            || d.path("embeddingDimension").asInt()!=dimension) throw ProposalSourceCatalog.invalid();
+        calls(n.path("calls"),run,1);
+        if(!n.path("calls").get(0).path("model").equals(n.path("model")) || n.path("calls").get(0).path("outputTokens").asInt()!=0) throw ProposalSourceCatalog.invalid();
     }
     private void bounded(JsonNode n,int depth,int[] count) {
         if(n==null || depth>12 || ++count[0]>15000) throw ProposalSourceCatalog.invalid();

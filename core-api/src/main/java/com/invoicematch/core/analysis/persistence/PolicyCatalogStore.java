@@ -68,6 +68,9 @@ public class PolicyCatalogStore {
                 + " and rule_key is not null and effect in ('ALLOW','DENY') group by rule_key"
                 + " having count(distinct effect)>1 order by rule_key limit 11",(rs,n)->rs.getString(1),ids(ids));
     }
+    public java.util.Optional<Chunk> chunk(UUID id) {
+        return jdbc.query("select c.*,0.0 score from policy_chunk c where id=?",(rs,n)->hit(rs).chunk(),id).stream().findFirst();
+    }
     public List<Hit> lexical(List<UUID> ids,String query,int limit) {
         if(ids.isEmpty()) return List.of();
         return jdbc.query("""

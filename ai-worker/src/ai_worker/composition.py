@@ -54,6 +54,50 @@ def consume() -> None:
         raise WorkerFailure("WORKER_FAILED") from exc
 
 
+def consume_proposals() -> None:
+    from ai_worker.application.execution import WorkerFailure
+    from ai_worker.application.proposal_execution import ProcessProposal, ProposalRequest, execution_plan
+    from ai_worker.application.recognition import RecognizeInvoice
+    from ai_worker.domain.advisory import AdvisoryFailure
+    from ai_worker.infrastructure.proposal_core_client import ProposalCoreClient
+    from ai_worker.infrastructure.structured_model import ChatStructuredModel
+    from ai_worker.infrastructure.azure_invoice import AzureInvoiceRecognizer
+    from ai_worker.infrastructure.rabbit_consumer import RabbitConsumer
+    if not sys.platform.startswith("linux"):raise WorkerFailure("UNSUPPORTED_HOST")
+    def required(name):
+        value=os.environ.get(name,"")
+        if not value or any(ord(c)<32 for c in value):raise WorkerFailure("INVALID_CONFIGURATION")
+        return value
+    if os.environ.get("ANALYSIS_AI_ENABLED")!="true":raise WorkerFailure("INVALID_CONFIGURATION")
+    try:
+        url,model=required("AI_MODEL_URL"),required("AI_MODEL_NAME")
+        parameter=os.environ.get("AI_MODEL_TOKEN_PARAMETER","max_completion_tokens")
+        plan=execution_plan(url,model,required("AI_INPUT_PRICE_PER_MILLION"),required("AI_OUTPUT_PRICE_PER_MILLION"),required("AI_COST_CURRENCY"),required("AI_COST_CEILING"),parameter)
+        adapter=ChatStructuredModel(url,required("AI_MODEL_KEY"),model,token_parameter=parameter,api_key_header=os.environ.get("AI_MODEL_API_KEY_HEADER")=="true")
+        core=ProposalCoreClient(required("CORE_API_URL"),required("ANALYSIS_WORKER_TOKEN"))
+        embedding=None
+        if any(os.environ.get(n) for n in ("AI_EMBEDDING_URL","AI_EMBEDDING_KEY","AI_EMBEDDING_MODEL","AI_EMBEDDING_VERSION","AI_EMBEDDING_DIMENSION","AI_EMBEDDING_PRICE_PER_MILLION")):
+            from ai_worker.infrastructure.embedding_model import EmbeddingModel
+            from decimal import Decimal
+            from hashlib import sha256
+            embed_url=required("AI_EMBEDDING_URL");dimension=int(required("AI_EMBEDDING_DIMENSION"));price=Decimal(required("AI_EMBEDDING_PRICE_PER_MILLION"))
+            if not price.is_finite() or price<0 or price>1000000 or price.as_tuple().exponent < -8:raise AdvisoryFailure("AI_CONFIGURATION")
+            embedding=EmbeddingModel(embed_url,required("AI_EMBEDDING_KEY"),required("AI_EMBEDDING_MODEL"),required("AI_EMBEDDING_VERSION"),dimension)
+            plan["embedding"]={"model":embedding.model,"version":embedding.version,"dimension":dimension,"providerFingerprint":sha256(embed_url.encode()).hexdigest(),"pricePerMillion":float(price)}
+        recognizer=None
+        if os.environ.get("AZURE_DOCUMENT_ENDPOINT") or os.environ.get("AZURE_DOCUMENT_KEY"):
+            if os.environ.get("AZURE_DOCUMENT_TIER")!="F0":raise AdvisoryFailure("OCR_CONFIGURATION")
+            recognizer=RecognizeInvoice(AzureInvoiceRecognizer(required("AZURE_DOCUMENT_ENDPOINT"),required("AZURE_DOCUMENT_KEY")))
+        settings={"host":required("ANALYSIS_RABBIT_HOST"),"port":os.environ.get("ANALYSIS_RABBIT_PORT","5672"),
+            "vhost":os.environ.get("ANALYSIS_RABBIT_VHOST","/"),"username":required("ANALYSIS_RABBIT_USERNAME"),"password":required("ANALYSIS_RABBIT_PASSWORD"),
+            "exchange":"invoice.proposal","queue":"invoice.proposal.requests","routing_key":"ai-review-v1"}
+        if not 1<=int(settings["port"])<=65535:raise WorkerFailure("INVALID_CONFIGURATION")
+        RabbitConsumer(ProcessProposal(core,adapter,plan,recognizer,embedding),settings,ProposalRequest.decode).run()
+    except AdvisoryFailure as exc:raise WorkerFailure(exc.code) from exc
+    except WorkerFailure:raise
+    except Exception as exc:raise WorkerFailure("WORKER_FAILED") from exc
+
+
 def build_service(limits: ParseLimits = DEFAULT_LIMITS) -> ParseDocumentService:
     return ParseDocumentService(
         detector=MagicFormatDetector(),

@@ -3,3 +3,13 @@
 @media(min-width:1600px){.page-header{padding-left:56px;padding-right:56px}.tabs,.toolbar{padding-left:56px;padding-right:56px}.comparison-table td{height:72px}.evidence-panel{width:330px}}
 @media(max-width:1200px){.sidebar{width:170px}.workspace{margin-left:170px;width:calc(100% - 170px)}.page-header{padding:30px}.tabs,.toolbar{padding-left:30px;padding-right:30px}.case-meta{gap:19px;flex-wrap:wrap}.comparison-table{min-width:950px}.with-panel .evidence-panel{width:280px}.footer-context{display:none}}
 @media(max-width:760px){.sidebar{display:none}.workspace{margin-left:0;width:100%}.page-header{padding:25px 20px}.title-row{align-items:flex-start}.title-row>.button{font-size:10px;padding:7px;min-height:30px}.title-row>.button svg{display:none}h1{font-size:26px}.tabs,.toolbar{padding-left:20px;padding-right:20px}.toolbar{gap:7px;flex-wrap:wrap}.demo-description{font-size:10px}.case-meta{gap:12px 20px}.review-workbench.with-panel{display:block}.evidence-panel{width:100%!important;border-top:1px solid var(--border);border-left:0}.action-bar{padding:12px 14px;gap:12px;flex-wrap:wrap}.action-summary>span{display:none}.action-summary strong{font-size:14px}.action-buttons{gap:5px}.button{font-size:11px;padding:8px 10px}.table-summary{flex-wrap:wrap}.table-tools{padding:0 18px}.search input{width:180px}.history-content{padding:25px 20px;overflow-x:auto}.history-table{min-width:580px}.review-note{margin:23px 20px;line-height:1.8}.toast{right:15px;top:15px}}
+
+.proposal-panel { overflow-wrap: anywhere; }
+.proposal-panel h3 { margin-top: 1.5rem; }
+.proposal-panel blockquote { margin: .65rem 0; padding: .65rem 1rem; border-left: 3px solid var(--border, #d5d7ce); background: #f5f6f2; white-space: pre-wrap; }
+.proposal-entry { padding: .8rem 0; border-bottom: 1px solid #e0e2d9; }
+.proposal-entry > span { margin-left: 1rem; }
+.proposal-source { font-size: .85rem; margin-top: .35rem; }
+.proposal-facts > div { display: flex; justify-content: space-between; gap: 1rem; padding: .3rem 0; }
+.proposal-facts dd { margin: 0; }
+.proposal-choice { display: flex; align-items: center; gap: .6rem; margin: 1rem 0; }

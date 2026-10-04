@@ -85,6 +85,7 @@ public class ReviewService {
     private final AuditRecorder audit;
     private final ObjectMapper mapper = new ObjectMapper();
     private final Clock clock;
+    private final ProposalEvidenceReader proposals;
 
     public ReviewService(
             InvoiceCaseRepository invoiceCases,
@@ -104,7 +105,7 @@ public class ReviewService {
             RequestIdempotencyStore idempotency,
             AuthorizationService authorization,
             AuditRecorder audit,
-            Clock clock) {
+            Clock clock,ProposalEvidenceReader proposals) {
         this.invoiceCases = invoiceCases;
         this.evidenceBundles = evidenceBundles;
         this.matchResults = matchResults;
@@ -122,7 +123,7 @@ public class ReviewService {
         this.idempotency = idempotency;
         this.authorization = authorization;
         this.audit = audit;
-        this.clock = clock;
+        this.clock = clock;this.proposals=proposals;
     }
 
     @Transactional
@@ -148,6 +149,8 @@ public class ReviewService {
 
         verifyResultIsCurrent(result, purchasing);
 
+        if((command.proposalId()==null)!=(command.proposalHash()==null)) throw new ReviewStateConflictException(command.caseId(),"Both advisory proposal identity and hash are required");
+        ProposalEvidenceReader.Reference proof=command.proposalId()==null?null:proposals.verify(command.caseId(),bundle.id(),result.id(),command.proposalId(),command.proposalHash());
         int snapshotNumber = snapshots.maxSnapshotNumber(command.caseId()) + 1;
         ReviewSnapshot snapshot = buildAndSaveSnapshot(
                 invoiceCase,
@@ -156,7 +159,7 @@ public class ReviewService {
                 mappingResolver.resolve(command.caseId(), bundle.id()).mappings(),
                 purchasing,
                 snapshotNumber,
-                clock.instant());
+                clock.instant(),proof);
 
         ReviewSnapshotView view = ReviewSnapshotView.from(snapshot);
         audit.record(new AuditEvent(
@@ -453,6 +456,10 @@ public class ReviewService {
                 now);
     }
 
+    private ReviewSnapshot buildAndSaveSnapshot(InvoiceCase invoiceCase,EvidenceBundle bundle,MatchResult result,
+            List<com.invoicematch.core.matching.application.AppliedMapping> appliedMappings,CurrentPurchaseOrderSnapshot purchasing,int snapshotNumber,Instant now) {
+        return buildAndSaveSnapshot(invoiceCase,bundle,result,appliedMappings,purchasing,snapshotNumber,now,null);
+    }
     private ReviewSnapshot buildAndSaveSnapshot(
             InvoiceCase invoiceCase,
             EvidenceBundle bundle,
@@ -460,7 +467,7 @@ public class ReviewService {
             List<com.invoicematch.core.matching.application.AppliedMapping> appliedMappings,
             CurrentPurchaseOrderSnapshot purchasing,
             int snapshotNumber,
-            Instant now) {
+            Instant now,ProposalEvidenceReader.Reference proof) {
         EvidenceBundlePayload bundlePayload = bundleHasher.parse(bundle.payload());
         ReviewSnapshotPayloadInput input = new ReviewSnapshotPayloadInput(
                 invoiceCase.id().value(),
@@ -477,7 +484,7 @@ public class ReviewService {
                 bundlePayload.lines(),
                 purchasing.aggregate().snapshotVersion(),
                 purchasing.aggregate().purchaseOrder().version(),
-                purchasing.payloadHash());
+                purchasing.payloadHash()).withProposal(proof);
         ReviewSnapshotPayloadBuilder.CanonicalPayload canonical = payloadBuilder.canonicalize(input);
         ReviewSnapshot snapshot = ReviewSnapshot.freeze(
                 UUID.randomUUID(),

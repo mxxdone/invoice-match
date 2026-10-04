@@ -13,8 +13,9 @@ from ai_worker.application.execution import ProcessDelivery, Request, WorkerFail
 
 
 class RabbitConsumer:
-    def __init__(self, processor: ProcessDelivery, settings: dict[str, str]) -> None:
+    def __init__(self, processor: ProcessDelivery, settings: dict[str, str], request_decoder=Request.decode) -> None:
         self.processor = processor
+        self.request_decoder = request_decoder
         self.settings = settings
         self.stopping = threading.Event()
         self.failure: str | None = None
@@ -84,7 +85,7 @@ class RabbitConsumer:
             self._stop("DELIVERY_SLOT_BUSY")
             return
         try:
-            request = Request.decode(body, properties.message_id, properties.content_type,
+            request = self.request_decoder(body, properties.message_id, properties.content_type,
                                      properties.type, properties.content_encoding)
         except WorkerFailure as exc:
             self._quarantine(channel, method.delivery_tag, body, exc.code)

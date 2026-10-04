@@ -71,6 +71,9 @@ public class ProposalStore {
                 id,caseId,source.bundleId(),source.parserRunId(),source.matchId(),hash,context);
         jdbc.update("insert into proposal_request_outbox(id,payload,status) values(?,cast(? as jsonb),'READY')",id,event);
     }
+    public List<UUID> recent(UUID caseId) {
+        return jdbc.query("select id from proposal_run where invoice_case_id=? order by created_at desc,id desc limit 20",(rs,n)->rs.getObject(1,UUID.class),caseId);
+    }
     public Optional<ProposalRun> read(UUID id) {
         return jdbc.query("select *,lease_until>clock_timestamp() lease_active,"
                 + " next_attempt_at<=clock_timestamp() due from proposal_run where id=?",
@@ -101,6 +104,8 @@ public class ProposalStore {
                 + " updated_at=clock_timestamp() where id=? and status<>'STALE'",id);
         jdbc.update("update proposal_request_outbox set status='CANCELLED',lease_token=null,lease_until=null"
                 + " where id=? and status in ('READY','CLAIMED')",id);
+        jdbc.update("update proposal_dispatch set status='CANCELLED',lease_token=null,lease_until=null"
+                + " where run_id=? and status in ('READY','CLAIMED')",id);
     }
     public Optional<Instant> claim(UUID id, UUID token, Duration lease) {
         return jdbc.query("update proposal_run set status='RUNNING',execution_token=?,lease_until=clock_timestamp()"
@@ -119,6 +124,7 @@ public class ProposalStore {
         return jdbc.query("select stage,payload_hash,payload::text from proposal_step where run_id=? order by stage",
                 (rs,n)->new Step(rs.getString(1),rs.getString(2),rs.getString(3)),id);
     }
+    public int jsonStorageBytes(String canonical) {return jdbc.queryForObject("select octet_length(cast(? as jsonb)::text)",Integer.class,canonical);}
     public void step(UUID id, String stage, String payload, String hash) {
         jdbc.update("insert into proposal_step(run_id,stage,payload,payload_hash) values(?,?,cast(? as jsonb),?)",
                 id,stage,payload,hash);

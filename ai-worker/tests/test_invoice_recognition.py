@@ -108,7 +108,7 @@ def test_untrusted_operation_never_receives_key(server, operation):
     assert state["polls"] == 0
 
 
-@pytest.mark.parametrize("status,code", [(302, "OCR_FAILED"), (429, "OCR_RATE_LIMIT"), (500, "OCR_FAILED"), (401, "OCR_FAILED")])
+@pytest.mark.parametrize("status,code", [(302, "OCR_FAILED"), (429, "OCR_RATE_LIMIT"), (500, "OCR_FAILED"), (401, "OCR_CONFIGURATION"), (403, "OCR_CONFIGURATION")])
 def test_submit_failure_does_not_follow_or_retry(server, status, code):
     origin, state = server; state["status"] = status
     with pytest.raises(AdvisoryFailure, match=code):

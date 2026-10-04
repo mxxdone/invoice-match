@@ -25,8 +25,18 @@ public record ReviewSnapshotPayloadInput(
         List<EvidenceBundlePayload.EvidenceLine> invoiceLines,
         long purchasingSnapshotVersion,
         long purchaseOrderVersion,
-        String purchasingSnapshotHash) {
+        String purchasingSnapshotHash,
+        ProposalEvidenceReader.Reference proposal) {
 
+    public ReviewSnapshotPayloadInput(UUID caseId,long caseVersion,UUID bundleId,int bundleVersion,String bundleHash,
+            UUID matchId,int matchNumber,String matchHash,int watermark,String matchPayload,List<AppliedMapping> mappings,
+            List<EvidenceBundlePayload.EvidenceLine> lines,long purchasingVersion,long orderVersion,String purchasingHash) {
+        this(caseId,caseVersion,bundleId,bundleVersion,bundleHash,matchId,matchNumber,matchHash,watermark,matchPayload,mappings,lines,purchasingVersion,orderVersion,purchasingHash,null);
+    }
+    public ReviewSnapshotPayloadInput withProposal(ProposalEvidenceReader.Reference proof) {
+        return new ReviewSnapshotPayloadInput(caseId,caseVersion,evidenceBundleId,evidenceBundleVersion,evidenceBundleHash,matchResultId,
+            matchResultNumber,matchResultHash,mappingWatermark,matchResultPayload,appliedMappings,invoiceLines,purchasingSnapshotVersion,purchaseOrderVersion,purchasingSnapshotHash,proof);
+    }
     public static final Comparator<AppliedMapping> MAPPING_ORDER =
             Comparator.comparingInt(AppliedMapping::lineNumber);
     public static final Comparator<EvidenceBundlePayload.EvidenceLine> LINE_ORDER =

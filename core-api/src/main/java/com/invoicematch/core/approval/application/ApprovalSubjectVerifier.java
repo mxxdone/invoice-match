@@ -72,6 +72,7 @@ public class ApprovalSubjectVerifier {
     private final InvoiceCaseQueryService invoiceCaseQueries;
     private final ReviewSnapshotPayloadBuilder snapshotPayloadBuilder;
     private final ApprovedAllocationPlanFactory planFactory;
+    private final com.invoicematch.core.review.application.ProposalEvidenceReader proposals;
     private final ObjectMapper mapper = new ObjectMapper();
 
     public ApprovalSubjectVerifier(
@@ -84,7 +85,7 @@ public class ApprovalSubjectVerifier {
             ObjectProvider<EffectiveMappingResolver> mappingResolvers,
             InvoiceCaseQueryService invoiceCaseQueries,
             ReviewSnapshotPayloadBuilder snapshotPayloadBuilder,
-            ApprovedAllocationPlanFactory planFactory) {
+            ApprovedAllocationPlanFactory planFactory,com.invoicematch.core.review.application.ProposalEvidenceReader proposals) {
         this.evidenceBundles = evidenceBundles;
         this.draftRevisions = draftRevisions;
         this.invoiceLines = invoiceLines;
@@ -94,7 +95,7 @@ public class ApprovalSubjectVerifier {
         this.mappingResolver = mappingResolvers.getIfAvailable(() -> EffectiveMappingResolver.EMPTY);
         this.invoiceCaseQueries = invoiceCaseQueries;
         this.snapshotPayloadBuilder = snapshotPayloadBuilder;
-        this.planFactory = planFactory;
+        this.planFactory = planFactory;this.proposals=proposals;
     }
 
     public VerifiedApprovalSubject verify(
@@ -264,6 +265,18 @@ public class ApprovalSubjectVerifier {
         // frozen under. A v2 snapshot must never be re-verified with the legacy
         // algorithm (or vice versa), and an unknown/missing version fails closed.
         String schemaVersion = storedSchemaVersion(snapshot);
+        JsonNode frozen=parseSnapshot(snapshot);
+        if(frozen.has("proposal")) {
+            if(!ReviewSnapshotPayloadBuilder.SCHEMA_VERSION.equals(schemaVersion)) throw conflict(caseId,"Legacy snapshots cannot contain advisory proposals");
+            var reference=frozen.path("proposal");var names=new java.util.HashSet<String>();reference.fieldNames().forEachRemaining(names::add);
+            if(!reference.isObject() || !names.equals(java.util.Set.of("id","payloadHash","contextHash"))
+                || !reference.path("id").isTextual() || !reference.path("payloadHash").isTextual() || !reference.path("contextHash").isTextual()) throw conflict(caseId,"Invalid frozen advisory identity");
+            try {
+                var proof=proposals.verify(caseId,bundle.id(),storedResult.id(),UUID.fromString(reference.path("id").asText()),reference.path("payloadHash").asText());
+                if(!proof.contextHash().equals(reference.path("contextHash").asText())) throw conflict(caseId,"Frozen advisory input hash mismatch");
+                input=input.withProposal(proof);
+            } catch(IllegalArgumentException e) {throw conflict(caseId,"Invalid frozen advisory identity");}
+        }
         ReviewSnapshotPayloadBuilder.CanonicalPayload canonical =
                 snapshotPayloadBuilder.canonicalize(input, schemaVersion);
         if (!canonical.hash().equals(snapshot.payloadHash())
@@ -281,6 +294,9 @@ public class ApprovalSubjectVerifier {
      * readable, supported {@code schemaVersion} is rejected, and a v2 snapshot is
      * never silently re-verified with the legacy v1 algorithm.
      */
+    private JsonNode parseSnapshot(ReviewSnapshot snapshot) {
+        try {return mapper.readTree(snapshot.payload());}catch(JsonProcessingException e) {throw conflict(snapshot.invoiceCaseId(),"Unreadable frozen review snapshot");}
+    }
     private String storedSchemaVersion(ReviewSnapshot snapshot) {
         JsonNode root;
         try {

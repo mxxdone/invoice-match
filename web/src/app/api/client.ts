@@ -4,6 +4,9 @@
 // credentials.
 
 import type {
+  ProposalPage,
+  SelectedProposal,
+  ProposalSummary,
   DocumentPage,
   DocumentDownload,
   ApprovalResult,
@@ -353,7 +356,7 @@ export function runMatch(
 export function freezeReviewSnapshot(
   credentials: Credentials,
   caseId: string,
-  input: VersionedRequest,
+  input: VersionedRequest & Partial<SelectedProposal>,
   signal?: AbortSignal,
 ): Promise<ReviewSnapshotView> {
   return requestJson<ReviewSnapshotView>(
@@ -438,4 +441,11 @@ export function retryAnalysis(credentials: Credentials, intent: AnalysisRetryInt
   const { runId, ...body } = intent;
   return requestJson<{ runId: string; status: string; executionAttempt: number; attemptLimit: number }>(
     `/api/analysis-runs/${encodeURIComponent(runId)}/retries`, credentials, { method: 'POST', body, signal });
+}
+
+export function fetchProposals(credentials: Credentials, caseId: string, signal?: AbortSignal): Promise<ProposalPage> {
+  return requestJson<ProposalPage>(`/api/invoice-cases/${encodeURIComponent(caseId)}/proposals`, credentials, { signal });
+}
+export function reserveProposal(credentials: Credentials, caseId: string, input: VersionedRequest, signal?: AbortSignal): Promise<Pick<ProposalSummary, 'id' | 'status' | 'contextHash'>> {
+  return requestJson(`/api/invoice-cases/${encodeURIComponent(caseId)}/proposals`, credentials, { method: 'POST', body: input, signal });
 }

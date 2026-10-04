@@ -21,6 +21,10 @@ import { useCaseDetail } from './use-case-detail';
 import { useCaseActions } from './use-case-actions';
 import { MutationFailureNotice } from '../mutation-failure-notice';
 import { OriginalDocuments } from './original-documents';
+import { useProposalReview } from './use-proposal-review';
+import { ProposalPanel } from './proposal-panel';
+import { eligibleProposal, frozenProposal } from './proposal-model';
+import type { SelectedProposal } from '../../api/contract';
 
 function Detail() {
   const params = useParams<{ id: string }>();
@@ -53,6 +57,13 @@ function Detail() {
   const [reason, setReason] = useState('');
   const [mappingLine, setMappingLine] = useState('');
   const [mappingItem, setMappingItem] = useState('');
+  const [proposalSelection, setProposalSelection] = useState<(SelectedProposal & { identity: string }) | null>(null);
+  const identity = `${sessionId}#${caseId}`;
+  const [proposalIdentity, setProposalIdentity] = useState(identity);
+  if (proposalIdentity !== identity) {
+    setProposalIdentity(identity);
+    setProposalSelection(null);
+  }
 
   const from = searchParams.get('from');
   const listHref = from ? `/cases?${from}` : '/cases';
@@ -75,6 +86,7 @@ function Detail() {
     onUnauthorized,
   });
 
+  const proposalLoad = useProposalReview({ credentials, sessionId, caseId, enabled: reviewReader && isAuthenticated, reloadToken, onUnauthorized });
   // Successful writes re-read the authoritative case instead of applying the
   // response locally, so the displayed subject always matches the server.
   const onCompleted = useCallback(() => setReloadToken((value) => value + 1), []);
@@ -122,6 +134,10 @@ function Detail() {
     currentBundleHash: newest?.payloadHash ?? null,
   });
   const subjectReady = binding.bound;
+  const candidateProof = proposalLoad.status === 'ready' ? eligibleProposal(proposalLoad.data.latest) : null;
+  const selectedProof = proposalSelection?.identity === identity && candidateProof?.proposalId === proposalSelection.proposalId && candidateProof?.proposalHash === proposalSelection.proposalHash ? candidateProof : null;
+  const frozenProof = snapshot ? frozenProposal(snapshot.payload) : null;
+  const sameAdvisory = selectedProof ? frozenProof?.proposalId === selectedProof.proposalId && frozenProof?.proposalHash === selectedProof.proposalHash : frozenProof === null;
   const mappingRows = match ? comparisonRows(match) : [];
   const actionInFlight = actions.pendingAction !== null;
   const actionUnresolved = actions.unresolved !== null;
@@ -132,7 +148,7 @@ function Detail() {
 
   async function doFreeze() {
     if (!newest) return;
-    await actions.freezeSnapshot(data.detail.version);
+    await actions.freezeSnapshot(data.detail.version, selectedProof ?? undefined);
   }
   async function doMapping() {
     if (!snapshot || !subjectReady) return;
@@ -220,6 +236,8 @@ function Detail() {
         </div>
       )}
 
+      {reviewReader && <ProposalPanel load={proposalLoad} match={match} canReserve={isOperator} pending={actions.pendingAction === 'proposal'} blocked={actionBlocked}
+        onReserve={() => actions.reserveProposal(data.detail.version)} onRefresh={() => setReloadToken(value => value + 1)} />}
       <div className="tabs" role="tablist" aria-label="청구서 상세">
         {tabs.map(([id, label]) => (
           <button key={id} role="tab" id={`tab-${id}`} aria-controls={`panel-${id}`} aria-selected={tab === id} className={tab === id ? 'active' : ''} onClick={() => selectTab(id)}>{label}</button>
@@ -250,8 +268,11 @@ function Detail() {
               {!snapshot && newest && ' 아직 검토 대상이 없어 동결할 수 있습니다.'}
             </SectionMessage>
           )}
+          {candidateProof && <label className="proposal-choice"><input type="checkbox" disabled={actionBlocked} checked={selectedProof !== null}
+            onChange={event => setProposalSelection(event.target.checked ? { ...candidateProof, identity } : null)} />이 AI 제안을 검토 근거에 포함</label>}
+          {frozenProof && <p>현재 검토 대상에 동결된 AI 제안: {frozenProof.proposalId}</p>}
           <div className="dialog-actions">
-            <button className="button" disabled={actionBlocked || newest === null || subjectReady} title={subjectReady ? '이미 최신 검토 대상이 있습니다.' : '현재 자료로 검토 대상을 동결합니다.'} onClick={doFreeze}>
+            <button className="button" disabled={actionBlocked || newest === null || (subjectReady && sameAdvisory)} title={subjectReady && sameAdvisory ? '이미 최신 검토 대상이 있습니다.' : '현재 자료로 검토 대상을 동결합니다.'} onClick={doFreeze}>
               {actions.pendingAction === 'freeze' ? '동결 중…' : '검토 대상 동결'}
             </button>
           </div>

@@ -513,7 +513,7 @@ flowchart LR
 
 HTTP 경로와 DTO는 controller 코드가 기준이다. 미구현 기능의 endpoint 초안은 별도로 관리하지 않는다.
 
-쓰기 API는 요청 ID와 기대 version을 요구한다. 승인 API는 `requestId`, `expectedCaseVersion`, `reviewSnapshotId`, `reviewPayloadHash`를 받는다. 증빙 bundle 식별은 요청에 별도로 싣지 않고 승인 대상 `reviewSnapshotId`가 동결한 증빙 근거로 서버가 재검증한다. AI Proposal이 존재하면 ReviewSnapshot의 선택적 근거로 포함하지만 승인 API의 필수 식별자는 아니다.
+쓰기 API는 요청 ID와 기대 version을 요구한다. 승인 API는 `requestId`, `expectedCaseVersion`, `reviewSnapshotId`, `reviewPayloadHash`를 받는다. 증빙 bundle 식별은 요청에 별도로 싣지 않고 승인 대상 `reviewSnapshotId`가 동결한 증빙 근거로 서버가 재검증한다. 사람은 현재 완료된 Proposal을 선택적으로 동결한다. 서버는 선택한 정확한 ID·payload hash·context hash와 출처를 검증하며, 승인 시에도 같은 제안을 재구성한다. 최신 제안으로 자동 대체하지 않고 제안 없는 기존 snapshot은 기존 hash·승인 계약을 유지한다.
 
 ## 19. 화면 범위
 
@@ -665,6 +665,8 @@ PostgreSQL·RabbitMQ 통합 테스트는 Testcontainers로 실행한다. Mock ER
 | 비용 | 건당 호출 수, 토큰, retry 포함 비용 |
 
 AI가 생성한 합성 문서만으로 AI를 평가하지 않는다. 사람이 수정한 표현, 표 레이아웃 차이, 스캔 노이즈, 구버전 계약, 근거가 없는 사건을 포함한다.
+
+API 미설정 시 합성 사례의 offline 계약·비-AI 기준선만 측정한다. 실패·누락은 평가 분모에 남기고 알려진 사용량과 응답 불명 호출의 예약 예산을 구분한다. 합성 OCR·mock 모델 결과를 실제 Azure·LLM 품질로 보고하지 않으며, 실제 문서와 사람 검토를 포함한 live 평가 전에는 AI를 기본 활성화하지 않는다.
 
 AI 기능은 비-AI 기준선보다 검토시간, 추출 정확도, 검색 Recall@k 또는 사람 수정률 중 하나 이상을 의미 있게 개선할 때 채택한다. 평균 성능만 제시하지 않고 latency, 비용, 잘못된 확정 제안 비율과 대표 실패 사례를 함께 공개한다. AI가 만든 결과도 동일한 금액·수량·잔량·권한 검증을 통과해야 한다.
 

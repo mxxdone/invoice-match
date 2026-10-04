@@ -79,6 +79,7 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
     private static final String CLEANUP_MESSAGE = "analysis relay cleanup";
 
     private final AnalysisRelayProperties properties;
+    private final String eventType;
     private final ExecutorService attempts = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "analysis-relay-publisher");
         thread.setDaemon(true);
@@ -90,7 +91,11 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
     private final AtomicReference<Attempt> current = new AtomicReference<>();
 
     public RabbitAnalysisRequestPublisher(AnalysisRelayProperties properties) {
-        this.properties = properties;
+        this(properties,EVENT_TYPE);
+    }
+    public RabbitAnalysisRequestPublisher(AnalysisRelayProperties properties,String eventType) {
+        if(!java.util.Set.of(EVENT_TYPE,"InvoiceProposalRequested").contains(eventType)) throw new IllegalArgumentException("Unsupported analysis event type");
+        this.properties = properties;this.eventType=eventType;
     }
 
     /**
@@ -372,7 +377,7 @@ public class RabbitAnalysisRequestPublisher implements AnalysisRequestPublisher,
                     .contentEncoding(StandardCharsets.UTF_8.name())
                     .deliveryMode(2)
                     .messageId(command.eventId().toString())
-                    .type(EVENT_TYPE)
+                    .type(eventType)
                     .build();
             byte[] body = command.payload().getBytes(StandardCharsets.UTF_8);
             channel.basicPublish(rabbit.exchange(), routingKey, true, messageProperties, body);

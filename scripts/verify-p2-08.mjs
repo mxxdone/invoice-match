@@ -59,11 +59,11 @@ async function wait(label, predicate, timeoutMs = 120000) {
   }
   throw Error('Timed out: ' + label);
 }
-async function ready(url, id) {
+async function ready(url, id, timeoutMs = 120000) {
   await wait(url, async () => {
     assert.equal(await command(['inspect', '--format', '{{.State.Running}}', id]), 'true', 'owned service exited');
     try { return (await fetch(url, { signal: AbortSignal.timeout(2000) })).ok; } catch { return false; }
-  });
+  }, timeoutMs);
 }
 async function sql(statement) {
   const result = await docker.exec(pg, ['psql', '-U', 'invoice_match', '-d', 'invoice_match', '-v', 'ON_ERROR_STOP=1', '-tAc', statement]);
@@ -184,9 +184,12 @@ try {
         DOCUMENT_STORAGE_PUBLIC_ENDPOINT: `http://127.0.0.1:${ports.minio}`, DOCUMENT_STORAGE_ACCESS_KEY: storageUser,
         DOCUMENT_STORAGE_SECRET_KEY: storagePassword, ANALYSIS_REQUEST_ENABLED: 'true', ANALYSIS_RELAY_ENABLED: 'true',
         ANALYSIS_RELAY_INTERVAL: '1s', ANALYSIS_RABBIT_HOST: 'rabbit', ANALYSIS_RABBIT_USERNAME: rabbitUser,
-        ANALYSIS_RABBIT_PASSWORD: rabbitPassword, ANALYSIS_WORKER_ENABLED: 'true', ANALYSIS_WORKER_TOKEN: workerToken },
+        ANALYSIS_RABBIT_PASSWORD: rabbitPassword, ANALYSIS_WORKER_ENABLED: 'true', ANALYSIS_WORKER_TOKEN: workerToken,
+        ANALYSIS_AI_ENABLED:process.env.VERIFY_PROPOSALS==='true'?'true':'false',
+        ANALYSIS_AI_RELAY_ENABLED:process.env.VERIFY_PROPOSALS==='true'?'true':'false',
+        ANALYSIS_AI_LEASE_DURATION:'120s' },
       ['-Xmx384m', '-jar', '/verify/current.jar']);
-  await ready(coreUrl + '/actuator/health', core);
+  await ready(coreUrl + '/actuator/health', core, 240000);
   const proxy = await container('proxy', nodeImage, ['--entrypoint', 'node', '-p', `127.0.0.1:${ports.proxy}:8080`,
        '-v', join(repo, 'scripts', 'lib', 'analysis-verification-proxy.mjs') + ':/verify/proxy.mjs:ro'],
       { CORE_API_URL: 'http://core:8080', CONTROL_TOKEN: controlToken }, ['/verify/proxy.mjs']);
@@ -201,6 +204,11 @@ try {
   await publish(normal.runId); await queueEmpty();
   assert.equal(await sql(`select count(*) from analysis_document_result where run_id='${normal.runId}'`), '2');
   record('same event redelivery preserves immutable result count');
+  if(process.env.VERIFY_PROPOSALS==='true') {
+    const {verifyProposal}=await import('./lib/proposal-verification.mjs');
+    await verifyProposal({repo,output,api,sql,container,command,wait,docker,rabbit,worker,normal,
+      workerToken,rabbitUser,rabbitPassword,run,record,coreUrl});
+  } else {
   const broken = await makeCase(['broken']);
   await finished(broken.runId, 'FAILED'); await queueEmpty();
   assert.equal(await sql(`select error_code from analysis_document_result where run_id='${broken.runId}'`), 'PDF_CORRUPT');
@@ -325,6 +333,7 @@ try {
     console.log('INFO UI inspection ready: '+output);
     const deadline=Date.now()+seconds*1000;
     while(Date.now()<deadline && !existsSync(join(output,'ui-release'))) await sleep(400);
+  }
   }
   writeFileSync(join(output, 'summary.json'), JSON.stringify({ ok: true, steps }, null, 2));
 } catch (error) {

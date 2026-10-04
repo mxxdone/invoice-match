@@ -13,11 +13,15 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
+@org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc(print=org.springframework.boot.test.autoconfigure.web.servlet.MockMvcPrint.NONE)
 class ProposalIntegrationTest extends AbstractAnalysisExecutionIntegrationTest {
     @DynamicPropertySource static void aiProperties(DynamicPropertyRegistry r) { r.add("analysis.ai.enabled",()->true); }
     @Autowired ProposalService proposals;
+    @Autowired org.springframework.test.web.servlet.MockMvc mvc;
+    @Autowired com.invoicematch.core.analysis.persistence.ProposalRecoveryStore recovery;
     @Autowired ProposalExecutionService ai;
     @Autowired ProposalToolService tools;
+    @Autowired ProposalQueryService proposalQueries;
     @Autowired org.springframework.transaction.PlatformTransactionManager transactions;
     @Autowired PolicyCatalogService policies;
     @Autowired PolicySearchService search;
@@ -145,6 +149,251 @@ class ProposalIntegrationTest extends AbstractAnalysisExecutionIntegrationTest {
         jdbc.update("insert into proposal_step(run_id,stage,payload,payload_hash) values(?,'document','{}',?)",r.id(),"1".repeat(64));
         assertDatabaseRejects("P0001",()->jdbc.update("update proposal_step set payload='{}' where run_id=?",r.id()));
         assertDatabaseRejects("P0001",()->jdbc.update("delete from proposal_step where run_id=?",r.id()));
+    }
+    @Test void finalProposalUsesOnlyValidatedCheckpointsAndCoreFactsAndReplays() throws Exception {
+        var f=ready();var r=reserve(f);var c=ai.claim(r.id(),r.contextHash());long version=caseVersion(f.caseId());
+        ai.reserveCall(r.id(),r.contextHash(),c.token(),UUID.randomUUID(),1000);
+        var doc=json.createObjectNode().put("schemaVersion","invoice-extraction-v1").put("promptVersion","invoice-advisory-1");
+        doc.putArray("calls").addObject().put("model","fixture").put("inputTokens",100).put("outputTokens",100).put("latencyMs",1);
+        var d=doc.putObject("result");d.putArray("fields");d.putArray("lines");d.putArray("warnings").add("EMPTY_DOCUMENT");
+        ai.checkpoint(r.id(),r.contextHash(),c.token(),"document",doc);
+        var mapping=json.createObjectNode().put("schemaVersion","item-mapping-v1").put("promptVersion","invoice-advisory-1");
+        mapping.putArray("calls");mapping.putObject("result").putArray("lines");ai.checkpoint(r.id(),r.contextHash(),c.token(),"mapping",mapping);
+        boolean normal=json.readTree(c.context()).path("matchResult").path("normal").asBoolean();
+        var evidence=json.createObjectNode().put("schemaVersion","ai-evidence-stage-v1");evidence.putArray("calls");
+        var e=evidence.putObject("result");
+        if(normal) {e.put("status","NOT_REQUIRED").putNull("toolRequestId");}
+        else {UUID request=UUID.randomUUID();var proof=search.search(r.id(),r.contextHash(),c.token(),new PolicySearchService.Request(request,"분할","LEXICAL",null,null,null,3));
+            e.put("status",proof.path("status").asText()).put("toolRequestId",request.toString());}
+        ai.checkpoint(r.id(),r.contextHash(),c.token(),"evidence",evidence);
+        assertThatThrownBy(()->ai.complete(r.id(),r.contextHash(),c.token())).isInstanceOf(AnalysisValidationException.class);
+        assertThat(count("proposal")).isZero();
+        var resolution=json.createObjectNode().put("schemaVersion","ai-resolution-v1").put("promptVersion","invoice-advisory-1");resolution.putArray("calls");
+        var result=resolution.putObject("result").put("recommendation",normal?"REVIEW_REQUIRED":"INSUFFICIENT_EVIDENCE").put("summary","원문과 근거를 사람이 검토해야 합니다.");
+        result.putArray("factIds").add("invoiceTotal");result.putArray("citations");var warnings=result.putArray("warnings").add("DOCUMENT_REVIEW");
+        if(!normal) warnings.add("INSUFFICIENT_EVIDENCE");
+        ai.checkpoint(r.id(),r.contextHash(),c.token(),"resolution",resolution);
+        var saved=ai.complete(r.id(),r.contextHash(),c.token());
+        assertThat(ai.complete(r.id(),r.contextHash(),UUID.randomUUID())).isEqualTo(saved);
+        var payload=json.readTree(saved.payload());assertThat(payload.path("facts").path("invoiceTotal").path("value").asLong()).isEqualTo(150000);
+        assertThat(payload.path("resolution").path("result").path("recommendation").asText()).isEqualTo(normal?"REVIEW_REQUIRED":"INSUFFICIENT_EVIDENCE");
+        assertThat(jdbc.queryForObject("select status from proposal_run where id=?",String.class,r.id())).isEqualTo("COMPLETED");
+        assertThat(count("proposal")).isEqualTo(1);assertThat(caseVersion(f.caseId())).isEqualTo(version);
+        assertThat(count("payment_request")).isZero();assertThat(count("receipt_allocation")).isZero();
+        assertDatabaseRejects("P0001",()->jdbc.update("update proposal set payload='{}' where id=?",r.id()));
+        match(f);assertThatThrownBy(()->ai.complete(r.id(),r.contextHash(),c.token())).isInstanceOf(AnalysisConflictException.class);
+    }
+    private void confirmItem(RunFixture f) {
+        TestActors.run("approver","APPROVER",()->reviewService.freezeSnapshot(new com.invoicematch.core.review.application.FreezeReviewSnapshotCommand(
+                f.caseId(),UUID.randomUUID().toString(),caseVersion(f.caseId()))));
+        var snapshot=reviewSnapshots.findFirstByInvoiceCaseIdOrderBySnapshotNumberDesc(f.caseId()).orElseThrow();
+        TestActors.run("approver","APPROVER",()->reviewService.recordMapping(new com.invoicematch.core.review.application.RecordMappingDecisionCommand(
+                f.caseId(),UUID.randomUUID().toString(),caseVersion(f.caseId()),snapshot.id(),snapshot.payloadHash(),1,ITEM_A)));
+    }
+
+    private com.invoicematch.core.analysis.persistence.ProposalStore.Saved completeEmpty(ProposalService.Reserved r) throws Exception {
+        var c=ai.claim(r.id(),r.contextHash());
+        ai.reserveCall(r.id(),r.contextHash(),c.token(),UUID.randomUUID(),1000);
+        var doc=json.createObjectNode().put("schemaVersion","invoice-extraction-v1").put("promptVersion","invoice-advisory-1");
+        doc.putArray("calls").addObject().put("model","fixture").put("inputTokens",100).put("outputTokens",100).put("latencyMs",1);
+        var d=doc.putObject("result");d.putArray("fields");d.putArray("lines");d.putArray("warnings").add("EMPTY_DOCUMENT");
+        ai.checkpoint(r.id(),r.contextHash(),c.token(),"document",doc);
+        var mapping=json.createObjectNode().put("schemaVersion","item-mapping-v1").put("promptVersion","invoice-advisory-1");
+        mapping.putArray("calls");mapping.putObject("result").putArray("lines");ai.checkpoint(r.id(),r.contextHash(),c.token(),"mapping",mapping);
+        boolean normal=json.readTree(c.context()).path("matchResult").path("normal").asBoolean();
+        var evidence=json.createObjectNode().put("schemaVersion","ai-evidence-stage-v1");evidence.putArray("calls");
+        var e=evidence.putObject("result");
+        if(normal) e.put("status","NOT_REQUIRED").putNull("toolRequestId");
+        else {UUID request=UUID.randomUUID();var proof=search.search(r.id(),r.contextHash(),c.token(),new PolicySearchService.Request(request,"분할","LEXICAL",null,null,null,3));
+            e.put("status",proof.path("status").asText()).put("toolRequestId",request.toString());}
+        ai.checkpoint(r.id(),r.contextHash(),c.token(),"evidence",evidence);
+        var resolution=json.createObjectNode().put("schemaVersion","ai-resolution-v1").put("promptVersion","invoice-advisory-1");resolution.putArray("calls");
+        var result=resolution.putObject("result").put("recommendation",normal?"REVIEW_REQUIRED":"INSUFFICIENT_EVIDENCE").put("summary","원문과 근거를 사람이 검토해야 합니다.");
+        result.putArray("factIds").add("invoiceTotal");result.putArray("citations");var warnings=result.putArray("warnings").add("DOCUMENT_REVIEW");
+        if(!normal) warnings.add("INSUFFICIENT_EVIDENCE");
+        ai.checkpoint(r.id(),r.contextHash(),c.token(),"resolution",resolution);
+        return ai.complete(r.id(),r.contextHash(),c.token());
+    }
+
+    @Test void selectedExactProposalIsFrozenButApprovalStillUsesVerifiedHumanInput() throws Exception {
+        var f=ready();confirmItem(f);var r=reserve(f);var saved=completeEmpty(r);
+        var cmd=new com.invoicematch.core.review.application.FreezeReviewSnapshotCommand(f.caseId(),UUID.randomUUID().toString(),caseVersion(f.caseId()),r.id(),saved.payloadHash());
+        var first=TestActors.call("approver","APPROVER",()->reviewService.freezeSnapshot(cmd));
+        assertThat(TestActors.call("approver","APPROVER",()->reviewService.freezeSnapshot(cmd))).isEqualTo(first);
+        var snapshot=reviewSnapshots.findFirstByInvoiceCaseIdOrderBySnapshotNumberDesc(f.caseId()).orElseThrow();
+        var payload=json.readTree(snapshot.payload());
+        assertThat(payload.path("proposal").path("id").asText()).isEqualTo(r.id().toString());
+        assertThat(payload.path("proposal").path("payloadHash").asText()).isEqualTo(saved.payloadHash());
+        assertThat(payload.path("proposal").path("contextHash").asText()).isEqualTo(r.contextHash());
+        assertThat(json.readTree(saved.payload()).path("resolution").path("result").path("recommendation").asText()).isEqualTo("REVIEW_REQUIRED");
+        TestActors.run("approver","APPROVER",()->approval.approve(new com.invoicematch.core.approval.application.ApproveInvoiceCaseCommand(
+                f.caseId(),UUID.randomUUID().toString(),caseVersion(f.caseId()),snapshot.id(),snapshot.payloadHash())));
+        assertThat(count("payment_request")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select amount from payment_request",Long.class)).isEqualTo(150000L);
+    }
+
+    @Test void crossCaseHashMismatchMissingPairAndStaleProposalCannotFreezeOrLeak() throws Exception {
+        var f=ready();var r=reserve(f);var saved=completeEmpty(r);var foreign=ready();var other=reserve(foreign);var otherSaved=completeEmpty(other);
+        long version=caseVersion(f.caseId());var before=jdbc.queryForList("select * from review_snapshot");int audit=count("audit_entry");
+        for(var cmd:java.util.List.of(
+                new com.invoicematch.core.review.application.FreezeReviewSnapshotCommand(f.caseId(),UUID.randomUUID().toString(),version,other.id(),otherSaved.payloadHash()),
+                new com.invoicematch.core.review.application.FreezeReviewSnapshotCommand(f.caseId(),UUID.randomUUID().toString(),version,r.id(),"0".repeat(64)),
+                new com.invoicematch.core.review.application.FreezeReviewSnapshotCommand(f.caseId(),UUID.randomUUID().toString(),version,r.id(),null))) {
+            assertThatThrownBy(()->TestActors.call("approver","APPROVER",()->reviewService.freezeSnapshot(cmd)))
+                .isInstanceOf(com.invoicematch.core.review.domain.ReviewStateConflictException.class);
+        }
+        assertThatThrownBy(()->TestActors.call("operator","OPERATOR",()->proposalQueries.view(f.caseId(),other.id()))).isInstanceOf(AnalysisRunNotFoundException.class);
+        assertThat(jdbc.queryForList("select * from review_snapshot")).isEqualTo(before);assertThat(count("audit_entry")).isEqualTo(audit);assertThat(caseVersion(f.caseId())).isEqualTo(version);
+        match(f);
+        assertThatThrownBy(()->TestActors.call("approver","APPROVER",()->reviewService.freezeSnapshot(
+                new com.invoicematch.core.review.application.FreezeReviewSnapshotCommand(f.caseId(),UUID.randomUUID().toString(),caseVersion(f.caseId()),r.id(),saved.payloadHash()))))
+            .isInstanceOf(com.invoicematch.core.review.domain.ReviewStateConflictException.class);
+        assertThat(count("payment_request")).isZero();assertThat(count("receipt_allocation")).isZero();
+    }
+
+    @Test void selfConsistentForgedFrozenProposalReferencesAreRejectedWithZeroApprovalEffects() throws Exception {
+        var f=ready();confirmItem(f);var r=reserve(f);var saved=completeEmpty(r);
+        TestActors.run("approver","APPROVER",()->reviewService.freezeSnapshot(new com.invoicematch.core.review.application.FreezeReviewSnapshotCommand(
+                f.caseId(),UUID.randomUUID().toString(),caseVersion(f.caseId()),r.id(),saved.payloadHash())));
+        var real=reviewSnapshots.findFirstByInvoiceCaseIdOrderBySnapshotNumberDesc(f.caseId()).orElseThrow();
+        long version=caseVersion(f.caseId());int audit=count("audit_entry"),decisions=count("review_decision"),idempotency=count("idempotency_record");
+        int number=real.snapshotNumber();
+        for(String field:java.util.List.of("id","payloadHash","contextHash")) {
+            var payload=(com.fasterxml.jackson.databind.node.ObjectNode)json.readTree(real.payload());
+            ((com.fasterxml.jackson.databind.node.ObjectNode)payload.path("proposal")).put(field,field.equals("id")?UUID.randomUUID().toString():"0".repeat(64));
+            String canonical=json.writeValueAsString(sortedJson(payload));
+            String hash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(canonical.getBytes(java.nio.charset.StandardCharsets.UTF_8)));UUID forged=UUID.randomUUID();
+            jdbc.update("insert into review_snapshot(id,invoice_case_id,evidence_bundle_id,match_result_id,match_result_number,snapshot_number,target_case_version,"
+                +"target_evidence_bundle_version,purchasing_snapshot_version,purchasing_snapshot_hash,mapping_watermark,payload_hash,payload,created_at)"
+                +" select ?,invoice_case_id,evidence_bundle_id,match_result_id,match_result_number,?,target_case_version,target_evidence_bundle_version,"
+                +"purchasing_snapshot_version,purchasing_snapshot_hash,mapping_watermark,?,cast(? as jsonb),clock_timestamp() from review_snapshot where id=?",forged,++number,hash,canonical,real.id());
+            assertThatThrownBy(()->TestActors.run("approver","APPROVER",()->approval.approve(new com.invoicematch.core.approval.application.ApproveInvoiceCaseCommand(
+                    f.caseId(),UUID.randomUUID().toString(),version,forged,hash))))
+                .isInstanceOf(com.invoicematch.core.review.domain.ReviewStateConflictException.class);
+            assertThat(count("payment_request")).isZero();assertThat(count("receipt_allocation")).isZero();assertThat(caseVersion(f.caseId())).isEqualTo(version);
+            assertThat(count("audit_entry")).isEqualTo(audit);assertThat(count("review_decision")).isEqualTo(decisions);assertThat(count("idempotency_record")).isEqualTo(idempotency);
+        }
+    }
+
+    private com.fasterxml.jackson.databind.JsonNode sortedJson(com.fasterxml.jackson.databind.JsonNode node) {
+        if(node.isObject()) {
+            var sorted=json.createObjectNode();var keys=new java.util.TreeSet<String>();node.fieldNames().forEachRemaining(keys::add);
+            for(var key:keys) sorted.set(key,sortedJson(node.get(key)));
+            return sorted;
+        }
+        if(node.isArray()) {var sorted=json.createArrayNode();for(var value:node) sorted.add(sortedJson(value));return sorted;}
+        return node;
+    }
+
+    private com.fasterxml.jackson.databind.node.ObjectNode executionPlan(double ceiling) {
+        return json.createObjectNode().put("schemaVersion","ai-execution-plan-v1").put("model","fixture").put("providerFingerprint","0".repeat(64))
+            .putNull("embedding").put("inputPricePerMillion",1).put("outputPricePerMillion",2).put("currency","USD").put("costCeiling",ceiling)
+            .put("tokenParameter","max_completion_tokens").put("promptVersion","invoice-advisory-1");
+    }
+    @Test void failureReplayReclaimAndCostCapPreserveAllUncertainReservations() throws Exception {
+        var f=ready();var r=reserve(f);var c=ai.claim(r.id(),r.contextHash());
+        ai.checkpoint(r.id(),r.contextHash(),c.token(),"execution",executionPlan(0.0005));
+        ai.reserveConfiguredCall(r.id(),r.contextHash(),c.token(),UUID.randomUUID(),100);
+        assertThatThrownBy(()->ai.reserveConfiguredCall(r.id(),r.contextHash(),c.token(),UUID.randomUUID(),400)).isInstanceOf(AnalysisConflictException.class);
+        var failure=ai.failure(r.id(),r.contextHash(),c.token(),"AI_RATE_LIMIT");
+        assertThat(failure.runStatus()).isEqualTo("QUEUED");assertThat(ai.failure(r.id(),r.contextHash(),c.token(),"AI_RATE_LIMIT")).isEqualTo(failure);
+        assertThat(count("proposal_failure")).isEqualTo(1);assertThat(count("proposal_dispatch")).isEqualTo(1);
+        assertThat(ai.claim(r.id(),r.contextHash()).disposition()).isEqualTo("BUSY");
+        assertThat(ai.defer(r.id(),r.contextHash()).runStatus()).isEqualTo("QUEUED");
+        long deadline=System.nanoTime()+Duration.ofSeconds(8).toNanos();
+        while(!Boolean.TRUE.equals(jdbc.queryForObject("select next_attempt_at<=clock_timestamp() from proposal_run where id=?",Boolean.class,r.id()))) {
+            assertThat(System.nanoTime()).isLessThan(deadline);Thread.sleep(50);
+        }
+        var next=ai.claim(r.id(),r.contextHash());assertThat(next.token()).isNotEqualTo(c.token());
+        assertThat(next.steps()).hasSize(1);assertThat(jdbc.queryForObject("select reserved_tokens from proposal_run where id=?",Integer.class,r.id())).isEqualTo(100);
+        assertThatThrownBy(()->ai.reserveConfiguredCall(r.id(),r.contextHash(),c.token(),UUID.randomUUID(),100)).isInstanceOf(AnalysisConflictException.class);
+        ai.reserveConfiguredCall(r.id(),r.contextHash(),next.token(),UUID.randomUUID(),100);
+        assertThat(ai.failure(r.id(),r.contextHash(),next.token(),"AI_SCHEMA_INVALID").runStatus()).isEqualTo("FAILED");
+        assertThat(count("proposal_call_reservation")).isEqualTo(2);
+        assertThat(jdbc.queryForObject("select reserved_tokens from proposal_run where id=?",Integer.class,r.id())).isEqualTo(200);
+        assertDatabaseRejects("P0001",()->jdbc.update("delete from proposal_failure where run_id=?",r.id()));
+        assertDatabaseRejects("23000",()->jdbc.update("update proposal_run set status='QUEUED' where id=?",r.id()));
+    }
+    @Test void recoveryDispatchUsesRealExpiryAndFencesOldSettlementWithoutChangingEventId() throws Exception {
+        var f=ready();var r=reserve(f);
+        recovery.dispatch(r.id(),"redelivery",Duration.ZERO,false);
+        var first=recovery.claim(false,Duration.ofSeconds(1)).orElseThrow();
+        assertThat(first.eventId()).isEqualTo(r.id());
+        assertThat(json.readTree(first.payload()).path("eventId").asText()).isEqualTo(r.id().toString());
+        assertDatabaseRejects("23514",()->jdbc.update("update proposal_dispatch set lease_until=lease_until+interval '1 minute' where id=?",first.id()));
+        assertDatabaseRejects("23514",()->jdbc.update("update proposal_dispatch set status='CANCELLED',lease_token=null,lease_until=null,attempt_count=attempt_count+1 where id=?",first.id()));
+        long deadline=System.nanoTime()+Duration.ofSeconds(5).toNanos();
+        while(Boolean.TRUE.equals(jdbc.queryForObject("select lease_until>clock_timestamp() from proposal_dispatch where id=?",Boolean.class,first.id()))) {
+            assertThat(System.nanoTime()).isLessThan(deadline);Thread.sleep(25);
+        }
+        var reclaimed=recovery.claim(false,Duration.ofSeconds(10)).orElseThrow();
+        assertThat(reclaimed.id()).isEqualTo(first.id());assertThat(reclaimed.token()).isNotEqualTo(first.token());
+        assertThat(reclaimed.payload()).isEqualTo(first.payload());
+        assertThat(recovery.settle(first,true,Duration.ZERO)).isFalse();
+        assertThat(recovery.settle(reclaimed,true,Duration.ZERO)).isTrue();
+        assertThat(recovery.settle(reclaimed,false,Duration.ZERO)).isFalse();
+        assertThat(jdbc.queryForObject("select attempt_count from proposal_dispatch where id=?",Integer.class,first.id())).isEqualTo(2);
+        assertDatabaseRejects("23000",()->jdbc.update("update proposal_dispatch set status='CANCELLED',published_at=null where id=?",first.id()));
+        assertDatabaseRejects("23000",()->jdbc.update("delete from proposal_dispatch where id=?",first.id()));
+    }
+
+    @Test void recoveryClaimSkipsLockedRowsAndStaleCancelsOnlyUnpublishedEvents() throws Exception {
+        var f=ready();var r=reserve(f);
+        recovery.dispatch(r.id(),"published",Duration.ZERO,false);
+        var published=recovery.claim(false,Duration.ofSeconds(10)).orElseThrow();
+        assertThat(recovery.settle(published,true,Duration.ZERO)).isTrue();
+        recovery.dispatch(r.id(),"locked",Duration.ZERO,false);
+        UUID locked=jdbc.queryForObject("select id from proposal_dispatch where dedup_key='locked'",UUID.class);
+        recovery.dispatch(r.id(),"available",Duration.ZERO,false);
+        var held=new java.util.concurrent.CountDownLatch(1);var release=new java.util.concurrent.CountDownLatch(1);
+        var pool=Executors.newSingleThreadExecutor();
+        try {
+            var holder=pool.submit(()->new org.springframework.transaction.support.TransactionTemplate(transactions).execute(status->{
+                jdbc.queryForObject("select id from proposal_dispatch where id=? for update",UUID.class,locked);held.countDown();
+                try { assertThat(release.await(8,TimeUnit.SECONDS)).isTrue(); }
+                catch(InterruptedException e) {Thread.currentThread().interrupt();throw new IllegalStateException(e);}
+                return true;
+            }));
+            assertThat(held.await(5,TimeUnit.SECONDS)).isTrue();
+            long started=System.nanoTime();var claimed=recovery.claim(false,Duration.ofSeconds(10)).orElseThrow();
+            assertThat(Duration.ofNanos(System.nanoTime()-started)).isLessThan(Duration.ofSeconds(3));
+            assertThat(claimed.id()).isNotEqualTo(locked);
+            release.countDown();assertThat(holder.get(5,TimeUnit.SECONDS)).isTrue();
+            match(f);assertThat(ai.claim(r.id(),r.contextHash()).disposition()).isEqualTo("STALE");
+            assertThat(jdbc.queryForObject("select count(*) from proposal_dispatch where status='CANCELLED'",Integer.class)).isEqualTo(2);
+            assertThat(jdbc.queryForObject("select status from proposal_dispatch where id=?",String.class,published.id())).isEqualTo("PUBLISHED");
+            assertThat(recovery.settle(claimed,true,Duration.ZERO)).isFalse();
+            assertThat(recovery.claim(false,Duration.ofSeconds(10))).isEmpty();
+        } finally {release.countDown();pool.shutdownNow();assertThat(pool.awaitTermination(5,TimeUnit.SECONDS)).isTrue();}
+    }
+
+    @Test void expiredThirdAttemptFailsClosedWithoutResettingTheBudget() throws Exception {
+        var f=ready();var r=reserve(f);
+        for(int attempt=1;attempt<=3;attempt++) {
+            var token=UUID.randomUUID();jdbc.update("update proposal_run set status='RUNNING',execution_token=?,execution_attempt=?,lease_until=clock_timestamp()+interval '1 second' where id=?",token,attempt,r.id());
+            if(attempt==1) ai.reserveCall(r.id(),r.contextHash(),token,UUID.randomUUID(),100);
+            long deadline=System.nanoTime()+Duration.ofSeconds(5).toNanos();
+            while(Boolean.TRUE.equals(jdbc.queryForObject("select lease_until>clock_timestamp() from proposal_run where id=?",Boolean.class,r.id()))) {
+                assertThat(System.nanoTime()).isLessThan(deadline);Thread.sleep(50);
+            }
+        }
+        assertThat(ai.claim(r.id(),r.contextHash()).disposition()).isEqualTo("ALREADY_FINISHED");
+        assertThat(jdbc.queryForObject("select status from proposal_run where id=?",String.class,r.id())).isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("select error_code from proposal_run where id=?",String.class,r.id())).isEqualTo("LEASE_EXPIRED");
+        assertThat(jdbc.queryForObject("select reserved_tokens from proposal_run where id=?",Integer.class,r.id())).isEqualTo(100);
+    }
+    @Test void machineSurfaceIsAuthenticatedExactAndCannotPerformBusinessActions() throws Exception {
+        var f=ready();var r=reserve(f);String path="/internal/proposal-runs/"+r.id();
+        var body=json.createObjectNode().put("contextHash",r.contextHash());
+        var noAuth=mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(path+"/claim").contentType("application/json").content(body.toString())).andReturn();
+        assertThat(noAuth.getResponse().getStatus()).isEqualTo(401);assertThat(noAuth.getResponse().getHeader("Cache-Control")).contains("no-store");
+        var request=mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(path+"/claim").header("Authorization","Bearer "+WORKER_TOKEN).contentType("application/json").content(body.toString())).andReturn();
+        assertThat(request.getResponse().getStatus()).isEqualTo(200);assertThat(json.readTree(request.getResponse().getContentAsString()).path("disposition").asText()).isEqualTo("CLAIMED");
+        body.put("purchaseOrderId","FOREIGN");
+        var forged=mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(path+"/claim").header("Authorization","Bearer "+WORKER_TOKEN).contentType("application/json").content(body.toString())).andReturn();
+        assertThat(forged.getResponse().getStatus()).isEqualTo(400);
+        var write=mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(path+"/approve").header("Authorization","Bearer "+WORKER_TOKEN).contentType("application/json").content("{}")).andReturn();
+        assertThat(write.getResponse().getStatus()).isEqualTo(403);assertThat(count("payment_request")).isZero();
     }
     @Test void toolsUseFrozenScopeReplayOnceAndCannotWriteOrCrossScope() {
         var f=ready();var r=reserve(f);var c=ai.claim(r.id(),r.contextHash());long version=caseVersion(f.caseId());

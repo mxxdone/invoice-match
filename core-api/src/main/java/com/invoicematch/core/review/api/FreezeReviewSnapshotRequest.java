@@ -11,5 +11,5 @@ import jakarta.validation.constraints.Size;
  */
 public record FreezeReviewSnapshotRequest(
         @NotBlank @Size(max = 128) String requestId,
-        @NotNull @Min(0) Long expectedCaseVersion) {
+        @NotNull @Min(0) Long expectedCaseVersion,java.util.UUID proposalId,String proposalHash) {
 }

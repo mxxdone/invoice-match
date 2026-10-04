@@ -11,6 +11,7 @@ from ai_worker.application.execution import Document, Request, WorkerFailure, st
 
 
 class CoreClient:
+    json_cap = 256 * 1024
     def __init__(self, base_url: str, token: str) -> None:
         try:
             parsed = urlsplit(base_url)
@@ -24,7 +25,7 @@ class CoreClient:
         self.base_url, self.token = base_url.rstrip("/"), token
 
     async def _post(self, path: str, body: dict, document: Document | None = None):
-        cap = document.size if document else 256 * 1024
+        cap = document.size if document else self.json_cap
         timeout = aiohttp.ClientTimeout(total=25 if document else 10, connect=2,
                                          sock_read=10, ceil_threshold=1000)
         try:
@@ -35,6 +36,8 @@ class CoreClient:
                         raise WorkerFailure("CORE_AUTHENTICATION_FAILED")
                     if response.status == 429 or 500 <= response.status < 600:
                         raise WorkerFailure("CORE_TRANSIENT")
+                    if response.status != 200:
+                        await self._error_response(response)
                     if response.status != 200 or response.headers.get("Content-Encoding", "identity") != "identity":
                         raise WorkerFailure("CORE_REQUEST_FAILED")
                     media = response.headers.get("Content-Type", "").split(";", 1)[0].strip()
@@ -58,6 +61,9 @@ class CoreClient:
             raise
         except (aiohttp.ClientError, TimeoutError, OSError, ValueError) as exc:
             raise WorkerFailure("CORE_UNAVAILABLE") from exc
+
+    async def _error_response(self,response):
+        raise WorkerFailure("CORE_REQUEST_FAILED")
 
     def _call(self, request: Request, suffix: str, body: dict, document=None):
         return asyncio.run(self._post("/internal/analysis-runs/" + request.run_id + suffix, body, document))

@@ -394,3 +394,21 @@ export type DocumentDownload = {
   method: 'GET';
   expiresAt: string;
 };
+
+
+export type ProposalSource = { id: string; documentId: string; text: string; origin: string; page: number | null; sheet: number | null; cell: string | null };
+export type CandidateSource = { segmentId: string; start: number; end: number };
+export type ExtractedValue = { value: string; source: CandidateSource };
+export type ProposalSummary = { id: string; status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'STALE'; current: boolean; contextHash: string; payloadHash: string | null; attempt: number; reservedCalls: number; reservedTokens: number; toolCalls: number; errorCode: string | null; completedStages: string[] };
+export type PolicyCitation = { chunkId: string; documentId: string; documentVersion: number; page: number; paragraph: number; start: number; end: number; quote: string };
+export type ProposalPayload = {
+  schemaVersion: 'advisory-proposal-v1'; proposalId: string; contextHash: string; evidenceBundleId: string; matchResultId: string;
+  document: { result: { fields: Array<ExtractedValue & { name: string }>; lines: Array<{ lineNumber: number; rawItemName: ExtractedValue; quantity: ExtractedValue; unitPrice: ExtractedValue }>; warnings: string[] } };
+  mapping: { result: { lines: Array<{ lineNumber: number; source: CandidateSource; reviewRequired: boolean; warningCodes: string[]; candidates: Array<{ itemId: string; purchaseOrderLineId: string; reason: string; reasonCodes: string[]; priorSnapshotId: string | null }> }> } };
+  policyEvidence: { status: string; result: Array<{ chunkId: string; documentId: string; title: string; documentVersion: number; page: number; paragraph: number; text: string; effect: string }> };
+  resolution: { result: { recommendation: string; summary: string; factIds: string[]; citations: PolicyCitation[]; warnings: string[] } };
+  facts: Record<string, { value: string; unit: string }>;
+};
+export type ProposalView = { run: ProposalSummary; payload: ProposalPayload | null; sources: ProposalSource[] };
+export type ProposalPage = { enabled: boolean; latest: ProposalView | null; history: ProposalSummary[] };
+export type SelectedProposal = { proposalId: string; proposalHash: string };

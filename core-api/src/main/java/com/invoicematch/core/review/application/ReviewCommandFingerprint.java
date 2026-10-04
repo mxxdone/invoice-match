@@ -22,6 +22,9 @@ public class ReviewCommandFingerprint {
     public String freezeSnapshot(FreezeReviewSnapshotCommand command) {
         ObjectNode node = mapper.createObjectNode();
         node.put("expectedCaseVersion", command.expectedCaseVersion());
+        if(command.proposalId()!=null || command.proposalHash()!=null) {
+            node.put("proposalId",command.proposalId()==null?null:command.proposalId().toString());node.put("proposalHash",command.proposalHash());
+        }
         return sha256Hex(write(node));
     }
 

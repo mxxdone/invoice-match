@@ -8,8 +8,10 @@ import {
   requestSupplement,
   rejectInvoiceCase,
   runMatch,
+  reserveProposal,
   type MappingDecisionInput,
 } from '../../api/client.ts';
+import type { SelectedProposal } from '../../api/contract.ts';
 import type { Credentials } from '../../api/transport.ts';
 import { Generation } from '../../api/generation.ts';
 import {
@@ -210,8 +212,13 @@ export function useCaseActions({
       [run, caseId],
     ),
     freezeSnapshot: useCallback(
-      (expectedCaseVersion: number) => run('freeze', { caseId, expectedCaseVersion }, (requestId, signal) =>
-        freezeReviewSnapshot(credentialsRef.current as Credentials, caseId, { requestId, expectedCaseVersion }, signal)),
+      (expectedCaseVersion: number, proposal?: SelectedProposal) => run('freeze', { caseId, expectedCaseVersion, ...proposal }, (requestId, signal) =>
+        freezeReviewSnapshot(credentialsRef.current as Credentials, caseId, { requestId, expectedCaseVersion, ...proposal }, signal)),
+      [run, caseId],
+    ),
+    reserveProposal: useCallback(
+      (expectedCaseVersion: number) => run('proposal', { caseId, expectedCaseVersion }, (requestId, signal) =>
+        reserveProposal(credentialsRef.current as Credentials, caseId, { requestId, expectedCaseVersion }, signal)),
       [run, caseId],
     ),
     recordMapping: useCallback(

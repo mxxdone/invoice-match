@@ -4,6 +4,7 @@ let dropRun = null;
 let failSource = null;
 let holdSource = null;
 let sourceHeld = false;
+let dropProposal = null;
 const server = createServer(async (request, response) => {
   try {
     if (request.url === '/health') { response.end('ready'); return; }
@@ -30,7 +31,12 @@ const server = createServer(async (request, response) => {
       response.end('configured');
       return;
     }
-    if (!/^\/internal\/analysis-runs\/[a-f0-9-]+\//.test(request.url)) { response.writeHead(404).end(); return; }
+    if (request.url === '/control/drop-proposal' && request.headers['x-verification-control'] === process.env.CONTROL_TOKEN) {
+      const input=JSON.parse(body);
+      if(!/^[a-f0-9-]{36}$/.test(input.runId)||!['document','complete'].includes(input.stage)) {response.writeHead(400).end();return;}
+      dropProposal=input;response.end('configured');return;
+    }
+    if (!/^\/internal\/(analysis|proposal)-runs\/[a-f0-9-]+\//.test(request.url)) { response.writeHead(404).end(); return; }
     if (failSource && request.url.startsWith(`/internal/analysis-runs/${failSource}/documents/`) && request.url.endsWith('/source')) {
       response.writeHead(503, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       response.end('{"code":"SOURCE_UNAVAILABLE"}'); return;
@@ -44,6 +50,11 @@ const server = createServer(async (request, response) => {
       headers: { authorization: request.headers.authorization ?? '', 'content-type': 'application/json' },
     });
     const bytes = Buffer.from(await upstream.arrayBuffer());
+    if(dropProposal && upstream.ok && request.url.startsWith(`/internal/proposal-runs/${dropProposal.runId}/`)
+      && ((dropProposal.stage==='complete' && request.url.endsWith('/complete'))
+       ||(dropProposal.stage==='document' && request.url.endsWith('/checkpoints') && JSON.parse(body).stage==='document'))) {
+      dropProposal=null;response.destroy();return;
+    }
     if (dropRun && request.url === `/internal/analysis-runs/${dropRun}/results` && upstream.ok) {
       dropRun = null;
       response.destroy();

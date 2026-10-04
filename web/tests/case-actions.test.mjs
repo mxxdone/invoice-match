@@ -97,6 +97,37 @@ test('an operator match posts one intent and reloads on success', async () => {
   }
 });
 
+test('selected advisory freeze preserves the exact identity and hash across an uncertain retry', async () => {
+  let attempts = 0;
+  const t = setup(() => ++attempts === 1 ? Promise.reject(new TypeError('connection lost')) : jsonResponse(201, { id: 'snapshot' }));
+  try {
+    await t.render();
+    const proof = { proposalId: 'proposal-1', proposalHash: 'frozen-hash' };
+    await t.run(() => latest.freezeSnapshot(7, proof));
+    assert.equal(latest.unresolved.operation, 'freeze');
+    await t.run(() => latest.retry());
+    assert.deepEqual(t.calls[1].body, t.calls[0].body);
+    assert.equal(t.calls[0].body.proposalId, proof.proposalId);
+    assert.equal(t.calls[0].body.proposalHash, proof.proposalHash);
+    assert.equal(t.calls[0].body.expectedCaseVersion, 7);
+    assert.deepEqual(t.completed, ['freeze']);
+  } finally { await t.unmount(); t.restore(); }
+});
+
+test('proposal reservation is a separate idempotent intent and cannot replace an unresolved business write', async () => {
+  let attempts = 0;
+  const t = setup(() => ++attempts === 1 ? Promise.reject(new TypeError('connection lost')) : jsonResponse(201, { id: 'proposal' }));
+  try {
+    await t.render(); await t.run(() => latest.reserveProposal(8));
+    assert.equal(t.calls[0].url, `/backend/api/invoice-cases/${CASE}/proposals`);
+    assert.equal(latest.unresolved.operation, 'proposal');
+    await t.run(() => latest.freezeSnapshot(8)); assert.equal(t.calls.length, 1);
+    await t.run(() => latest.retry());
+    assert.deepEqual(t.calls[1].body, t.calls[0].body);
+    assert.deepEqual(t.completed, ['proposal']);
+  } finally { await t.unmount(); t.restore(); }
+});
+
 test('approve sends the frozen subject fields and never an extra bundle version or decidedBy', async () => {
   const t = setup(() => jsonResponse(200, { invoiceCaseId: CASE, status: 'EXPORT_PENDING', caseVersion: 3, allocations: [] }));
   try {

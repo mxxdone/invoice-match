@@ -65,6 +65,7 @@ public class ReviewSnapshotPayloadBuilder {
         if (!SCHEMA_VERSION.equals(schemaVersion) && !LEGACY_SCHEMA_VERSION.equals(schemaVersion)) {
             throw new IllegalArgumentException("Unsupported review snapshot schemaVersion: " + schemaVersion);
         }
+        if(input.proposal()!=null && !SCHEMA_VERSION.equals(schemaVersion)) throw new IllegalArgumentException("Legacy snapshot cannot contain an advisory proposal");
         ObjectNode root = buildPayload(input, schemaVersion);
         JsonNode canonical = SCHEMA_VERSION.equals(schemaVersion) ? sortKeys(root) : root;
         String json = write(canonical);
@@ -76,6 +77,8 @@ public class ReviewSnapshotPayloadBuilder {
         root.put("schemaVersion", schemaVersion);
         root.put("caseId", input.caseId().toString());
         root.put("caseVersion", input.caseVersion());
+        if(input.proposal()!=null) root.putObject("proposal").put("id",input.proposal().id().toString())
+            .put("payloadHash",input.proposal().payloadHash()).put("contextHash",input.proposal().contextHash());
 
         ObjectNode bundle = root.putObject("evidenceBundle");
         bundle.put("id", input.evidenceBundleId().toString());

@@ -48,7 +48,7 @@ public class AnalysisWorkerSecurityConfiguration {
         AccessDeniedHandler deniedHandler = (request, response, exception) -> writeError(
                 objectMapper, response, HttpServletResponse.SC_FORBIDDEN, "FORBIDDEN", "Access is denied");
 
-        http.securityMatcher(INTERNAL_PATTERN)
+        http.securityMatcher(INTERNAL_PATTERN,"/internal/proposal-runs/**")
                 .csrf(AbstractHttpConfigurer::disable)
                 .cors(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -62,6 +62,11 @@ public class AnalysisWorkerSecurityConfiguration {
                         .requestMatchers(HttpMethod.POST, "/internal/analysis-runs/*/results")
                         .hasAuthority(AnalysisWorkerAuthenticator.AUTHORITY)
                         .requestMatchers(HttpMethod.POST, "/internal/analysis-runs/*/documents/*/source")
+                        .hasAuthority(AnalysisWorkerAuthenticator.AUTHORITY)
+                        .requestMatchers(HttpMethod.POST,"/internal/proposal-runs/*/claim","/internal/proposal-runs/*/defer",
+                            "/internal/proposal-runs/*/heartbeat","/internal/proposal-runs/*/calls","/internal/proposal-runs/*/checkpoints",
+                            "/internal/proposal-runs/*/complete","/internal/proposal-runs/*/failures","/internal/proposal-runs/*/tools",
+                            "/internal/proposal-runs/*/policies","/internal/proposal-runs/*/documents/*/source")
                         .hasAuthority(AnalysisWorkerAuthenticator.AUTHORITY)
                         .anyRequest()
                         .denyAll())

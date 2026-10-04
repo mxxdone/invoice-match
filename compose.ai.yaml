@@ -5,3 +5,40 @@ services:
   core-api:
     environment:
       ANALYSIS_AI_ENABLED: ${ANALYSIS_AI_ENABLED:-false}
+      ANALYSIS_AI_RELAY_ENABLED: ${ANALYSIS_AI_ENABLED:-false}
+  proposal-worker:
+    profiles: [ai]
+    build: ./ai-worker
+    command: ["ai-worker", "consume-proposals"]
+    environment:
+      ANALYSIS_AI_ENABLED: ${ANALYSIS_AI_ENABLED:-false}
+      CORE_API_URL: http://core-api:8080
+      ANALYSIS_WORKER_TOKEN: ${ANALYSIS_WORKER_TOKEN:-}
+      ANALYSIS_RABBIT_HOST: rabbitmq
+      ANALYSIS_RABBIT_USERNAME: ${ANALYSIS_RABBIT_USERNAME:-}
+      ANALYSIS_RABBIT_PASSWORD: ${ANALYSIS_RABBIT_PASSWORD:-}
+      AI_EMBEDDING_URL: ${AI_EMBEDDING_URL:-}
+      AI_EMBEDDING_KEY: ${AI_EMBEDDING_KEY:-}
+      AI_EMBEDDING_MODEL: ${AI_EMBEDDING_MODEL:-}
+      AI_EMBEDDING_VERSION: ${AI_EMBEDDING_VERSION:-}
+      AI_EMBEDDING_DIMENSION: ${AI_EMBEDDING_DIMENSION:-}
+      AI_EMBEDDING_PRICE_PER_MILLION: ${AI_EMBEDDING_PRICE_PER_MILLION:-}
+      AI_MODEL_URL: ${AI_MODEL_URL:-}
+      AI_MODEL_KEY: ${AI_MODEL_KEY:-}
+      AI_MODEL_NAME: ${AI_MODEL_NAME:-}
+      AI_MODEL_TOKEN_PARAMETER: ${AI_MODEL_TOKEN_PARAMETER:-max_completion_tokens}
+      AI_MODEL_API_KEY_HEADER: ${AI_MODEL_API_KEY_HEADER:-false}
+      AI_INPUT_PRICE_PER_MILLION: ${AI_INPUT_PRICE_PER_MILLION:-}
+      AI_OUTPUT_PRICE_PER_MILLION: ${AI_OUTPUT_PRICE_PER_MILLION:-}
+      AI_COST_CURRENCY: ${AI_COST_CURRENCY:-}
+      AI_COST_CEILING: ${AI_COST_CEILING:-}
+      AZURE_DOCUMENT_ENDPOINT: ${AZURE_DOCUMENT_ENDPOINT:-}
+      AZURE_DOCUMENT_KEY: ${AZURE_DOCUMENT_KEY:-}
+      AZURE_DOCUMENT_TIER: ${AZURE_DOCUMENT_TIER:-F0}
+    depends_on:
+      core-api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    stop_grace_period: 60s
+    restart: "on-failure:3"

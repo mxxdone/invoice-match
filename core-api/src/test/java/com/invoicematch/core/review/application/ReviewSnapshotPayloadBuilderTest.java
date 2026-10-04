@@ -140,6 +140,32 @@ class ReviewSnapshotPayloadBuilderTest {
                 .isInstanceOf(NumericOverflowException.class);
     }
 
+    @Test
+    void optionalProposalBindsExactIdentityAndHashesWithoutChangingAmounts() throws Exception {
+        var original = input(List.of(), List.of(line(1, "A4 Paper", 60, 2500)));
+        var proof = new ProposalEvidenceReader.Reference(UUID.fromString("44444444-4444-4444-4444-444444444444"),
+                "a".repeat(64), "b".repeat(64));
+        var legacy = builder.canonicalize(original);
+        var selected = builder.canonicalize(original.withProposal(proof));
+        var payload = MAPPER.readTree(selected.json());
+        assertThat(payload.path("proposal").path("id").asText()).isEqualTo(proof.id().toString());
+        assertThat(payload.path("proposal").path("payloadHash").asText()).isEqualTo(proof.payloadHash());
+        assertThat(payload.path("proposal").path("contextHash").asText()).isEqualTo(proof.contextHash());
+        assertThat(payload.path("totalAmount").asLong()).isEqualTo(150000L);
+        assertThat(selected.hash()).isNotEqualTo(legacy.hash());
+        assertThat(builder.canonicalize(original.withProposal(null))).isEqualTo(legacy);
+        assertThat(builder.canonicalize(original.withProposal(new ProposalEvidenceReader.Reference(
+                proof.id(), "c".repeat(64), proof.contextHash()))).hash()).isNotEqualTo(selected.hash());
+        assertThat(builder.canonicalize(original.withProposal(new ProposalEvidenceReader.Reference(
+                UUID.randomUUID(), proof.payloadHash(), proof.contextHash()))).hash()).isNotEqualTo(selected.hash());
+        assertThat(builder.canonicalize(original.withProposal(new ProposalEvidenceReader.Reference(
+                proof.id(), proof.payloadHash(), "d".repeat(64)))).hash()).isNotEqualTo(selected.hash());
+        assertThatThrownBy(() -> builder.canonicalize(original.withProposal(proof),
+                ReviewSnapshotPayloadBuilder.LEGACY_SCHEMA_VERSION)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(builder.canonicalize(original.withProposal(null), ReviewSnapshotPayloadBuilder.LEGACY_SCHEMA_VERSION))
+                .isEqualTo(builder.canonicalize(original, ReviewSnapshotPayloadBuilder.LEGACY_SCHEMA_VERSION));
+    }
+
     private static ReviewSnapshotPayloadInput input(
             List<AppliedMapping> mappings, List<EvidenceBundlePayload.EvidenceLine> lines) {
         return inputWithMatchPayload(

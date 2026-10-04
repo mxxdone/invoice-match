@@ -49,6 +49,10 @@ docker compose -f compose.yaml -f compose.storage.yaml -f compose.documents.yaml
 
 정책 검색용 pgvector는 새 Compose project에 `-f compose.ai.yaml`을 추가해 사용한다. AI는 기본 비활성화이며 `ANALYSIS_AI_ENABLED`로 명시적으로 켠다. 일반 PostgreSQL은 lexical 검색을 지원하고 vector/hybrid는 extension을 요구한다. 실제 vector 회귀는 `INVOICE_MATCH_TEST_POSTGRES_IMAGE=pgvector/pgvector:0.8.6-pg18-bookworm`을 설정해 같은 backend 테스트를 실행한다. embedding 모델·버전·차원을 고정하고 검색과 ingestion에서 일치시킨다.
 
+AI API 준비 전에는 `.env.example`의 AI 항목을 비워 두고 `ANALYSIS_AI_ENABLED=false`를 유지한다. 준비 후 `.env`에 HTTPS 모델 endpoint·키·모델명·공개 토큰 단가·통화·실행별 비용 상한을 입력하고 기존 Compose 파일 조합에 `compose.ai.yaml`과 `--profile ai`를 추가한다. 별도 proposal worker가 실행하며 실제 제공자 품질은 설정 후 측정한다.
+
+스캔 PDF용 Azure는 [Document Intelligence 생성 안내](https://learn.microsoft.com/en-us/azure/ai-services/document-intelligence/how-to-guides/create-document-intelligence-resource?view=doc-intel-4.0.0)에 따라 Azure 구독에서 F0 리소스를 만들고 **Keys and Endpoint** 값을 `AZURE_DOCUMENT_KEY`·`AZURE_DOCUMENT_ENDPOINT`에 입력한다. `AZURE_DOCUMENT_TIER=F0`를 유지한다. Azure 키와 모델 키는 별개이며 로컬 `.env`만 사용한다.
+
 로컬 검증에는 Java 21, Node 24/npm, Docker가 필요하다. Windows의 Gradle 명령은 `gradlew.bat`을 사용한다.
 
 ```sh
@@ -70,6 +74,10 @@ node scripts/compose-smoke-p1-11.mjs
 ```
 
 실제 분석 흐름 인수는 최신 `bootJar`와 worker 이미지 빌드 후 `WORKER_RUNTIME_IMAGE=<이미지> node scripts/verify-p2-08.mjs`로 실행한다.
+
+Phase 3 복구 흐름도 같은 스크립트에서 `VERIFY_PROPOSALS=true`로 검증한다. 설치된 Linux worker·Core·RabbitMQ와 격리 HTTPS 모델 fixture를 사용해 중복, 외부 실패, 저장 응답 유실, 워커 중단과 stale을 확인한다. 유료 제공자 API를 호출하지 않으며 실제 모델 품질 평가와 구분한다.
+
+AI 평가 기준선은 `python scripts/evaluate-p3.py`로 실행한다. 고정된 64개 합성 사례를 사용하며 결과는 ignored `output/p3/evaluation/offline.json`에 저장한다. 실제 측정 결과는 `--ai-predictions <파일>`로 같은 사례와 비교한다. 실패·누락도 분모에 포함하고 호출 사용량과 누적 예약 예산을 구분한다. 합성 OCR 자료는 Azure 정확도 근거가 아니며, API 미설정 시 AI 품질·비용·사람 검토시간은 미측정으로 남긴다.
 
 스크립트는 자기 검증 자원만 생성·회수하고 결과를 ignored `output/`에 남긴다. Compose smoke는 자체 빌드한다. 저장소 검증은 `node scripts/verify-p2-00.mjs`, 문서 API focused 검증은 `node scripts/verify-p2-01.mjs --focused`를 사용한다. 필요한 서비스만 실행하고 사용자 DB·volume은 초기화하지 않는다.
 

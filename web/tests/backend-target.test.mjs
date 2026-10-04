@@ -107,3 +107,15 @@ test('analysis operations have exact human paths and no machine reachability', (
   assert.equal(resolveBackendMutationTarget(base, 'PUT', ['api','analysis-runs',CASE,'retries']), null);
   assert.equal(resolveBackendTarget(base, ['api','analysis-runs','bad','failures'], ''), null);
 });
+
+test('advisory reads and reservation reach exact human endpoints while worker actions remain inaccessible', () => {
+  const base = 'http://localhost:8080';
+  const root = ['api', 'invoice-cases', CASE, 'proposals'];
+  assert.equal(resolveBackendTarget(base, root, ''), `${base}/api/invoice-cases/${CASE}/proposals`);
+  assert.equal(resolveBackendTarget(base, [...root, CASE], ''), `${base}/api/invoice-cases/${CASE}/proposals/${CASE}`);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', root), `${base}/api/invoice-cases/${CASE}/proposals`);
+  assert.equal(resolveBackendMutationTarget(base, 'PUT', root), null);
+  assert.equal(resolveBackendTarget(base, [...root, 'bad'], ''), null);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', [...root, CASE, 'complete']), null);
+  assert.equal(resolveBackendTarget(base, ['internal', 'proposal-runs', CASE, 'claim'], ''), null);
+});

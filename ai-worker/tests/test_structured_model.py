@@ -77,7 +77,7 @@ def test_refusal_tool_calls_partial_json_and_unbounded_usage_fail_closed(model_s
     assert state["hits"] == 1
 
 
-@pytest.mark.parametrize("status,code", [(302, "AI_FAILED"), (429, "AI_RATE_LIMIT"), (500, "AI_FAILED"), (401, "AI_FAILED")])
+@pytest.mark.parametrize("status,code", [(302, "AI_FAILED"), (429, "AI_RATE_LIMIT"), (500, "AI_FAILED"), (401, "AI_CONFIGURATION"), (403, "AI_CONFIGURATION")])
 def test_failure_never_redirects_or_retries_locally(model_server, status, code):
     url, state = model_server; state["status"] = status
     with pytest.raises(AdvisoryFailure, match=code):

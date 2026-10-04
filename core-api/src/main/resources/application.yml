@@ -93,6 +93,14 @@ analysis:
   ai:
     enabled: ${ANALYSIS_AI_ENABLED:false}
     lease-duration: ${ANALYSIS_AI_LEASE_DURATION:120s}
+    relay:
+      enabled: ${ANALYSIS_AI_RELAY_ENABLED:false}
+      rabbit:
+        host: ${ANALYSIS_RABBIT_HOST:localhost}
+        port: ${ANALYSIS_RABBIT_PORT:5672}
+        vhost: ${ANALYSIS_RABBIT_VHOST:/}
+        username: ${ANALYSIS_RABBIT_USERNAME:}
+        password: ${ANALYSIS_RABBIT_PASSWORD:}
   request:
     enabled: ${ANALYSIS_REQUEST_ENABLED:false}
   # P2-07 machine worker surface and execution lease.

@@ -112,6 +112,29 @@ class RabbitAnalysisRequestRelayIntegrationTest extends AbstractAnalysisRelayInt
     }
 
     @Test
+    void proposalTypeAndRoutingAreIsolatedFromTheParserQueue() throws Exception {
+        purgeQueue();
+        String proposalQueue="invoice.proposal.requests";
+        var props=new AnalysisRelayProperties(false,Duration.ofSeconds(60),Duration.ofSeconds(30),5,Duration.ofSeconds(5),
+                new AnalysisRelayProperties.Rabbit(RABBIT.getHost(),RABBIT.getMappedPort(5672),"/",RABBIT_USER,RABBIT_PASSWORD,
+                        "invoice.proposal",proposalQueue,"ai-review-v1"));
+        UUID id=UUID.randomUUID();
+        String payload="{\"schemaVersion\":\"ai-request-v1\",\"eventId\":\""+id+"\",\"proposalRunId\":\""+id
+                +"\",\"contextHash\":\""+"a".repeat(64)+"\",\"workflowVersion\":\"ai-review-v1\"}";
+        try(var publisher=new RabbitAnalysisRequestPublisher(props,"InvoiceProposalRequested")) {
+            assertThat(publisher.publish(new AnalysisPublishCommand(id,payload))).isInstanceOf(AnalysisPublishResult.Published.class);
+            try(Connection connection=rawFactory().newConnection();Channel channel=connection.createChannel()) {
+                var message=channel.basicGet(proposalQueue,true);
+                assertThat(message).isNotNull();assertThat(message.getProps().getMessageId()).isEqualTo(id.toString());
+                assertThat(message.getProps().getType()).isEqualTo("InvoiceProposalRequested");
+                assertThat(message.getProps().getDeliveryMode()).isEqualTo(2);
+                assertThat(new String(message.getBody(),StandardCharsets.UTF_8)).isEqualTo(payload);
+                assertThat(channel.basicGet(QUEUE,true)).isNull();
+            }
+        }
+    }
+
+    @Test
     void unroutableMandatoryMessageIsAckedAndReturnedAsFailure() throws Exception {
         purgeQueue();
         UUID caseId = createDraftCase("INV-Q2");

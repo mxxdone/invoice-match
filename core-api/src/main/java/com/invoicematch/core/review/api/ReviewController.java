@@ -57,7 +57,7 @@ public class ReviewController {
             @PathVariable UUID id, @Valid @RequestBody FreezeReviewSnapshotRequest request) {
         authorization.requireRole(Role.APPROVER);
         CommandResult<ReviewSnapshotView> result = commands.freezeSnapshot(
-                new FreezeReviewSnapshotCommand(id, request.requestId(), request.expectedCaseVersion()));
+                new FreezeReviewSnapshotCommand(id, request.requestId(), request.expectedCaseVersion(),request.proposalId(),request.proposalHash()));
         return ResponseEntity.status(result.status()).body(result.body());
     }
 

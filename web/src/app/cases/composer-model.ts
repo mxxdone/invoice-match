@@ -43,6 +43,7 @@ export type MutationOperation =
   | 'submit'
   | 'revision'
   | 'match'
+  | 'proposal'
   | 'freeze'
   | 'mapping'
   | 'supplement'

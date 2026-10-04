@@ -46,6 +46,8 @@ class ChatStructuredModel:
                     async with session.post(self.url, json=body, allow_redirects=False) as response:
                         if response.status == 429:
                             raise AdvisoryFailure("AI_RATE_LIMIT")
+                        if response.status in {401, 403}:
+                            raise AdvisoryFailure("AI_CONFIGURATION")
                         if response.status != 200 or response.headers.get("Content-Type", "").split(";")[0] != "application/json" \
                                 or response.headers.get("Content-Encoding", "identity") != "identity":
                             raise AdvisoryFailure("AI_FAILED")
