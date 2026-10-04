@@ -53,6 +53,17 @@ class ProposalStageValidatorTest {
         reject("approve",document());var n=document();((ObjectNode)n.path("calls").get(0)).put("inputTokens",1001);reject("document",n);
         n=document();((ObjectNode)n.path("result")).putArray("warnings").addObject();reject("document",n);
     }
+    @Test void emptyMappingCanSkipTheModelButCannotOmitExistingExtractionLines() {
+        var run=run();var extraction=document();((ObjectNode)extraction.path("result")).putArray("lines");
+        String payload=AnalysisCanonicalJson.canonicalize(extraction);
+        var step=new com.invoicematch.core.analysis.persistence.ProposalStore.Step("document",AnalysisCanonicalJson.sha256Hex(payload),payload);
+        var empty=json.createObjectNode().put("schemaVersion","item-mapping-v1").put("promptVersion","invoice-advisory-1");
+        empty.putArray("calls");empty.putObject("result").putArray("lines");
+        validator.validate("mapping",empty,run,List.of(step));
+        payload=AnalysisCanonicalJson.canonicalize(document());
+        var nonempty=new com.invoicematch.core.analysis.persistence.ProposalStore.Step("document",AnalysisCanonicalJson.sha256Hex(payload),payload);
+        assertThatThrownBy(()->validator.validate("mapping",empty,run,List.of(nonempty))).isInstanceOf(AnalysisValidationException.class);
+    }
     private ObjectNode ocr() {
         var n=json.createObjectNode().put("schemaVersion","invoice-ocr-v1").put("providerVersion","azure-prebuilt-invoice-2024-11-30")
                 .put("documentId",documentId.toString()).put("checksum","0".repeat(64)).put("content",text);

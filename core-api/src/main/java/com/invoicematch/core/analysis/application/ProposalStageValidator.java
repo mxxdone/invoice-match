@@ -20,6 +20,7 @@ public class ProposalStageValidator {
         bounded(value,0,new int[]{0});
         if(stage!=null && stage.startsWith("ocr:")) validateOcr(stage,value,run);
         else if("document".equals(stage)) validateDocument(value,run,steps);
+        else if("mapping".equals(stage)) ProposalMappingValidator.validate(value,run,steps,catalog);
         else throw ProposalSourceCatalog.invalid();
     }
     private void bounded(JsonNode n,int depth,int[] count) {

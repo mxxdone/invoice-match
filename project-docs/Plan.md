@@ -1,6 +1,6 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 완료 · Phase 3 착수 · 현재 Ticket P3-05**
+문서 상태: **Phase 2 완료 · Phase 3 착수 · 현재 Ticket P3-06**
 작성일: **2026-09-25**
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
 실행 방법: [`Implement.md`](./Implement.md)
@@ -184,13 +184,11 @@ Phase 3는 **P3-00~P3-09**를 Head가 순차 구현한다. Spec 8·9·18·24.3�
 
 ### P3-05 — Item Mapping Agent
 
-**상태: 진행 중.** 원문 품목과 읽기 전용 품목/과거 확정 매핑을 사용해 최대 3개 후보·이유·출처를 제시한다. 반환 ID는 서버가 제공한 후보에 속해야 하며 A3/A4·규격 차이와 복수 후보는 검토를 요구한다. confidence를 확정 권한으로 사용하지 않는다.
-
-인수: 별칭·한국어·규격 혼동·없는 품목·과거 공급사 범위·모호함·후보 없음과 Recall@1/3 evaluator.
+**상태: 완료.** `ItemMappingAgent`와 `ProposalMappingValidator`가 서버 후보 ID·원문 위치·승인된 과거 매핑을 검증한다. 규격 차이·복수 후보·후보 없음은 사람 검토를 요구하며 빈 추출은 모델을 호출하지 않는다. Recall@1/3 evaluator는 실패/누락을 포함해 계산하고 실제 모델 품질 측정은 P3-09에서 수행한다. 업무 입력·매핑·배분·지급은 변경하지 않는다.
 
 ### P3-06 — Evidence/Resolution Agent
 
-**상태: 예정.** 검증된 대사 예외와 검색 근거로 보완요청·승인검토·거절검토 초안을 만든다. 근거 ID/version/page/paragraph/quote를 저장된 적용 문단과 대조한다. 무근거·충돌에는 `INSUFFICIENT_EVIDENCE`/`REVIEW_REQUIRED`를 요구하고 금액·잔량은 코어 사실을 인용한다. 결론을 업무 상태로 반영하지 않는다.
+**상태: 진행 중.** 검증된 대사 예외와 검색 근거로 보완요청·승인검토·거절검토 초안을 만든다. 근거 ID/version/page/paragraph/quote를 저장된 적용 문단과 대조한다. 무근거·충돌에는 `INSUFFICIENT_EVIDENCE`/`REVIEW_REQUIRED`를 요구하고 금액·잔량은 코어 사실을 인용한다. 결론을 업무 상태로 반영하지 않는다.
 
 인수: 가짜 citation, 구버전 정책, 잘못된 수치, 근거 없음/충돌, prompt injection과 무단 Tool 거부. 동일 입력의 canonical hash/replay 보존.
 

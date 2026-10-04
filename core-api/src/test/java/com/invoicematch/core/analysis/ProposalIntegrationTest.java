@@ -24,10 +24,11 @@ class ProposalIntegrationTest extends AbstractAnalysisExecutionIntegrationTest {
     @Autowired com.invoicematch.core.analysis.persistence.PolicyCatalogStore policyStore;
     @org.junit.jupiter.api.BeforeEach void resetPolicyCatalog() { jdbc.execute("truncate table policy_contract cascade"); }
     @Autowired com.invoicematch.core.approval.application.ApprovalApplicationService approval;
-    private RunFixture ready() {
+    private RunFixture ready() { return ready("Premium Copy Paper A4 60 2500"); }
+    private RunFixture ready(String sourceText) {
         var f=preparePdfRun(1);var claim=claim(f);var d=f.documents().getFirst();
         execution.recordResult(f.runId(),resultCommand(f,claim.claimToken(),d.documentId(),"SUCCESS",
-                pdfResult(d,"Premium Copy Paper A4 60 2500"),null));
+                pdfResult(d,sourceText),null));
         match(f);return f;
     }
     private void match(RunFixture f) { TestActors.run("operator","OPERATOR",()->matchingService.run(new RunMatchCommand(f.caseId(),UUID.randomUUID().toString()))); }
@@ -343,6 +344,40 @@ class ProposalIntegrationTest extends AbstractAnalysisExecutionIntegrationTest {
             assertThat(writer.isDone()).isFalse();release.countDown();reader.get(10,TimeUnit.SECONDS);writer.get(10,TimeUnit.SECONDS);
         } finally { release.countDown();pool.shutdownNow();assertThat(pool.awaitTermination(5,TimeUnit.SECONDS)).isTrue(); }
         assertThat(ai.claim(r.id(),r.contextHash()).disposition()).isEqualTo("STALE");
+    }
+    @Test void mappingSourcesAndIdsAreIndependentAndPaperMismatchRequiresReview() {
+        var f=ready("A3 용지 60 2500");var r=reserve(f);var c=ai.claim(r.id(),r.contextHash());long version=caseVersion(f.caseId());
+        for(int i=0;i<2;i++) ai.reserveCall(r.id(),r.contextHash(),c.token(),UUID.randomUUID(),1000);
+        var document=json.createObjectNode().put("schemaVersion","invoice-extraction-v1").put("promptVersion","invoice-advisory-1");
+        document.putArray("calls").addObject().put("model","fixture-v1").put("inputTokens",100).put("outputTokens",100).put("latencyMs",1);
+        var extraction=document.putObject("result");extraction.putArray("fields");extraction.putArray("warnings");
+        var raw=extraction.putArray("lines").addObject().put("lineNumber",1);
+        String segment=f.documents().getFirst().documentId()+":page:1";
+        var source=raw.putObject("rawItemName").put("value","A3 용지").putObject("source").put("segmentId",segment).put("start",0).put("end",5);
+        raw.putObject("quantity").put("value","60").putObject("source").put("segmentId",segment).put("start",6).put("end",8);
+        raw.putObject("unitPrice").put("value","2500").putObject("source").put("segmentId",segment).put("start",9).put("end",13);
+        assertThat(ai.checkpoint(r.id(),r.contextHash(),c.token(),"document",document)).isEqualTo("ACCEPTED");
+        var context=jsonValue(c.context());var item=java.util.stream.StreamSupport.stream(context.path("items").spliterator(),false)
+                .filter(i->i.path("itemId").asText().equals(ITEM_A)).findFirst().orElseThrow();
+        var mapping=json.createObjectNode().put("schemaVersion","item-mapping-v1").put("promptVersion","invoice-advisory-1");
+        mapping.set("calls",document.path("calls").deepCopy());var line=mapping.putObject("result").putArray("lines").addObject()
+                .put("lineNumber",1).put("reviewRequired",true);line.set("source",source.deepCopy());line.putArray("warningCodes");
+        var candidate=line.putArray("candidates").addObject().put("itemId","FOREIGN").put("purchaseOrderLineId",item.path("purchaseOrderLineId").asText())
+                .put("reason","사람 확인이 필요한 후보").putNull("priorSnapshotId");candidate.putArray("reasonCodes").add("ALIAS");
+        assertThatThrownBy(()->ai.checkpoint(r.id(),r.contextHash(),c.token(),"mapping",mapping)).isInstanceOf(AnalysisValidationException.class);
+        candidate.put("itemId",ITEM_A);
+        assertThatThrownBy(()->ai.checkpoint(r.id(),r.contextHash(),c.token(),"mapping",mapping)).isInstanceOf(AnalysisValidationException.class);
+        candidate.putArray("reasonCodes").add("SPECIFICATION_MISMATCH");line.putArray("warningCodes").add("SPECIFICATION_MISMATCH");
+        line.put("reviewRequired",false);
+        assertThatThrownBy(()->ai.checkpoint(r.id(),r.contextHash(),c.token(),"mapping",mapping)).isInstanceOf(AnalysisValidationException.class);
+        line.put("reviewRequired",true);source=(com.fasterxml.jackson.databind.node.ObjectNode)line.path("source");source.put("segmentId","foreign");
+        assertThatThrownBy(()->ai.checkpoint(r.id(),r.contextHash(),c.token(),"mapping",mapping)).isInstanceOf(AnalysisValidationException.class);
+        source.put("segmentId",segment);
+        assertThat(count("proposal_step")).isEqualTo(1);
+        assertThat(ai.checkpoint(r.id(),r.contextHash(),c.token(),"mapping",mapping)).isEqualTo("ACCEPTED");
+        assertThat(ai.checkpoint(r.id(),r.contextHash(),UUID.randomUUID(),"mapping",mapping)).isEqualTo("REPLAYED");
+        assertThat(count("proposal_step")).isEqualTo(2);assertThat(caseVersion(f.caseId())).isEqualTo(version);
+        assertThat(count("receipt_allocation")).isZero();assertThat(count("payment_request")).isZero();
     }
     private com.fasterxml.jackson.databind.JsonNode jsonValue(String value) {
         try { return json.readTree(value); } catch(Exception e) { throw new AssertionError(e); }
