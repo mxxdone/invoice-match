@@ -52,11 +52,11 @@ class GraphPersistenceIntegrationTest extends AbstractAnalysisExecutionIntegrati
         return json.createArrayNode().add("scalar").add(value);
     }
     private GraphCommands.Checkpoint checkpoint(Fixture f, UUID id, UUID parent) {
-        var body=json.createObjectNode().put("v",2).put("id",id.toString()).put("ts",Instant.now().toString());
+        var body=json.createObjectNode().put("v",GraphRun.SCHEMA).put("id",id.toString()).put("ts",Instant.now().toString());
         body.putObject("channel_values").put("graphExecutionId",f.graph.id().toString()).put("contextHash",f.graph.contextHash());
         body.putObject("channel_versions").put("graphExecutionId",1);body.putObject("versions_seen");body.putNull("updated_channels");
         var metadata=json.createObjectNode().put("source","loop").put("step",1);metadata.putObject("parents");
-        return new GraphCommands.Checkpoint(f.graph.id(),GraphRun.GRAPH,GraphRun.SERIALIZER,2,id,parent,encode(body),metadata,json.createObjectNode().put("graphExecutionId",1));
+        return new GraphCommands.Checkpoint(f.graph.id(),GraphRun.GRAPH,GraphRun.SERIALIZER,GraphRun.SCHEMA,id,parent,encode(body),metadata,json.createObjectNode().put("graphExecutionId",1));
     }
     private GraphCommands.Write interrupt(Fixture f, UUID checkpoint, UUID task, int version, String previousHash) {
         var value=json.createObjectNode().put("graphExecutionId",f.graph.id().toString());value.putArray("reasonCodes").add("AMBIGUOUS_ITEM");
@@ -143,9 +143,9 @@ class GraphPersistenceIntegrationTest extends AbstractAnalysisExecutionIntegrati
         assertThatThrownBy(()->graph.checkpoint(other.graph.id(),other.graph.contextHash(),otherClaim.token(),command)).isInstanceOf(AnalysisValidationException.class);
         var fakeParent=checkpoint(f,cp,UUID.randomUUID());
         conflict("GRAPH_PARENT_CONFLICT",()->graph.checkpoint(f.graph.id(),f.graph.contextHash(),claim.token(),fakeParent));
-        var wrongVersion=new GraphCommands.Checkpoint(f.graph.id(),"invoice-review-graph-v0",GraphRun.SERIALIZER,2,cp,null,command.body(),command.metadata(),command.newVersions());
+        var wrongVersion=new GraphCommands.Checkpoint(f.graph.id(),"invoice-review-graph-v0",GraphRun.SERIALIZER,GraphRun.SCHEMA,cp,null,command.body(),command.metadata(),command.newVersions());
         assertThatThrownBy(()->graph.checkpoint(f.graph.id(),f.graph.contextHash(),claim.token(),wrongVersion)).isInstanceOf(AnalysisValidationException.class);
-        var unsafe=new GraphCommands.Checkpoint(f.graph.id(),GraphRun.GRAPH,GraphRun.SERIALIZER,2,cp,null,json.createArrayNode().add("pickle").add("payload"),command.metadata(),command.newVersions());
+        var unsafe=new GraphCommands.Checkpoint(f.graph.id(),GraphRun.GRAPH,GraphRun.SERIALIZER,GraphRun.SCHEMA,cp,null,json.createArrayNode().add("pickle").add("payload"),command.metadata(),command.newVersions());
         assertThatThrownBy(()->graph.checkpoint(f.graph.id(),f.graph.contextHash(),claim.token(),unsafe)).isInstanceOf(AnalysisValidationException.class);
         assertThat(countGraph("graph_checkpoint")).isZero();
         graph.checkpoint(f.graph.id(),f.graph.contextHash(),claim.token(),command);

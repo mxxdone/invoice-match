@@ -11,7 +11,7 @@ class GraphVersions:
     workflow: str = "ai-review-v2"
     graph: str = "invoice-review-graph-v1"
     serializer: str = "graph-checkpoint-json-v1"
-    checkpoint_schema: int = 2
+    checkpoint_schema: int = 4
 
     def require_supported(self) -> None:
         if self != GraphVersions() or type(self.checkpoint_schema) is not int:

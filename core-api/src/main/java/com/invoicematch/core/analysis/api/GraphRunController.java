@@ -21,8 +21,54 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/internal/graph-runs")
 public class GraphRunController {
     private final GraphExecutionService execution;
-    public GraphRunController(GraphExecutionService execution) { this.execution=execution; }
+    private final com.invoicematch.core.analysis.application.GraphStageService stages;
+    private final com.invoicematch.core.analysis.application.GraphSourceService sources;
+    public GraphRunController(GraphExecutionService execution,com.invoicematch.core.analysis.application.GraphStageService stages,com.invoicematch.core.analysis.application.GraphSourceService sources) { this.execution=execution;this.stages=stages;this.sources=sources; }
 
+    @PostMapping("/{id}/stages/read") public ResponseEntity<Object> stages(@PathVariable UUID id,@RequestBody JsonNode n) {
+        GraphPayloadValidator.keys(n,"contextHash","token");return ok(stages.read(id,hash(n),uuid(n,"token")));
+    }
+    @PostMapping("/{id}/stages") public ResponseEntity<Object> stage(@PathVariable UUID id,@RequestBody JsonNode n) {
+        GraphPayloadValidator.keys(n,"contextHash","token","stage","payload");return ok(stages.save(id,hash(n),uuid(n,"token"),text(n,"stage"),n.get("payload")));
+    }
+    @PostMapping("/{id}/calls") public ResponseEntity<Object> calls(@PathVariable UUID id,@RequestBody JsonNode n) {
+        GraphPayloadValidator.keys(n,"contextHash","token","requestId","tokens");
+        return ok(Map.of("reserved",stages.reserve(id,hash(n),uuid(n,"token"),uuid(n,"requestId"),integer(n,"tokens"))));
+    }
+    @PostMapping("/{id}/tools") public ResponseEntity<Object> tools(@PathVariable UUID id,@RequestBody JsonNode n) {
+        GraphPayloadValidator.keys(n,"contextHash","token","request");var r=n.path("request");
+        GraphPayloadValidator.keys(r,"requestId","tool","query","limit");
+        return ok(stages.tool(id,hash(n),uuid(n,"token"),new com.invoicematch.core.analysis.application.ProposalToolService.Request(
+            uuid(r,"requestId"),text(r,"tool"),string(r,"query"),integer(r,"limit"))));
+    }
+    @PostMapping("/{id}/policies") public ResponseEntity<Object> policies(@PathVariable UUID id,@RequestBody JsonNode n) {
+        GraphPayloadValidator.keys(n,"contextHash","token","request");var r=n.path("request");
+        GraphPayloadValidator.keys(r,"requestId","query","mode","embeddingModel","embeddingVersion","embedding","limit");
+        float[] embedding=null;
+        if(!r.path("embedding").isNull()) {
+            if(!r.path("embedding").isArray() || r.path("embedding").size()>3072)throw invalid();
+            embedding=new float[r.path("embedding").size()];for(int i=0;i<embedding.length;i++) {
+                var v=r.path("embedding").get(i);if(!v.isNumber() || !Double.isFinite(v.doubleValue()))throw invalid();embedding[i]=v.floatValue();
+            }
+        }
+        return ok(stages.policy(id,hash(n),uuid(n,"token"),new com.invoicematch.core.analysis.application.PolicySearchService.Request(
+            uuid(r,"requestId"),text(r,"query"),text(r,"mode"),r.path("embeddingModel").isNull()?null:text(r,"embeddingModel"),
+            r.path("embeddingVersion").isNull()?null:text(r,"embeddingVersion"),embedding,integer(r,"limit"))));
+    }
+    @PostMapping("/{id}/complete") public ResponseEntity<Object> complete(@PathVariable UUID id,@RequestBody JsonNode n) {
+        GraphPayloadValidator.keys(n,"contextHash","token");var result=stages.complete(id,hash(n),uuid(n,"token"));
+        return ok(Map.of("disposition","COMPLETED","proposalId",id,"payloadHash",result.hash()));
+    }
+    @PostMapping("/{id}/failures") public ResponseEntity<Object> failure(@PathVariable UUID id,@RequestBody JsonNode n) {
+        GraphPayloadValidator.keys(n,"contextHash","token","errorCode");
+        return ok(Map.of("disposition","CHECKPOINTED","runStatus",stages.failure(id,hash(n),uuid(n,"token"),text(n,"errorCode"))));
+    }
+
+    @PostMapping("/{id}/documents/{documentId}/source") public ResponseEntity<byte[]> source(@PathVariable UUID id,@PathVariable UUID documentId,@RequestBody JsonNode n) {
+        GraphPayloadValidator.keys(n,"contextHash","token");var result=sources.read(id,hash(n),uuid(n,"token"),documentId);
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).header("X-Content-Type-Options","nosniff")
+            .contentType(org.springframework.http.MediaType.parseMediaType(result.mediaType())).contentLength(result.bytes().length).body(result.bytes());
+    }
     @PostMapping("/{id}/claim") public ResponseEntity<Object> claim(@PathVariable UUID id,@RequestBody JsonNode n) {
         GraphPayloadValidator.keys(n,"contextHash");return ok(execution.claim(id,hash(n)));
     }

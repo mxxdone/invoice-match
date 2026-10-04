@@ -70,7 +70,9 @@ public class AnalysisWorkerSecurityConfiguration {
                         .hasAuthority(AnalysisWorkerAuthenticator.AUTHORITY)
                         .requestMatchers(HttpMethod.POST,"/internal/graph-runs/*/claim","/internal/graph-runs/*/heartbeat",
                             "/internal/graph-runs/*/checkpoints","/internal/graph-runs/*/checkpoints/read",
-                            "/internal/graph-runs/*/writes","/internal/graph-runs/*/waiting")
+                            "/internal/graph-runs/*/writes","/internal/graph-runs/*/waiting",
+                            "/internal/graph-runs/*/stages","/internal/graph-runs/*/stages/read","/internal/graph-runs/*/calls",
+                            "/internal/graph-runs/*/tools","/internal/graph-runs/*/policies","/internal/graph-runs/*/complete","/internal/graph-runs/*/failures","/internal/graph-runs/*/documents/*/source")
                         .hasAuthority(AnalysisWorkerAuthenticator.AUTHORITY)
                         .anyRequest()
                         .denyAll())

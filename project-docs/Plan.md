@@ -1,6 +1,6 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 P4-01 완료·P4-02 대기**
+문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 P4-02 완료·P4-03 대기**
 작성일: **2026-09-25**
 최신화: **2026-10-04**
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
@@ -18,7 +18,7 @@
 | 4 — Human-in-the-loop | 사람 대기와 재개를 안전하게 모델링 | LangGraph checkpoint, mapping interrupt, 새 증빙 재분석, resume 멱등성, stale 차단 | worker/message 점유 없이 정확한 version만 재개·반영 |
 | 5 — 최적화·장애 시연·포트폴리오 | 측정 가능한 개선과 재현 가능한 설명 완성 | 조회·인덱스 실험, 부하·경합·장애 주입, ERP 대사, 관측성, README/ERD/보고서 | 5~7분 시연, Docker Compose 재현, 성능·AI 평가 결과와 trade-off 설명 |
 
-Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4는 P4-00~01을 완료했으며 다음 Ticket은 P4-02다. API 설정 없이도 격리 provider fixture로 내구성 구현·검증을 진행할 수 있지만 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 착수 검토 때 상세화한다.
+Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4는 P4-00~02를 완료했으며 다음 Ticket은 P4-03이다. API 설정 없이도 격리 provider fixture로 내구성 구현·검증을 진행할 수 있지만 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 착수 검토 때 상세화한다.
 
 ### 후속 설계 결정·보류 (2026-10-01)
 
@@ -235,15 +235,11 @@ Phase 4는 **P4-00~P4-07**을 Head가 순차 구현한다. 기존 Spec 8.3·14�
 
 ### P4-01 — Core graph 상태·checkpoint·대기 저장
 
-**상태: 완료.** 기본 비활성인 별도 graph 저장과 실행 token·currentness 검증, 불변 checkpoint/pending-write replay, 저장 상한과 원자적 사람 대기를 인수했다. 후속 진입점은 Core `GraphExecutionService`, `GraphPayloadValidator`, `GraphStore`와 V21 migration이다. SDK adapter는 P4-02에서 연결하며, 대기 후 재개는 P4-03의 불변 사람 확인 원장 없이는 허용하지 않는다. 기존 v1 입력·완료 제안·hash와 업무 흐름은 유지한다.
+**상태: 완료.** 기본 비활성인 별도 graph 저장과 실행 token·currentness 검증, 불변 checkpoint/pending-write replay, 저장 상한과 원자적 사람 대기를 인수했다. 후속 진입점은 Core `GraphExecutionService`, `GraphPayloadValidator`, `GraphStore`와 V21 migration이다. 대기 후 재개는 P4-03의 불변 사람 확인 원장 없이는 허용하지 않는다. 기존 v1 입력·완료 제안·hash와 업무 흐름은 유지한다.
 
 ### P4-02 — LangGraph adapter와 durable interrupt 연결
 
-**상태: 계획.** 의존: P4-01. 기존 Document/Item Mapping/Evidence/Resolution 로직과 Core 검증을 재사용해 유한한 graph를 연결한다. SDK graph builder/checkpointer는 infrastructure에서 application port를 호출하고 composition에서 조립한다. SDK state에는 실행 identity와 검증된 단계 참조를 우선 저장해 원본·대형 payload 중복을 피한다.
-
-원문 확인 필요·복수/없는 품목 후보만 사람 확인으로 보낸다. 정상 후보는 정책/초안으로 이어가며 근거 없음·충돌은 검토 필요 결과를 보존한다. interrupt 노드에는 모델 호출·외부 변경·새 예약을 넣지 않는다. interrupt 발생 후 Core 대기 proof를 받으면 consumer가 ACK하고 반환한다. SDK 오류를 typed code로 매핑하고 비밀/문서 본문을 로그에 남기지 않는다.
-
-인수: 실제 설치 Linux wheel과 새 프로세스에서 checkpoint 복원, 사람이 없는 동안 consumer가 다른 사건 처리, SDK replay 시 성공 모델 단계 재호출 0, Core 대기 저장 실패 시 ACK 0, graph step/bytes/wall-time/호출 상한과 v1 consumer 회귀. 제공자는 격리 fixture를 사용한다.
+**상태: 완료.** 기존 agent와 Core 검증을 재사용한 유한 graph, 참조 기반 SDK state, Core 대기 proof 이후 consumer 반환과 장애 복원을 인수했다. 후속 진입점은 worker `ProcessGraph`, infrastructure `LangGraphRuntime`·`GraphCoreClient`, composition `build_graph_processor`와 Core `GraphStageService`다. 실제 SDK writer에 맞춘 저장 호환성 결정은 Spec 8.3과 V22 migration을 따른다. 사람 확인·재개 원장은 P4-03, 운영 시작/resume relay·BUSY 복구는 P4-04에서 연결하며 기본 비활성을 유지한다.
 
 ### P4-03 — 사람 확인과 원자적 resume 예약
 

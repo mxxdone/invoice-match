@@ -11,6 +11,14 @@
 - 자동 테스트나 재현 절차로 해결을 입증한 문제
 - 해결되지 않은 사항은 완료 사례처럼 쓰지 않고 `남은 고려사항`으로 명시
 
+## P4-02 — SDK 상수보다 실제 저장 계약을 검증하기
+
+pin한 SDK의 checkpoint-base 상수는 legacy schema 2였지만 실제 graph writer는 schema 4를 생성했다. 상수 비교와 격리 codec 검증만으로 Core 저장 호환성을 판단하면 정상 SDK checkpoint가 거부된다. 채널 버전 metadata에도 상태와 같은 필드명이 나타나므로 전체 checkpoint를 재귀 탐색하면 버전 숫자를 단계 참조로 오인할 수 있다.
+
+실제 writer 출력으로 버전 gate를 검증하고, 상태 채널 값에만 불변 단계 참조 검증을 적용했다. 새 실행은 schema 4만 허용하며 기존 schema 2 기록은 수정하지 않고 자동 복원을 거부한다. root task path도 실제 SDK가 쓰는 유한 목록으로 제한했다. 허용 범위를 넓혀 fallback하는 대신 명시적 계약으로 저장과 복원을 연결한 선택이다.
+
+설치된 Linux wheel이 실제 Core·PostgreSQL에 checkpoint와 interrupt를 저장하도록 검증하고, Core 대기 응답 실패 후 새 프로세스에서 성공 모델 단계 재호출 없이 복원했다. 기존 schema 2 및 v1 기록 보존도 실제 migration으로 확인했다. SDK 버전 이름이나 격리 mock 통과보다 실제 writer와 저장 경계의 왕복이 호환성의 근거다.
+
 ## P4-01 — 잠금 대기 후 실행 권한을 다시 확인하기
 
 실행 token과 lease를 조회한 뒤 구매·정책 scope 잠금을 기다리면, 처음 조회한 lease 유효성이 잠금 획득 시점에는 이미 사라질 수 있다. 처음의 상태 값만 믿는 checkpoint 읽기는 만료된 worker에 저장 내용을 내줄 수 있다.

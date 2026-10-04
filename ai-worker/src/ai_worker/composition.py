@@ -98,6 +98,13 @@ def consume_proposals() -> None:
     except Exception as exc:raise WorkerFailure("WORKER_FAILED") from exc
 
 
+def build_graph_processor(core, model, plan, recognizer=None, embedding=None):
+    """Graph construction seam. Production dispatch/recovery is connected in P4-04."""
+    from ai_worker.application.graph_execution import ProcessGraph
+    from ai_worker.infrastructure.graph_runtime import LangGraphRuntime
+    return ProcessGraph(core, LangGraphRuntime(), model, plan, recognizer, embedding)
+
+
 def build_service(limits: ParseLimits = DEFAULT_LIMITS) -> ParseDocumentService:
     return ParseDocumentService(
         detector=MagicFormatDetector(),

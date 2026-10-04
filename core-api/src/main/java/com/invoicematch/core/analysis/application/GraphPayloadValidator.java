@@ -51,7 +51,7 @@ public class GraphPayloadValidator {
 
     public void write(GraphRun run, GraphCommands.Write command) {
         if (command==null || command.checkpointId()==null || command.taskId()==null || command.version()<1
-                || command.version()>512 || command.index() < -4 || command.index()>511 || !"".equals(command.taskPath())
+                || command.version()>512 || command.index() < -4 || command.index()>511 || !taskPath(command.taskPath())
                 || (command.version()==1 && command.previousHash()!=null)
                 || (command.version()>1 && (command.index()>=0 || !hash(command.previousHash())))) throw invalid();
         var value=decode(command.payload(),0,true);
@@ -130,6 +130,9 @@ public class GraphPayloadValidator {
         });
     }
     private static void name(String name) { if(!name.matches("[a-zA-Z0-9_:.-]{1,80}"))throw invalid(); }
+    private static boolean taskPath(String value) {
+        return value!=null && (value.isEmpty() || value.matches("~__pregel_pull, (__start__|execution|document|mapping|human|evidence|resolution)"));
+    }
     public static void keys(JsonNode n, String... expected) {
         if(n==null || !n.isObject())throw invalid();Set<String> found=new HashSet<>();n.fieldNames().forEachRemaining(found::add);
         if(!found.equals(Set.of(expected)))throw invalid();

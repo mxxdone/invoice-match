@@ -52,7 +52,7 @@ public class GraphExecutionService {
             int writeVersion, String writeHash, int reviewVersion) {}
     public record Claim(String disposition, UUID token, Instant leaseUntil, JsonNode context, Waiting waiting) {}
     public record Stored(String disposition, String hash) {}
-    public record WriteView(UUID taskId, int index, int version, String hash, String channel, String taskPath, JsonNode payload) {}
+    public record WriteView(UUID taskId, int index, int version, String previousHash, String hash, String channel, String taskPath, JsonNode payload) {}
     public record CheckpointView(UUID id, UUID parentId, String hash, JsonNode envelope, List<WriteView> writes) {}
 
     /** Reservation seam for P4-02; no public start route or dispatch until the graph consumer exists. */
@@ -103,6 +103,7 @@ public class GraphExecutionService {
     @Transactional
     public Stored checkpoint(UUID id,String hash,UUID token,GraphCommands.Checkpoint command) {
         var run=lock(id,hash);active(run,token);validator.checkpoint(run,command);
+        references(id,validator.decode(command.body(),0,false).path("channel_values"));
         var envelope=mapper.valueToTree(command);String canonical=bounded(envelope),payloadHash=AnalysisCanonicalJson.sha256Hex(canonical);
         var existing=store.checkpoint(id,command.checkpointId());
         if(existing.isPresent()) {
@@ -123,6 +124,15 @@ public class GraphExecutionService {
         var result=new java.util.ArrayList<Stored>();
         for(var command:commands) {
             validator.write(run,command);
+            var decoded=validator.decode(command.payload(),0,true);
+            if(command.channel().endsWith("StageRef"))reference(id,command.channel(),decoded.asText());
+            else references(id,decoded);
+            if(command.channel().equals("__interrupt__") && !store.stages(id).isEmpty()) {
+                var request=decoded.path(0).path("value");
+                if(!request.has("documentStageRef") || !request.has("mappingStageRef"))throw conflict("GRAPH_STAGE_MISMATCH");
+                var actual=new java.util.TreeSet<String>();request.path("reasonCodes").forEach(v->actual.add(v.asText()));
+                if(!actual.equals(GraphStageService.humanReasons(store.validationSteps(id))))throw conflict("GRAPH_WAIT_CONFLICT");
+            }
             if(store.checkpoint(id,command.checkpointId()).isEmpty())throw conflict("GRAPH_CHECKPOINT_MISSING");
             String canonical=bounded(command.payload());
             String payloadHash=AnalysisCanonicalJson.sha256Hex(AnalysisCanonicalJson.canonicalize(mapper.valueToTree(command)));
@@ -148,7 +158,7 @@ public class GraphExecutionService {
         var run=lock(id,hash);active(run,token);
         var checkpoint=(checkpointId==null?store.latest(id):store.checkpoint(id,checkpointId)).orElseThrow(()->conflict("GRAPH_CHECKPOINT_MISSING"));
         return new CheckpointView(checkpoint.id(),checkpoint.parentId(),checkpoint.hash(),parse(checkpoint.envelope()),
-                store.writes(id,checkpoint.id()).stream().map(w->new WriteView(w.taskId(),w.index(),w.version(),w.hash(),w.channel(),w.taskPath(),parse(w.payload()))).toList());
+                store.writes(id,checkpoint.id()).stream().map(w->new WriteView(w.taskId(),w.index(),w.version(),w.previousHash(),w.hash(),w.channel(),w.taskPath(),parse(w.payload()))).toList());
     }
     @Transactional
     public Waiting waitForHuman(UUID id,String hash,UUID token,GraphCommands.Wait command) {
@@ -171,12 +181,13 @@ public class GraphExecutionService {
                 || !write.channel().equals("__interrupt__") || !validator.interruptId(parse(write.payload())).equals(command.interruptId()))throw conflict("GRAPH_WAIT_CONFLICT");
         store.wait(id,proof);return waiting(proof);
     }
-    private GraphRun lock(UUID id,String hash) {
+    GraphRun lock(UUID id,String hash) {
         enabled();var run=store.lock(id).orElseThrow(()->new AnalysisRunNotFoundException(id));
+        if(!store.supported(id))throw conflict("GRAPH_VERSION_UNSUPPORTED");
         if(!GraphPayloadValidator.hash(hash) || !run.contextHash().equals(hash))throw conflict("GRAPH_INPUT_MISMATCH");return run;
     }
     private void enabled() {if(!properties.enabled())throw conflict("GRAPH_DISABLED");}
-    private void active(GraphRun run,UUID token) {
+    void active(GraphRun run,UUID token) {
         if(!run.status().equals("RUNNING") || token==null || !token.equals(run.token()) || !run.leaseActive())throw conflict("LEASE_CONFLICT");
         if(!current(run))throw conflict("STALE_INPUT");
         // Scope locks can block past lease expiry. Recheck database time after acquiring them.
@@ -199,5 +210,20 @@ public class GraphExecutionService {
     }
     private JsonNode parse(String value) {try{return mapper.readTree(value);}catch(com.fasterxml.jackson.core.JsonProcessingException e){throw new IllegalStateException("Invalid stored graph JSON");}}
     private static Waiting waiting(GraphStore.Waiting w) {return new Waiting(w.interruptId(),w.checkpointId(),w.checkpointHash(),w.taskId(),w.writeVersion(),w.writeHash(),w.reviewVersion());}
+    private void references(UUID id,JsonNode value) {
+        if(value.isObject())value.properties().forEach(e->{
+            if(e.getKey().endsWith("StageRef"))reference(id,e.getKey(),e.getValue().asText());
+            else if(e.getKey().equals("reviewRef"))throw conflict("GRAPH_RESUME_NOT_READY");
+            else references(id,e.getValue());
+        });
+        else if(value.isArray())value.forEach(v->references(id,v));
+    }
+    private void reference(UUID id,String key,String ref) {
+        String stage=switch(key) {
+            case "executionStageRef"->"execution";case "documentStageRef"->"document";case "mappingStageRef"->"mapping";
+            case "evidenceStageRef"->"evidence";case "resolutionStageRef"->"resolution";default->throw GraphPayloadValidator.invalid();
+        };
+        if(store.stages(id).stream().noneMatch(s->s.stage().equals(stage) && s.id().toString().equals(ref)))throw conflict("GRAPH_STAGE_MISMATCH");
+    }
     static AnalysisConflictException conflict(String code) {return new AnalysisConflictException(code,"Graph execution conflicts with stored input or ownership");}
 }

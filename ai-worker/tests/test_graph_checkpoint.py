@@ -10,7 +10,6 @@ from typing import TypedDict
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.checkpoint.base import LATEST_VERSION
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, Interrupt, interrupt
 
@@ -142,7 +141,7 @@ def test_serializer_roundtrip_collision_size_and_depth():
 @pytest.mark.parametrize("field,value", [
     ("workflow", "ai-review-v1"), ("workflow", "document-parser-v1"),
     ("graph", "invoice-review-graph-v0"), ("serializer", "graph-checkpoint-json-v0"),
-    ("checkpoint_schema", 1), ("checkpoint_schema", 2.0),
+    ("checkpoint_schema", 1), ("checkpoint_schema", 2), ("checkpoint_schema", 4.0),
 ])
 def test_graph_version_gate_rejects_legacy_and_unknown_without_migration(field, value):
     versions = replace(GraphVersions(), **{field: value})
@@ -151,9 +150,12 @@ def test_graph_version_gate_rejects_legacy_and_unknown_without_migration(field, 
     assert getattr(versions, field) == value
 
 
-def test_pinned_sdk_checkpoint_schema_matches_version_gate():
+def test_actual_pinned_graph_writer_schema_matches_version_gate(tmp_path):
     GraphVersions().require_supported()
-    assert LATEST_VERSION == GraphVersions().checkpoint_schema
+    _run("start", tmp_path)
+    records=GraphCheckpointSerializer().loads_typed((GraphCheckpointSerializer.TYPE,(tmp_path/"checkpoint.json").read_bytes()))
+    assert records["storage"]
+    assert {row[3]["v"] for row in records["storage"]} == {GraphVersions().checkpoint_schema}
 
 
 if __name__ == "__main__":

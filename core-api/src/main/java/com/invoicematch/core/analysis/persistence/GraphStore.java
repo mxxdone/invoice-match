@@ -117,6 +117,47 @@ public class GraphStore {
                 wait.interruptId(),id);
     }
     public int jsonBytes(String value) { return jdbc.queryForObject("select octet_length(cast(? as jsonb)::text)",Integer.class,value); }
+    /** Validation input only: does not create or mutate any v1 execution. */
+    public com.invoicematch.core.analysis.domain.ProposalRun advisoryInput(UUID id) {
+        return jdbc.queryForObject("select *,lease_until>clock_timestamp() lease_active from graph_run where id=?",(rs,n)->
+            new com.invoicematch.core.analysis.domain.ProposalRun(id,rs.getObject("invoice_case_id",UUID.class),
+                rs.getObject("evidence_bundle_id",UUID.class),rs.getObject("parser_run_id",UUID.class),rs.getObject("match_result_id",UUID.class),
+                rs.getString("context_hash"),rs.getString("context"),rs.getString("status"),rs.getObject("execution_token",UUID.class),
+                rs.getTimestamp("lease_until")==null?null:rs.getTimestamp("lease_until").toInstant(),
+                rs.getInt("start_attempts")+rs.getInt("resume_attempts"),rs.getInt("reserved_calls"),rs.getInt("reserved_tokens"),
+                rs.getInt("tool_calls"),rs.getBoolean("lease_active"),true,rs.getString("error_code")),id);
+    }
+    public boolean supported(UUID id) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("select checkpoint_schema=? from graph_run where id=?",Boolean.class,GraphRun.SCHEMA,id));
+    }
+    public record Stage(UUID id,String stage,String hash,String payload) {}
+    public List<Stage> stages(UUID id) {
+        return jdbc.query("select * from graph_stage where run_id=? order by stage",(rs,n)->
+            new Stage(rs.getObject("id",UUID.class),rs.getString("stage"),rs.getString("payload_hash"),rs.getString("payload")),id);
+    }
+    public List<ProposalStore.Step> validationSteps(UUID id) {
+        return stages(id).stream().map(s->new ProposalStore.Step(s.stage(),s.hash(),s.payload())).toList();
+    }
+    public UUID stage(UUID id,String stage,String payload,String hash,UUID token) {
+        UUID ref=UUID.randomUUID();jdbc.update("insert into graph_stage(id,run_id,stage,payload,payload_hash,execution_token) values(?,?,?,cast(? as jsonb),?,?)",
+            ref,id,stage,payload,hash,token);return ref;
+    }
+    public Optional<Integer> reservation(UUID id,UUID requestId) {
+        return jdbc.query("select reserved_tokens from graph_call_reservation where run_id=? and request_id=?",(rs,n)->rs.getInt(1),id,requestId).stream().findFirst();
+    }
+    public BigDecimal costCeiling(UUID id) { return jdbc.queryForObject("select cost_ceiling from graph_run where id=?",BigDecimal.class,id); }
+    public BigDecimal reservedCost(UUID id) { return jdbc.queryForObject("select reserved_cost from graph_run where id=?",BigDecimal.class,id); }
+    public void reserve(UUID id,UUID requestId,int tokens,BigDecimal cost,UUID token) {
+        jdbc.update("insert into graph_call_reservation(run_id,request_id,reserved_tokens,reserved_cost,execution_token) values(?,?,?,?,?)",id,requestId,tokens,cost,token);
+    }
+    public record Result(String hash,String payload) {}
+    public Optional<Result> result(UUID id) {
+        return jdbc.query("select payload_hash,payload::text from graph_proposal where run_id=?",(rs,n)->new Result(rs.getString(1),rs.getString(2)),id).stream().findFirst();
+    }
+    public void complete(UUID id,String payload,String hash,UUID token) {
+        jdbc.update("insert into graph_proposal(run_id,payload,payload_hash,execution_token) values(?,cast(? as jsonb),?,?)",id,payload,hash,token);
+        terminal(id,"COMPLETED",null);
+    }
     private static GraphRun run(java.sql.ResultSet rs) throws java.sql.SQLException {
         var until=rs.getTimestamp("lease_until");
         return new GraphRun(rs.getObject("id",UUID.class),rs.getObject("invoice_case_id",UUID.class),rs.getLong("case_version"),

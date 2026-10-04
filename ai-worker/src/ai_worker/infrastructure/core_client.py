@@ -56,7 +56,7 @@ class CoreClient:
                         if not raw.startswith(signature):
                             raise WorkerFailure("SOURCE_MISMATCH")
                         return raw
-                    return strict_json(raw, cap)
+                    return self._decode_response(raw, cap)
         except WorkerFailure:
             raise
         except (aiohttp.ClientError, TimeoutError, OSError, ValueError) as exc:
@@ -64,6 +64,9 @@ class CoreClient:
 
     async def _error_response(self,response):
         raise WorkerFailure("CORE_REQUEST_FAILED")
+
+    def _decode_response(self, raw, cap):
+        return strict_json(raw, cap)
 
     def _call(self, request: Request, suffix: str, body: dict, document=None):
         return asyncio.run(self._post("/internal/analysis-runs/" + request.run_id + suffix, body, document))

@@ -264,7 +264,7 @@ checkpoint ID와 interrupt ID는 pin한 SDK가 생성한 값을 해당 실행에
 
 LangGraph와 checkpointer/serializer는 Python infrastructure에만 둔다. application은 SDK 독립 port를 사용하고 worker는 인증된 Core API로만 저장한다. worker DB 자격증명·임의 SQL·별도 DB·LangGraph Platform·LangSmith·Redis는 사용하지 않는다. graph state는 실행 identity와 검증된 단계 참조만 저장하며 원문·secret·파일 경로를 저장하지 않는다.
 
-`langgraph==1.2.12`·`langgraph-checkpoint==4.2.0`을 pin한다. JSON serializer `graph-checkpoint-json-v1`은 JSON 값과 SDK의 tuple/Interrupt만 닫힌 태그로 표현한다. Interrupt는 id/value만 허용하며 response schema 객체는 거부한다. pickle·임의 객체 생성·모듈 import는 금지한다. SDK 기본 serializer를 fallback으로 사용하지 않는다. DeltaChannel·subgraph·Send·외부 객체를 state에 넣지 않는다.
+`langgraph==1.2.12`·`langgraph-checkpoint==4.2.0`을 pin하고 실제 graph writer의 checkpoint schema 4를 사용한다. checkpoint-base의 legacy 상수 2를 writer 버전으로 간주하지 않는다. 기존 schema 2 기록은 보존하되 자동 복원·재작성하지 않는다. JSON serializer `graph-checkpoint-json-v1`은 JSON 값과 SDK의 tuple/Interrupt만 닫힌 태그로 표현한다. Interrupt는 id/value만 허용하며 response schema 객체는 거부한다. pickle·임의 객체 생성·모듈 import는 금지한다. SDK 기본 serializer를 fallback으로 사용하지 않는다. DeltaChannel·subgraph·Send·외부 객체를 state에 넣지 않는다.
 
 Core checkpointer는 thread/namespace/checkpoint ID, parent checkpoint ID, SDK checkpoint의 `v/id/ts/channel_values/channel_versions/versions_seen/updated_channels`, metadata의 source/step/parents, new channel versions를 보존한다. pending writes는 checkpoint ID·task ID·SDK write index·channel·value·task path에 묶어 보존한다. SDK의 음수 reserved write index도 저장하며 interrupt와 resume writes를 일반 node 결과와 구분한다. checkpoint body/metadata/parent/graphVersion은 immutable하고 동일 hash replay만 허용한다. pending writes의 reserved slot 교체는 현재 lease에서 이전 hash/version을 검증한 새 불변 version으로 저장하고 교체 전·후 내용과 token을 보존한다. latest 조회와 정확한 checkpoint 조회를 지원하며 다른 실행/namespace는 거부한다.
 

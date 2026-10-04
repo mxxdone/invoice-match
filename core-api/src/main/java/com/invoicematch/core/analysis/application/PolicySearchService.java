@@ -51,6 +51,23 @@ public class PolicySearchService {
             return saved;
         }
         if(run.toolCalls()>=ProposalRun.MAX_TOOLS) throw ProposalExecutionService.conflict("AI_BUDGET_EXHAUSTED");
+        var output=readFrozen(run,request);
+        String canonical=AnalysisCanonicalJson.canonicalize(output);
+        runs.countTool(id);runs.step(id,stage,canonical,AnalysisCanonicalJson.sha256Hex(canonical));return sources.parse(canonical);
+    }
+    /** Caller owns fencing, budget admission and immutable storage. */
+    JsonNode readFrozen(ProposalRun run,Request request) {
+        if(request==null || request.requestId()==null || request.query()==null || request.query().isBlank()
+                || request.query().length()>200 || request.query().chars().anyMatch(Character::isISOControl)
+                || !Set.of("LEXICAL","VECTOR","HYBRID").contains(request.mode()==null?"":request.mode())
+                || request.limit()<1 || request.limit()>10) throw invalid("TOOL_DENIED");
+        boolean vector=!request.mode().equals("LEXICAL");
+        if(vector) {
+            validateEmbedding(request.embeddingModel(),request.embedding());
+            if(request.embeddingVersion()==null || request.embeddingVersion().isBlank() || request.embeddingVersion().length()>100 || request.embeddingVersion().chars().anyMatch(Character::isISOControl)) throw invalid("AI_EMBEDDING_MISMATCH");
+        }
+        else if(request.embedding()!=null || request.embeddingModel()!=null || request.embeddingVersion()!=null) throw invalid("TOOL_DENIED");
+        JsonNode arguments=mapper.valueToTree(request);
         var context=sources.context(run);var documents=context.path("policyDocuments");
         Map<UUID,JsonNode> metadata=new LinkedHashMap<>();
         for(var document:documents) {
@@ -68,7 +85,7 @@ public class PolicySearchService {
         List<PolicyCatalogStore.Hit> hits=request.mode().equals("LEXICAL")?lexical:request.mode().equals("VECTOR")?vectors:hybrid(lexical,vectors);
         var conflicts=policies.conflicts(ids);
         if(conflicts.size()>10) throw invalid("AI_INPUT_LIMIT");
-        var output=mapper.createObjectNode().put("schemaVersion","ai-evidence-v1").put("contextHash",hash)
+        var output=mapper.createObjectNode().put("schemaVersion","ai-evidence-v1").put("contextHash",run.contextHash())
                 .put("status",!conflicts.isEmpty()?"CONFLICT":hits.isEmpty()?"INSUFFICIENT_EVIDENCE":"FOUND");
         output.set("conflictRules",mapper.valueToTree(conflicts));output.set("request",arguments);
         var result=output.putArray("result");
@@ -83,7 +100,7 @@ public class PolicySearchService {
         }
         String canonical=AnalysisCanonicalJson.canonicalize(output);
         if(canonical.getBytes(StandardCharsets.UTF_8).length>40000) throw invalid("AI_INPUT_LIMIT");
-        runs.countTool(id);runs.step(id,stage,canonical,AnalysisCanonicalJson.sha256Hex(canonical));return sources.parse(canonical);
+        return sources.parse(canonical);
     }
     private static List<PolicyCatalogStore.Hit> hybrid(List<PolicyCatalogStore.Hit> lexical,List<PolicyCatalogStore.Hit> vectors) {
         Map<UUID,PolicyCatalogStore.Chunk> chunks=new HashMap<>();Map<UUID,Double> scores=new HashMap<>();

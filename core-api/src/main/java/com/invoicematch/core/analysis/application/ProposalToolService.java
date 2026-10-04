@@ -44,8 +44,21 @@ public class ProposalToolService {
             return frozen;
         }
         if(run.toolCalls()>=ProposalRun.MAX_TOOLS) throw ProposalExecutionService.conflict("AI_BUDGET_EXHAUSTED");
+        var output=readFrozen(run,request);
+        String canonical=AnalysisCanonicalJson.canonicalize(output);
+        store.countTool(runId);
+        store.step(runId,stage,canonical,AnalysisCanonicalJson.sha256Hex(canonical));
+        return output;
+    }
+    /** Caller owns fencing, budget admission and immutable storage. */
+    JsonNode readFrozen(ProposalRun run,Request request) {
+        if(request==null || request.requestId()==null || !TOOLS.contains(request.tool()==null?"":request.tool())
+            || request.query()==null || request.query().length()>100 || request.query().chars().anyMatch(Character::isISOControl)
+            || request.limit()<1 || request.limit()>10)
+            throw new AnalysisValidationException("TOOL_DENIED","Only bounded read-only tools are available");
+        var arguments=mapper.valueToTree(request);
         JsonNode context=sources.context(run),match=context.path("matchResult");
-        ObjectNode output=mapper.createObjectNode().put("schemaVersion","ai-tool-v1").put("contextHash",contextHash)
+        ObjectNode output=mapper.createObjectNode().put("schemaVersion","ai-tool-v1").put("contextHash",run.contextHash())
                 .put("capturedAtMatching",true);
         output.set("request",arguments);
         switch(request.tool()) {
@@ -79,8 +92,7 @@ public class ProposalToolService {
         String canonical=AnalysisCanonicalJson.canonicalize(output);
         if(canonical.getBytes(StandardCharsets.UTF_8).length>20000)
             throw new AnalysisValidationException("AI_INPUT_LIMIT","Tool result exceeds the limit");
-        store.countTool(runId);
-        store.step(runId,stage,canonical,AnalysisCanonicalJson.sha256Hex(canonical));
         return output;
     }
+
 }
