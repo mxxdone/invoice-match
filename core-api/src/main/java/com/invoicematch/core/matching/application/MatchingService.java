@@ -54,6 +54,7 @@ public class MatchingService {
     private final AuthorizationService authorization;
     private final AuditRecorder audit;
     private final Clock clock;
+    private final com.invoicematch.core.analysis.application.GraphInvalidationService graphs;
 
     public MatchingService(
             InvoiceCaseQueryService invoiceCaseQueries,
@@ -65,7 +66,7 @@ public class MatchingService {
             ObjectProvider<MatchLockInterceptor> matchLockInterceptors,
             AuthorizationService authorization,
             AuditRecorder audit,
-            Clock clock) {
+            Clock clock,com.invoicematch.core.analysis.application.GraphInvalidationService graphs) {
         this.invoiceCaseQueries = invoiceCaseQueries;
         this.purchaseOrderSnapshots = purchaseOrderSnapshots;
         this.matchResults = matchResults;
@@ -76,6 +77,7 @@ public class MatchingService {
         this.authorization = authorization;
         this.audit = audit;
         this.clock = clock;
+        this.graphs = graphs;
     }
 
     @Transactional
@@ -104,6 +106,7 @@ public class MatchingService {
 
         CurrentPurchaseOrderSnapshot purchasing = requireCurrentPurchasingSnapshot(caseSnapshot);
         MatchResultView view = appendResult(caseSnapshot, purchasing);
+        graphs.invalidateCase(command.caseId());
         audit.record(new AuditEvent(
                 caseSnapshot.caseId(),
                 actor,

@@ -25,9 +25,11 @@ public class PolicyCatalogService {
     private final ObjectMapper mapper;
     private final com.invoicematch.core.audit.application.AuditRecorder audit;
     private final java.time.Clock clock;
+    private final GraphInvalidationService graphs;
     public PolicyCatalogService(PolicyCatalogStore policies,ProposalStore cases,AuthorizationService authorization,
-            RequestIdempotencyStore idempotency,ObjectMapper mapper,com.invoicematch.core.audit.application.AuditRecorder audit,java.time.Clock clock) {
+            RequestIdempotencyStore idempotency,ObjectMapper mapper,com.invoicematch.core.audit.application.AuditRecorder audit,java.time.Clock clock,GraphInvalidationService graphs) {
         this.policies=policies;this.cases=cases;this.authorization=authorization;this.idempotency=idempotency;this.mapper=mapper;this.audit=audit;this.clock=clock;
+        this.graphs=graphs;
     }
     public record ChunkInput(int page,int paragraph,String content,float[] embedding,String ruleKey,String effect) {
         public ChunkInput(int page,int paragraph,String content,float[] embedding) { this(page,paragraph,content,embedding,null,"INFORMATION"); }
@@ -71,6 +73,7 @@ public class PolicyCatalogService {
                 input.validFrom(),input.validTo(),hash,input.embeddingModel(),input.embeddingVersion(),dimension);
         for(var chunk:input.chunks()) policies.chunk(new PolicyCatalogStore.Chunk(UUID.randomUUID(),id,chunk.page(),chunk.paragraph(),
                 chunk.content(),AnalysisCanonicalJson.sha256Hex(chunk.content()),chunk.ruleKey(),chunk.effect()),chunk.embedding());
+        graphs.invalidatePolicyCase(caseId);
         audit.record(new com.invoicematch.core.audit.application.AuditEvent(caseId,authorization.actor(),
                 com.invoicematch.core.audit.domain.AuditAction.POLICY_DOCUMENT_PUBLISHED,
                 com.invoicematch.core.audit.domain.AuditTargetType.CASE,caseId.toString(),state.version(),null,

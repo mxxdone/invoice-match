@@ -104,6 +104,7 @@ public class ApprovalService {
     private final AuditRecorder audit;
     private final ApprovalInterceptor interceptor;
     private final Clock clock;
+    private final com.invoicematch.core.analysis.application.GraphInvalidationService graphs;
 
     public ApprovalService(
             InvoiceCaseRepository invoiceCases,
@@ -123,7 +124,7 @@ public class ApprovalService {
             AuthorizationService authorization,
             AuditRecorder audit,
             ObjectProvider<ApprovalInterceptor> approvalInterceptors,
-            Clock clock) {
+            Clock clock,com.invoicematch.core.analysis.application.GraphInvalidationService graphs) {
         this.invoiceCases = invoiceCases;
         this.decisions = decisions;
         this.matchResults = matchResults;
@@ -142,6 +143,7 @@ public class ApprovalService {
         this.audit = audit;
         this.interceptor = approvalInterceptors.getIfAvailable(() -> ApprovalInterceptor.NONE);
         this.clock = clock;
+        this.graphs = graphs;
     }
 
     @Transactional
@@ -300,6 +302,7 @@ public class ApprovalService {
 
         invoiceCase.transitionTo(InvoiceCaseStatus.EXPORT_PENDING, now);
         invoiceCase = invoiceCases.saveAndFlush(invoiceCase);
+        graphs.invalidateCase(command.caseId());
         if (invoiceCase.version() != caseVersionBefore + 1) {
             throw new IllegalStateException("approved case version did not advance by exactly one");
         }

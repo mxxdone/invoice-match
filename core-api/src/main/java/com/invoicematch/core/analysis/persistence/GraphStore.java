@@ -25,6 +25,19 @@ public class GraphStore {
         return jdbc.query("select *,lease_until>clock_timestamp() lease_active from graph_run where invoice_case_id=? and context_hash=?",
                 (rs,n)->run(rs), caseId, hash).stream().findFirst();
     }
+    public List<UUID> lockCaseRuns(UUID caseId) {
+        return jdbc.query("select id from graph_run where invoice_case_id=? and status<>'STALE' order by id for update",
+                (rs,n)->rs.getObject(1,UUID.class),caseId);
+    }
+    public boolean otherInput(UUID caseId,String hash) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("select exists(select 1 from graph_run where invoice_case_id=? and checkpoint_schema=4 and context_hash<>?)",Boolean.class,caseId,hash));
+    }
+    public Optional<UUID> predecessor(UUID id) {
+        return jdbc.query("select predecessor_id from graph_successor where run_id=?",(rs,n)->rs.getObject(1,UUID.class),id).stream().findFirst();
+    }
+    public void successor(UUID id,UUID parent,UUID caseId) {
+        jdbc.update("insert into graph_successor(run_id,predecessor_id,invoice_case_id) values(?,?,?)",id,parent,caseId);
+    }
     public void insert(UUID id, UUID caseId, long version, ProposalStore.Source source, String context,
             String hash, BigDecimal costCeiling) {
         jdbc.update("""

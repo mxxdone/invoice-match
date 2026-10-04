@@ -99,6 +99,7 @@ public class InvoiceCaseWriteService {
     private final AuthorizationService authorization;
     private final AuditRecorder audit;
     private final Clock clock;
+    private final com.invoicematch.core.analysis.application.GraphInvalidationService graphs;
 
     public InvoiceCaseWriteService(
             InvoiceCaseRepository invoiceCases,
@@ -115,7 +116,7 @@ public class InvoiceCaseWriteService {
             ObjectProvider<DraftRevisionLockInterceptor> draftRevisionLockInterceptors,
             AuthorizationService authorization,
             AuditRecorder audit,
-            Clock clock) {
+            Clock clock,com.invoicematch.core.analysis.application.GraphInvalidationService graphs) {
         this.invoiceCases = invoiceCases;
         this.draftRevisions = draftRevisions;
         this.invoiceLines = invoiceLines;
@@ -132,6 +133,7 @@ public class InvoiceCaseWriteService {
         this.authorization = authorization;
         this.audit = audit;
         this.clock = clock;
+        this.graphs = graphs;
     }
 
     @Transactional
@@ -295,6 +297,7 @@ public class InvoiceCaseWriteService {
         invoiceCase.transitionTo(InvoiceCaseStatus.REVIEW_PENDING, now);
         invoiceCase.clearDraftRevision(now);
         invoiceCase = invoiceCases.saveAndFlush(invoiceCase);
+        graphs.invalidateCase(command.caseId());
 
         SubmissionResult result = new SubmissionResult(
                 command.caseId(), invoiceCase.status(), invoiceCase.version(), EvidenceBundleSummary.from(bundle));

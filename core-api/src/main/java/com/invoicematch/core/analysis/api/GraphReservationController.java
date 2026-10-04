@@ -16,6 +16,11 @@ public class GraphReservationController {
         var result=execution.reserve(caseId,command);
         return ResponseEntity.status(result.status()).cacheControl(CacheControl.noStore()).body(result.body());
     }
+    @PostMapping("/{predecessor}/successors") public ResponseEntity<GraphExecutionService.Reserved> successor(
+            @PathVariable UUID caseId,@PathVariable UUID predecessor,@RequestBody ProposalService.ReserveCommand command) {
+        var result=execution.successor(caseId,predecessor,command);
+        return ResponseEntity.status(result.status()).cacheControl(CacheControl.noStore()).body(result.body());
+    }
     @ExceptionHandler(com.invoicematch.core.analysis.application.AnalysisConflictException.class)
     ResponseEntity<com.invoicematch.core.invoicecase.api.ApiError> conflict(com.invoicematch.core.analysis.application.AnalysisConflictException e) {
         return ResponseEntity.status(409).cacheControl(CacheControl.noStore()).body(new com.invoicematch.core.invoicecase.api.ApiError(e.code(),e.getMessage()));

@@ -174,7 +174,7 @@ class GraphPersistenceIntegrationTest extends AbstractAnalysisExecutionIntegrati
         var f=ready();var claim=start(f);UUID cp=UUID.randomUUID();
         TestActors.run("operator","OPERATOR",()->matchingService.run(new RunMatchCommand(f.parser.caseId(),UUID.randomUUID().toString())));
         conflict("STALE_INPUT",()->graph.checkpoint(f.graph.id(),f.graph.contextHash(),claim.token(),checkpoint(f,cp,null)));
-        assertThat(start(f).disposition()).isEqualTo("STALE");
+        assertThat(start(f).disposition()).isEqualTo("ALREADY_FINISHED");
         assertThat(jdbc.queryForObject("select status from graph_run",String.class)).isEqualTo("STALE");
         assertThat(countGraph("graph_checkpoint")).isZero();
     }

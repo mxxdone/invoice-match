@@ -81,6 +81,7 @@ abstract class AbstractAnalysisIntegrationTest extends AbstractPostgresIntegrati
         jdbc.execute("truncate table purchase_order_snapshot cascade");
         PURCHASING.respond(200, PurchasingPayloads.confirmedPartialReceipt().toJson());
     }
+    protected void purchasingResponse(String payload) { PURCHASING.respond(200,payload); }
 
     /** Creates a DRAFT case with one line, without submitting it. */
     protected UUID createDraftCase(String invoiceNumber) {

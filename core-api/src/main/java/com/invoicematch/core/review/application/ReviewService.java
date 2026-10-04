@@ -86,6 +86,7 @@ public class ReviewService {
     private final ObjectMapper mapper = new ObjectMapper();
     private final Clock clock;
     private final ProposalEvidenceReader proposals;
+    private final com.invoicematch.core.analysis.application.GraphInvalidationService graphs;
 
     public ReviewService(
             InvoiceCaseRepository invoiceCases,
@@ -105,7 +106,7 @@ public class ReviewService {
             RequestIdempotencyStore idempotency,
             AuthorizationService authorization,
             AuditRecorder audit,
-            Clock clock,ProposalEvidenceReader proposals) {
+            Clock clock,ProposalEvidenceReader proposals,com.invoicematch.core.analysis.application.GraphInvalidationService graphs) {
         this.invoiceCases = invoiceCases;
         this.evidenceBundles = evidenceBundles;
         this.matchResults = matchResults;
@@ -123,7 +124,7 @@ public class ReviewService {
         this.idempotency = idempotency;
         this.authorization = authorization;
         this.audit = audit;
-        this.clock = clock;this.proposals=proposals;
+        this.clock = clock;this.proposals=proposals;this.graphs=graphs;
     }
 
     @Transactional
@@ -243,6 +244,7 @@ public class ReviewService {
         // transaction. Its result is covered by the atomic ITEM_MAPPED audit
         // below rather than a separate operator-style MATCH_RUN.
         MatchResult successorResult = internalRematch.append(command.caseId());
+        graphs.invalidateCase(command.caseId());
 
         int snapshotNumber = snapshots.maxSnapshotNumber(command.caseId()) + 1;
         ReviewSnapshot successor = buildAndSaveSnapshot(
@@ -414,6 +416,7 @@ public class ReviewService {
 
         invoiceCase.transitionTo(operation.targetStatus, now);
         invoiceCases.saveAndFlush(invoiceCase);
+        graphs.invalidateCase(invoiceCase.id().value());
 
         ReviewDecisionView view = ReviewDecisionView.from(decision);
         audit.record(new AuditEvent(

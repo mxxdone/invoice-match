@@ -41,12 +41,15 @@ public class GraphExecutionService {
     private final AuditRecorder audit;
     private final Clock clock;
     private final com.invoicematch.core.analysis.persistence.GraphDeliveryStore delivery;
+    private final com.invoicematch.core.purchasingreference.application.PurchaseOrderSnapshotLock purchaseLock;
     public GraphExecutionService(GraphStore store, ProposalStore inputs, ProposalContextFactory contexts,
             PolicyCatalogStore policies, GraphProperties properties, GraphPayloadValidator validator,
             ObjectMapper mapper, AuthorizationService authorization, RequestIdempotencyStore idempotency,
-            AuditRecorder audit, Clock clock,com.invoicematch.core.analysis.persistence.GraphDeliveryStore delivery) {
+            AuditRecorder audit, Clock clock,com.invoicematch.core.analysis.persistence.GraphDeliveryStore delivery,
+            com.invoicematch.core.purchasingreference.application.PurchaseOrderSnapshotLock purchaseLock) {
         this.store=store;this.inputs=inputs;this.contexts=contexts;this.policies=policies;this.properties=properties;
         this.validator=validator;this.mapper=mapper;this.authorization=authorization;this.idempotency=idempotency;this.audit=audit;this.clock=clock;this.delivery=delivery;
+        this.purchaseLock=purchaseLock;
     }
     public record Reserved(UUID id, String status, String contextHash) {}
     public record Waiting(String interruptId, UUID checkpointId, String checkpointHash, UUID taskId,
@@ -59,27 +62,49 @@ public class GraphExecutionService {
     /** Reserve frozen graph input and its immutable start delivery atomically. */
     @Transactional
     public CommandResult<Reserved> reserve(UUID caseId, ProposalService.ReserveCommand command) {
+        return reserveInput(caseId,command,null);
+    }
+    @Transactional
+    public CommandResult<Reserved> successor(UUID caseId,UUID predecessor,ProposalService.ReserveCommand command) {
+        if(predecessor==null)throw GraphPayloadValidator.invalid();
+        return reserveInput(caseId,command,predecessor);
+    }
+    private CommandResult<Reserved> reserveInput(UUID caseId,ProposalService.ReserveCommand command,UUID predecessor) {
         authorization.requireRole(Role.OPERATOR);
         authorization.requireCaseRead(caseId);
         if(command==null || command.requestId()==null || command.requestId().isBlank() || command.requestId().length()>80
                 || command.expectedCaseVersion()==null || command.expectedCaseVersion()<0)throw GraphPayloadValidator.invalid();
         var state=inputs.lockCase(caseId).orElseThrow(()->new InvoiceCaseNotFoundException(caseId));
-        String scope="graph:reserve",resource=caseId.toString();var actor=authorization.actor();
-        String fingerprint=AnalysisCanonicalJson.sha256Hex(mapper.createObjectNode().put("caseVersion",command.expectedCaseVersion()).toString());
+        String scope=predecessor==null?"graph:reserve":"graph:successor",resource=caseId.toString();var actor=authorization.actor();
+        var request=mapper.createObjectNode().put("caseVersion",command.expectedCaseVersion());
+        if(predecessor!=null)request.put("predecessor",predecessor.toString());
+        String fingerprint=AnalysisCanonicalJson.sha256Hex(request.toString());
         var begin=idempotency.begin(scope,resource,actor.username(),command.requestId(),fingerprint);
         if(begin instanceof RequestIdempotencyStore.BeginResult.Replay replay)
             return new CommandResult<>(replay.response().status(),idempotency.decode(replay.response(),Reserved.class));
         enabled();
         if(state.version()!=command.expectedCaseVersion() || !java.util.Set.of("SUBMITTED","REVIEW_PENDING").contains(state.status()))throw conflict("GRAPH_INPUT_CONFLICT");
+        GraphRun parent=predecessor==null?null:reviewRun(caseId,predecessor);
         var source=inputs.source(caseId).orElseThrow(()->conflict("GRAPH_INPUT_CONFLICT"));
+        purchaseLock.acquireXactLock(parse(source.matchPayload()).path("purchaseOrderId").asText());
+        source=inputs.source(caseId).orElseThrow(()->conflict("GRAPH_INPUT_CONFLICT"));
         var context=contexts.create(caseId,source).put("schemaVersion","ai-graph-context-v1")
                 .put("caseVersion",state.version()).put("workflowVersion",GraphRun.WORKFLOW)
                 .put("graphVersion",GraphRun.GRAPH).put("serializerVersion",GraphRun.SERIALIZER).put("checkpointSchema",GraphRun.SCHEMA);
         String canonical=AnalysisCanonicalJson.canonicalize(context),hash=AnalysisCanonicalJson.sha256Hex(canonical);
+        if(parent!=null) {
+            if(parent.contextHash().equals(hash))throw conflict("GRAPH_SUCCESSOR_INPUT_UNCHANGED");
+            if(current(parent))throw conflict("GRAPH_SUCCESSOR_INPUT_UNCHANGED");
+            if(!parent.status().equals("STALE")) {store.terminal(parent.id(),"STALE",null);delivery.cancel(parent.id());}
+        } else if(store.otherInput(caseId,hash))throw conflict("GRAPH_SUCCESSOR_REQUIRED");
         var existing=store.existing(caseId,hash);Reserved response;
-        if(existing.isPresent())response=new Reserved(existing.get().id(),existing.get().status(),hash);
+        if(existing.isPresent()) {
+            if(parent!=null && !store.predecessor(existing.get().id()).filter(predecessor::equals).isPresent())throw conflict("GRAPH_SUCCESSOR_CONFLICT");
+            response=new Reserved(existing.get().id(),existing.get().status(),hash);
+        }
         else {
             UUID id=UUID.randomUUID();store.insert(id,caseId,state.version(),source,canonical,hash,properties.costCeiling());
+            if(parent!=null)store.successor(id,parent.id(),caseId);
             delivery.start(id,AnalysisCanonicalJson.canonicalize(mapper.createObjectNode().put("schemaVersion","graph-request-v1")
                 .put("eventId",id.toString()).put("graphExecutionId",id.toString()).put("workflowVersion",GraphRun.WORKFLOW).put("contextHash",hash)));
             response=new Reserved(id,"QUEUED",hash);
@@ -200,6 +225,7 @@ public class GraphExecutionService {
     }
     void enabled() {if(!properties.enabled())throw conflict("GRAPH_DISABLED");}
     void active(GraphRun run,UUID token) {
+        if(run.status().equals("STALE"))throw conflict("STALE_INPUT");
         if(!run.status().equals("RUNNING") || token==null || !token.equals(run.token()) || !run.leaseActive())throw conflict("LEASE_CONFLICT");
         if(!current(run))throw conflict("STALE_INPUT");
         // Scope locks can block past lease expiry. Recheck database time after acquiring them.
@@ -207,6 +233,7 @@ public class GraphExecutionService {
     }
     boolean current(GraphRun run) {
         var context=parse(run.context());var match=context.path("matchResult");
+        purchaseLock.acquireXactLock(match.path("purchaseOrderId").asText());
         policies.lockScopeRead(match.path("purchaseOrderId").asText());
         return store.current(run) && context.path("policyDocuments").equals(mapper.valueToTree(policies.scope(context.path("companyId").asText(),
                 match.path("supplierId").asText(),match.path("purchaseOrderId").asText(),LocalDate.parse(context.path("applicableDate").asText()))));
