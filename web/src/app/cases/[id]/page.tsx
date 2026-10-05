@@ -292,7 +292,7 @@ function Detail() {
         </section>
       )}
 
-      {isApprover && data.detail.status === 'REVIEW_PENDING' && (
+      {isApprover && data.detail.status === 'REVIEW_PENDING' && tab === 'compare' && (
         <section className="form-section" aria-label="승인자 검토 동작">
           <div className="section-heading"><h2>검토 동작</h2><span>서버가 권한·소유권·최신성을 검증합니다</span></div>
           {!subjectReady && (
@@ -375,7 +375,7 @@ function Detail() {
         {unsupportedTab ? (
           <SectionMessage tone="forbidden">이 탭은 현재 계정 역할에서 허용되지 않습니다. 서버도 이 계정의 해당 자료 조회를 허용하지 않습니다.</SectionMessage>
         ) : tab === 'compare' ? <ComparePanel data={data} />
-          : tab === 'evidence' ? <>{credentials && <OriginalDocuments key={`${sessionId}:${caseId}`} credentials={credentials} sessionId={sessionId} caseId={caseId} onUnauthorized={onUnauthorized} />}<EvidencePanel data={data} /></>
+          : tab === 'evidence' ? credentials ? <OriginalDocuments key={`${sessionId}:${caseId}`} credentials={credentials} sessionId={sessionId} caseId={caseId} onUnauthorized={onUnauthorized}><EvidencePanel data={data} /></OriginalDocuments> : <EvidencePanel data={data} />
             : tab === 'decisions' ? <DecisionsPanel data={data} />
               : <AuditPanel data={data} entries={auditEntries} nextCursor={auditNextCursor} loadingMore={auditLoadingMore} error={auditError} onMore={loadMoreAudit} />}
       </section>
