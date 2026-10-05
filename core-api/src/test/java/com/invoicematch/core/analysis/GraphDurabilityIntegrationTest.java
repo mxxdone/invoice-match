@@ -92,6 +92,12 @@ class GraphDurabilityIntegrationTest extends AbstractGraphWorkerIntegrationTest 
                     assertThat(jdbc.queryForMap("select start_attempts,resume_attempts,reserved_calls from graph_run where id=?",r.id()))
                         .containsEntry("start_attempts",1).containsEntry("resume_attempts",1).containsEntry("reserved_calls",1);
                 assertThat(count("receipt_allocation")).isZero();assertThat(count("payment_request")).isZero();
+                // Completion response loss: the real Core already stored COMPLETED, so the retry converges once.
+                var lost=ready();
+                assertThat(run(second,"complete-loss",lost)).contains("\"modelCalls\": 2");
+                assertThat(status(lost)).isEqualTo("COMPLETED");
+                assertThat(run(second,"complete-loss",lost)).contains("\"modelCalls\": 2");
+                assertThat(jdbc.queryForObject("select count(*) from graph_proposal where run_id=?",Integer.class,lost.id())).isEqualTo(1);
             }
         }
     }

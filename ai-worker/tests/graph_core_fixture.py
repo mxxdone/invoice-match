@@ -42,12 +42,16 @@ def run():
                 import signal
                 os.kill(os.getpid(),signal.SIGKILL)
             return replies
+        def complete(self,r,t):
+            reply=super().complete(r,t)
+            if mode=="complete-loss":raise WorkerFailure("CORE_UNAVAILABLE")
+            return reply
     core=Core(base,os.environ["GRAPH_FIXTURE_WORKER_TOKEN"])
     class Model:
         def generate(self,name,*_):
             data["calls"]+=1;save()
             if name=="invoice_extraction":
-                if mode=="normal":
+                if mode in ("normal","complete-loss"):
                     context=data["claim"]["context"];document=context["documents"][0]
                     payload={"fields":[{"name":"supplierName","value":"Premium Copy Paper A4","source":{"segmentId":document["documentId"]+":page:1","start":0,"end":21}}],"lines":[],"warnings":[]}
                 else:payload={"fields":[],"lines":[],"warnings":["EMPTY_DOCUMENT"]}
