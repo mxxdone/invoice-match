@@ -25,15 +25,15 @@ public class GraphStore {
         return jdbc.query("select *,lease_until>clock_timestamp() lease_active from graph_run where invoice_case_id=? and context_hash=?",
                 (rs,n)->run(rs), caseId, hash).stream().findFirst();
     }
-    /** Normal read projection; never takes a row lock. */
+    /** Latest committed projection of one run, normally read while the caller already holds its lock. */
     public Optional<GraphRun> read(UUID id) {
         return jdbc.query("select *,lease_until>clock_timestamp() lease_active from graph_run where id=?",
                 (rs,n)->run(rs),id).stream().findFirst();
     }
-    /** Newest first, bounded history of one case; never takes a row lock. */
-    public List<GraphRun> recent(UUID caseId) {
-        return jdbc.query("select *,lease_until>clock_timestamp() lease_active from graph_run where invoice_case_id=?"
-                + " order by created_at desc,id desc limit 20",(rs,n)->run(rs),caseId);
+    /** Unlocked newest-first discovery: bounded IDs only; lock each id before trusting its state. */
+    public List<UUID> recent(UUID caseId) {
+        return jdbc.query("select id from graph_run where invoice_case_id=? order by created_at desc,id desc limit 20",
+                (rs,n)->rs.getObject(1,UUID.class),caseId);
     }
     public List<UUID> lockCaseRuns(UUID caseId) {
         return jdbc.query("select id from graph_run where invoice_case_id=? and status<>'STALE' order by id for update",
@@ -93,7 +93,8 @@ public class GraphStore {
                 Boolean.class,id,token));
     }
     public void terminal(UUID id, String status, String error) {
-        jdbc.update("update graph_run set status=?,error_code=?,execution_token=null,lease_until=null,updated_at=clock_timestamp() where id=?",status,error,id);
+        jdbc.update("update graph_run set status=?,error_code=?,execution_token=null,lease_until=null,updated_at=clock_timestamp()"
+                + " where id=? and status not in ('STALE')",status,error,id);
     }
     public Optional<Checkpoint> checkpoint(UUID id, UUID checkpointId) {
         return jdbc.query("select * from graph_checkpoint where run_id=? and checkpoint_id=?",

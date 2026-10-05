@@ -13,8 +13,13 @@ import com.invoicematch.core.support.TestActors;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /** P4-06 read projection over the real PostgreSQL graph fixture. */
 class GraphQueryIntegrationTest extends AbstractGraphReviewIntegrationTest {
@@ -55,6 +60,24 @@ class GraphQueryIntegrationTest extends AbstractGraphReviewIntegrationTest {
     private ReviewSnapshotView freeze(Fixture f) {
         return TestActors.call("approver","APPROVER",()->reviewService.freezeSnapshot(
             new FreezeReviewSnapshotCommand(f.parser().caseId(),UUID.randomUUID().toString(),caseVersion(f.parser().caseId())))).body();
+    }
+    private static final String COMPLETION_PAYLOAD="{\"schemaVersion\":\"advisory-proposal-v2\",\"graphVersion\":\"invoice-review-graph-v1\","
+        + "\"decisions\":[{\"lineNumber\":1,\"action\":\"APPROVE_REVIEW\"}]}";
+    private record Completed(RunFixture parser,UUID runId) {}
+    private Completed completedProposal() {
+        var f=preparePdfRun(1);var c=claim(f);var d=f.documents().getFirst();
+        execution.recordResult(f.runId(),resultCommand(f,c.claimToken(),d.documentId(),"SUCCESS",pdfResult(d,"paper 60 2500"),null));
+        TestActors.run("operator","OPERATOR",()->matchingService.run(new RunMatchCommand(f.caseId(),UUID.randomUUID().toString())));
+        var reserved=TestActors.call("operator","OPERATOR",()->graph.reserve(f.caseId(),
+            new ProposalService.ReserveCommand(UUID.randomUUID().toString(),caseVersion(f.caseId())))).body();
+        var token=graph.claim(reserved.id(),reserved.contextHash()).token();
+        store.complete(reserved.id(),COMPLETION_PAYLOAD,"c".repeat(64),token);
+        return new Completed(f,reserved.id());
+    }
+    private void publishPolicyOnAnotherCase(UUID caseId) {
+        TestActors.call("operator","OPERATOR",()->policies.publish(caseId,new PolicyCatalogService.Publish(
+            "policy",caseVersion(caseId),"CONTRACT-1","graph-policy",1,"검토 기준",LocalDate.of(2020,1,1),LocalDate.of(2030,1,1),
+            "manual-fixture","1",List.of(new PolicyCatalogService.ChunkInput(1,1,"사람 확인 필요",new float[]{1,0})))));
     }
 
     @Test void waitingViewProjectsFrozenSourcesReasonsAndExactWaitIdentityWithoutMachineState() throws Exception {
@@ -109,14 +132,8 @@ class GraphQueryIntegrationTest extends AbstractGraphReviewIntegrationTest {
     }
 
     @Test void completedProposalIsReturnedVerbatimWithFrozenSources() {
-        var f=preparePdfRun(1);var c=claim(f);var d=f.documents().getFirst();
-        execution.recordResult(f.runId(),resultCommand(f,c.claimToken(),d.documentId(),"SUCCESS",pdfResult(d,"paper 60 2500"),null));
-        TestActors.run("operator","OPERATOR",()->matchingService.run(new RunMatchCommand(f.caseId(),UUID.randomUUID().toString())));
-        var reserved=TestActors.call("operator","OPERATOR",()->graph.reserve(f.caseId(),new ProposalService.ReserveCommand(UUID.randomUUID().toString(),caseVersion(f.caseId())))).body();
-        var token=graph.claim(reserved.id(),reserved.contextHash()).token();
-        String payload="{\"schemaVersion\":\"advisory-proposal-v2\",\"graphVersion\":\"invoice-review-graph-v1\",\"decisions\":[{\"lineNumber\":1,\"action\":\"APPROVE_REVIEW\"}]}";
-        store.complete(reserved.id(),payload,"c".repeat(64),token);
-        var view=view(f.caseId(),reserved.id());
+        var done=completedProposal();
+        var view=view(done.parser().caseId(),done.runId());
         assertThat(view.run().status()).isEqualTo("COMPLETED");
         assertThat(view.run().payloadHash()).isEqualTo("c".repeat(64));
         assertThat(view.payload().path("schemaVersion").asText()).isEqualTo("advisory-proposal-v2");
@@ -124,6 +141,26 @@ class GraphQueryIntegrationTest extends AbstractGraphReviewIntegrationTest {
         assertThat(view.sources()).isNotEmpty();
         assertThat(view.pending()).isNull();
         assertThat(view.review()).isNull();
+    }
+
+    @Test void terminalRunsAreStaledWhenSharedInputChanges() throws Exception {
+        var done=completedProposal();
+        var f=waiting(-1);confirm(f,command(f,"failed"));
+        var claim=delivery.claimResume(f.graph().id(),f.graph().contextHash(),resumeEvent(f));
+        assertThat(delivery.failure(f.graph().id(),f.graph().contextHash(),claim.token(),"AI_CONFIGURATION").runStatus()).isEqualTo("FAILED");
+        publishPolicyOnAnotherCase(preparePdfRun(1).caseId());
+
+        var completed=view(done.parser().caseId(),done.runId());
+        assertThat(completed.run().status()).isEqualTo("STALE");
+        assertThat(completed.run().current()).isFalse();
+        assertThat(completed.payload()).isNull();
+        assertThat(jdbc.queryForObject("select status from graph_run where id=?",String.class,done.runId())).isEqualTo("STALE");
+        assertThat(openDispatches(done.runId())).isZero();
+
+        var failed=view(f);
+        assertThat(failed.run().status()).isEqualTo("STALE");
+        assertThat(failed.run().current()).isFalse();
+        assertThat(jdbc.queryForObject("select status from graph_run where id=?",String.class,f.graph().id())).isEqualTo("STALE");
     }
 
     @Test void sameCaseMappingChangeLeavesReadAsStaleAndCancelsPendingResume() {
@@ -141,10 +178,7 @@ class GraphQueryIntegrationTest extends AbstractGraphReviewIntegrationTest {
     @Test void sharedPolicyChangeOnAnotherCaseConfirmsStaleAndCancelsAtReadTime() {
         var f=waiting(-1);confirm(f,command(f,"confirmed"));
         assertThat(openDispatches(f.graph().id())).isEqualTo(2);
-        var other=preparePdfRun(1);
-        TestActors.call("operator","OPERATOR",()->policies.publish(other.caseId(),new PolicyCatalogService.Publish(
-            "policy",caseVersion(other.caseId()),"CONTRACT-1","graph-policy",1,"검토 기준",LocalDate.of(2020,1,1),LocalDate.of(2030,1,1),
-            "manual-fixture","1",List.of(new PolicyCatalogService.ChunkInput(1,1,"사람 확인 필요",new float[]{1,0})))));
+        publishPolicyOnAnotherCase(preparePdfRun(1).caseId());
         // Another case's transaction never invalidates this case; the read must confirm it.
         assertThat(jdbc.queryForObject("select status from graph_run where id=?",String.class,f.graph().id())).isEqualTo("QUEUED");
         var view=view(f);
@@ -177,6 +211,34 @@ class GraphQueryIntegrationTest extends AbstractGraphReviewIntegrationTest {
         assertThat(page.latest().payload()).isNull();
         assertThat(page.latest().sources()).isEmpty();
         assertThat(page.history()).extracting(GraphViews.Summary::id).contains(f.graph().id());
+    }
+
+    @Test void readScopeHoldsCaseGraphAndSerializesConfirmUntilCommit() throws Exception {
+        var f=waiting(-1);
+        var entered=new CountDownLatch(1);
+        var release=new CountDownLatch(1);
+        var tx=new TransactionTemplate(transactions);
+        var pool=Executors.newFixedThreadPool(2);
+        try {
+            var reader=pool.submit(()->TestActors.call("operator","OPERATOR",()->tx.execute(state->{
+                var projected=queries.view(f.parser().caseId(),f.graph().id());
+                entered.countDown();
+                try {assertThat(release.await(10,TimeUnit.SECONDS)).isTrue();}
+                catch(InterruptedException e){throw new RuntimeException(e);}
+                return projected;
+            })));
+            assertThat(entered.await(10,TimeUnit.SECONDS)).isTrue();
+            var command=command(f,"race");
+            var confirmer=pool.submit(()->{
+                try {return TestActors.call("operator","OPERATOR",()->reviews.confirm(f.parser().caseId(),f.graph().id(),command));}
+                catch(AnalysisConflictException e){return null;}
+            });
+            assertThatThrownBy(()->confirmer.get(700,TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+            release.countDown();
+            assertThat(reader.get(15,TimeUnit.SECONDS).run().status()).isEqualTo("WAITING_HUMAN");
+            assertThat(confirmer.get(15,TimeUnit.SECONDS)).isNotNull();
+            assertThat(count("graph_review")).isEqualTo(1);
+        } finally {release.countDown();pool.shutdownNow();assertThat(pool.awaitTermination(5,TimeUnit.SECONDS)).isTrue();}
     }
 
     @Test void httpReadsRequireOperatorOrApproverAndNeverCache() throws Exception {

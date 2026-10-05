@@ -14,9 +14,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Human graph reads. The normal transaction may confirm a changed shared input as
- * STALE and cancel an unissued resume, so it is never read-only and never takes a
- * row lock. Checkpoint bodies, leases and SDK state never leave this projection.
+ * Human graph reads. Each run is locked case -> graph before currentness, so the
+ * read serializes with worker claim and human confirm/mapping writes, then may
+ * confirm a changed shared input as STALE and cancel an unissued resume.
+ * Checkpoint bodies, leases and SDK state never leave this projection.
  */
 @Service
 public class GraphQueryService {
@@ -41,7 +42,7 @@ public class GraphQueryService {
     public GraphViews.Page list(UUID caseId) {
         readPermission(caseId);
         var resolved=new ArrayList<Resolved>();
-        for(var run:store.recent(caseId))resolved.add(resolve(run));
+        for(var id:store.recent(caseId))resolved.add(resolveLocked(caseId,id));
         var history=new ArrayList<GraphViews.Summary>(resolved.size());
         for(var item:resolved)history.add(summary(item));
         return new GraphViews.Page(properties.enabled(),resolved.isEmpty()?null:view(resolved.getFirst()),history);
@@ -49,15 +50,15 @@ public class GraphQueryService {
     @Transactional
     public GraphViews.View view(UUID caseId,UUID id) {
         readPermission(caseId);
-        var run=store.read(id).filter(r->r.caseId().equals(caseId)).orElseThrow(()->new AnalysisRunNotFoundException(id));
-        return view(resolve(run));
+        return view(resolveLocked(caseId,id));
     }
-    /** Confirm currentness for supported runs; terminal runs keep their stored state. */
-    private Resolved resolve(GraphRun run) {
+    /** Lock case -> graph first, then confirm currentness against the latest committed run. */
+    private Resolved resolveLocked(UUID caseId,UUID id) {
+        var run=store.lock(id).filter(r->r.caseId().equals(caseId)).orElseThrow(()->new AnalysisRunNotFoundException(id));
         if(run.checkpointSchema()!=GraphRun.SCHEMA)return new Resolved(run,false,false);
         if(run.status().equals("STALE"))return new Resolved(run,true,false);
         boolean current=execution.current(run);
-        if(!run.terminal() && !current) {
+        if(!current) {
             store.terminal(run.id(),"STALE",null);
             delivery.cancel(run.id());
             return new Resolved(store.read(run.id()).orElse(run),true,false);
