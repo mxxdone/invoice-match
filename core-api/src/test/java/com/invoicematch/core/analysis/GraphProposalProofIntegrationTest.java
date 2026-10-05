@@ -5,9 +5,15 @@ import static org.assertj.core.api.Assertions.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.invoicematch.core.analysis.application.*;
+import com.invoicematch.core.analysis.domain.GraphRun;
 import com.invoicematch.core.matching.application.RunMatchCommand;
 import com.invoicematch.core.review.application.FreezeReviewSnapshotCommand;
+import com.invoicematch.core.review.domain.ReviewStateConflictException;
 import com.invoicematch.core.support.TestActors;
+import java.security.MessageDigest;
+import java.time.Instant;
+import java.util.HexFormat;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -122,5 +128,119 @@ class GraphProposalProofIntegrationTest extends AbstractGraphReviewIntegrationTe
         assertThat(count("review_snapshot")).isZero();
         assertThat(count("payment_request")).isZero();
         assertThat(count("receipt_allocation")).isZero();
+    }
+
+    private JsonNode resumeEvent(Fixture f) throws Exception {
+        return json.readTree(jdbc.queryForObject("select payload::text from graph_resume_outbox where run_id=?",String.class,f.graph().id()));
+    }
+    private record ResumeReady(Fixture fixture,UUID token,UUID reviewId,String documentRef,String mappingRef,String resolutionRef) {}
+    private ResumeReady resumeReady() throws Exception {
+        var f=waiting(-1);
+        var saved=confirm(f,command(f,"resume"));
+        var claim=delivery.claimResume(f.graph().id(),f.graph().contextHash(),resumeEvent(f));
+        var token=claim.token();
+        assertThat(json.readTree(store.advisoryInput(f.graph().id()).context()).path("matchResult").path("normal").asBoolean()).isTrue();
+        var evidence=json.createObjectNode().put("schemaVersion","ai-evidence-stage-v1");evidence.putArray("calls");
+        evidence.putObject("result").put("status","NOT_REQUIRED").putNull("toolRequestId");
+        stages.save(f.graph().id(),f.graph().contextHash(),token,"evidence",evidence);
+        var resolution=json.createObjectNode().put("schemaVersion","ai-resolution-v1").put("promptVersion","invoice-advisory-1");resolution.putArray("calls");
+        var resolutionResult=resolution.putObject("result").put("recommendation","REVIEW_REQUIRED").put("summary","원문과 근거를 사람이 검토해야 합니다.");
+        resolutionResult.putArray("factIds").add("invoiceTotal");resolutionResult.putArray("citations");
+        resolutionResult.putArray("warnings").add("DOCUMENT_REVIEW");
+        stages.save(f.graph().id(),f.graph().contextHash(),token,"resolution",resolution);
+        var savedStages=store.stages(f.graph().id());
+        String documentRef=savedStages.stream().filter(s->s.stage().equals("document")).findFirst().orElseThrow().id().toString();
+        String mappingRef=savedStages.stream().filter(s->s.stage().equals("mapping")).findFirst().orElseThrow().id().toString();
+        String resolutionRef=savedStages.stream().filter(s->s.stage().equals("resolution")).findFirst().orElseThrow().id().toString();
+        return new ResumeReady(f,token,saved.body().reviewId(),documentRef,mappingRef,resolutionRef);
+    }
+    private ObjectNode resumeBody(UUID checkpointId,ResumeReady ready,String resolutionRef) {
+        var values=json.createObjectNode().put("v",GraphRun.SCHEMA).put("id",checkpointId.toString()).put("ts",Instant.now().toString());
+        values.putObject("channel_values").put("graphExecutionId",ready.fixture().graph().id().toString())
+            .put("contextHash",ready.fixture().graph().contextHash()).put("documentStageRef",ready.documentRef())
+            .put("mappingStageRef",ready.mappingRef()).put("reviewRef",ready.reviewId().toString()).put("resolutionStageRef",resolutionRef);
+        values.putObject("channel_versions").put("graphExecutionId",1);values.putObject("versions_seen");values.putNull("updated_channels");
+        return values;
+    }
+    private ObjectNode resumeMetadata() {
+        var metadata=json.createObjectNode().put("source","loop").put("step",3);metadata.putObject("parents");return metadata;
+    }
+    private CompletedGraph completedResumeGraph() throws Exception {
+        var ready=resumeReady();var f=ready.fixture();var checkpointId=UUID.randomUUID();
+        graph.checkpoint(f.graph().id(),f.graph().contextHash(),ready.token(),new GraphCommands.Checkpoint(f.graph().id(),GraphRun.GRAPH,
+            GraphRun.SERIALIZER,GraphRun.SCHEMA,checkpointId,f.waiting().checkpointId(),encode(resumeBody(checkpointId,ready,ready.resolutionRef())),
+            resumeMetadata(),json.createObjectNode().put("graphExecutionId",1)));
+        stages.complete(f.graph().id(),f.graph().contextHash(),ready.token());
+        var result=store.result(f.graph().id()).orElseThrow();var run=store.read(f.graph().id()).orElseThrow();
+        return new CompletedGraph(f.parser().caseId(),f.graph().id(),result.hash(),run.evidenceBundleId(),run.matchResultId());
+    }
+
+    @Test void humanResumeCompletionReassemblesFreezesAndApproves() throws Exception {
+        var g=completedResumeGraph();
+        var run=store.read(g.runId()).orElseThrow();var stored=store.result(g.runId()).orElseThrow();
+        var assembled=graphProposals.assemble(run,store.advisoryInput(g.runId()),store.validationSteps(g.runId()));
+        assertThat(assembled.hash()).isEqualTo(g.payloadHash());
+        assertThat(json.readTree(stored.payload()).path("schemaVersion").asText()).isEqualTo("advisory-proposal-v2");
+        assertThat(json.readTree(stored.payload()).path("humanReview").path("reviewId").asText())
+            .isEqualTo(jdbc.queryForObject("select review_id from graph_resume_consumption where run_id=?",UUID.class,g.runId()).toString());
+        freeze(g,"resume-freeze",g.runId(),g.payloadHash());
+        approve(g,"resume-approve");
+        assertThat(count("payment_request")).isEqualTo(1);
+        assertThat(count("receipt_allocation")).isEqualTo(1);
+    }
+
+    @Test void finalCheckpointWithDifferentResolutionStageRefIsRejected() throws Exception {
+        var ready=resumeReady();var f=ready.fixture();var checkpointId=UUID.randomUUID();
+        var command=new GraphCommands.Checkpoint(f.graph().id(),GraphRun.GRAPH,GraphRun.SERIALIZER,GraphRun.SCHEMA,checkpointId,
+            f.waiting().checkpointId(),encode(resumeBody(checkpointId,ready,ready.documentRef())),resumeMetadata(),
+            json.createObjectNode().put("graphExecutionId",1));
+        jdbc.update("insert into graph_checkpoint(run_id,checkpoint_id,graph_version,parent_id,envelope,payload_hash,execution_token)"
+            + " values(?,?,?,?,cast(? as jsonb),?,?)",f.graph().id(),checkpointId,GraphRun.GRAPH,f.waiting().checkpointId(),
+            json.writeValueAsString(command),"b".repeat(64),ready.token());
+        assertThatThrownBy(()->stages.complete(f.graph().id(),f.graph().contextHash(),ready.token()))
+            .isInstanceOf(AnalysisConflictException.class);
+    }
+
+    @Test void forgedResumeSnapshotReferenceIsRejectedWithZeroApprovalEffects() throws Exception {
+        var g=completedResumeGraph();
+        freeze(g,"resume-freeze",g.runId(),g.payloadHash());
+        var real=latestSnapshot(g.caseId());long version=caseVersion(g.caseId());int number=real.snapshotNumber();int payments=count("payment_request");
+        for(String field:List.of("id","payloadHash","contextHash")) {
+            var payload=(ObjectNode)json.readTree(real.payload());
+            ((ObjectNode)payload.path("proposal")).put(field,field.equals("id")?UUID.randomUUID().toString():"0".repeat(64));
+            String canonical=json.writeValueAsString(sortedJson(payload));String hash=sha256(canonical);UUID forged=UUID.randomUUID();
+            jdbc.update("insert into review_snapshot(id,invoice_case_id,evidence_bundle_id,match_result_id,match_result_number,snapshot_number,"
+                + "target_case_version,target_evidence_bundle_version,purchasing_snapshot_version,purchasing_snapshot_hash,mapping_watermark,"
+                + "payload_hash,payload,created_at) select ?,invoice_case_id,evidence_bundle_id,match_result_id,match_result_number,?,"
+                + "target_case_version,target_evidence_bundle_version,purchasing_snapshot_version,purchasing_snapshot_hash,mapping_watermark,"
+                + "?,cast(? as jsonb),clock_timestamp() from review_snapshot where id=?",forged,++number,hash,canonical,real.id());
+            assertThatThrownBy(()->TestActors.run("approver","APPROVER",()->approval.approve(
+                    new com.invoicematch.core.approval.application.ApproveInvoiceCaseCommand(g.caseId(),UUID.randomUUID().toString(),version,forged,hash))))
+                .isInstanceOf(ReviewStateConflictException.class);
+            assertThat(count("payment_request")).isEqualTo(payments);
+            assertThat(caseVersion(g.caseId())).isEqualTo(version);
+        }
+    }
+
+    @Test void immutableReviewConsumptionAndCheckpointRowsRejectTampering() throws Exception {
+        var g=completedResumeGraph();
+        assertDatabaseRejects("P0001",()->jdbc.update("update graph_review set reason='changed' where run_id=?",g.runId()));
+        assertDatabaseRejects("P0001",()->jdbc.update("delete from graph_review where run_id=?",g.runId()));
+        assertDatabaseRejects("P0001",()->jdbc.update("delete from graph_resume_consumption where run_id=?",g.runId()));
+        assertDatabaseRejects("P0001",()->jdbc.update("delete from graph_checkpoint where run_id=?",g.runId()));
+    }
+
+    private JsonNode sortedJson(JsonNode node) {
+        if(node.isObject()) {
+            var sorted=json.createObjectNode();var keys=new java.util.TreeSet<String>();node.fieldNames().forEachRemaining(keys::add);
+            for(String key:keys) sorted.set(key,sortedJson(node.get(key)));
+            return sorted;
+        }
+        if(node.isArray()) {var sorted=json.createArrayNode();for(var value:node) sorted.add(sortedJson(value));return sorted;}
+        return node;
+    }
+    private String sha256(String value) {
+        try {return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));}
+        catch(java.security.NoSuchAlgorithmException e) {throw new IllegalStateException(e);}
     }
 }

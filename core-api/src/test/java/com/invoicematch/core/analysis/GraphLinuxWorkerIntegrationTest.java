@@ -27,6 +27,7 @@ class GraphLinuxWorkerIntegrationTest extends AbstractAnalysisExecutionIntegrati
     @Autowired GraphDeliveryService delivery;
     @Autowired GraphReviewService reviews;
     @Autowired com.invoicematch.core.analysis.persistence.GraphStore graphs;
+    @Autowired com.invoicematch.core.approval.application.ApprovalApplicationService approvals;
     @LocalServerPort int port;
     private GraphExecutionService.Reserved ready() {
         var f=preparePdfRun(1);var c=claim(f);var d=f.documents().getFirst();
@@ -102,6 +103,16 @@ class GraphLinuxWorkerIntegrationTest extends AbstractAnalysisExecutionIntegrati
             assertThat(jdbc.queryForObject("select payload->'humanReview'->>'reviewId' from graph_proposal where run_id=?",String.class,r.id())).isEqualTo(review.reviewId().toString());
             assertThatThrownBy(()->graph.heartbeat(r.id(),r.contextHash(),oldToken)).isInstanceOf(AnalysisConflictException.class);
             assertThat(count("graph_resume_consumption")).isEqualTo(1);assertThat(count("proposal_run")).isZero();assertThat(count("receipt_allocation")).isZero();
+            // The real SDK completion of a human resume is a freezable, approvable proof.
+            UUID completedCaseId=jdbc.queryForObject("select invoice_case_id from graph_run where id=?",UUID.class,r.id());
+            String completedHash=jdbc.queryForObject("select payload_hash from graph_proposal where run_id=?",String.class,r.id());
+            TestActors.run("approver","APPROVER",()->reviewService.freezeSnapshot(
+                new com.invoicematch.core.review.application.FreezeReviewSnapshotCommand(completedCaseId,UUID.randomUUID().toString(),caseVersion(completedCaseId),r.id(),completedHash)));
+            var completedSnapshot=reviewSnapshots.findFirstByInvoiceCaseIdOrderBySnapshotNumberDesc(completedCaseId).orElseThrow();
+            TestActors.run("approver","APPROVER",()->approvals.approve(new com.invoicematch.core.approval.application.ApproveInvoiceCaseCommand(
+                completedCaseId,UUID.randomUUID().toString(),caseVersion(completedCaseId),completedSnapshot.id(),completedSnapshot.payloadHash())));
+            assertThat(count("payment_request")).isEqualTo(1);
+            assertThat(count("receipt_allocation")).isEqualTo(1);
         }
     }
     @Test void failedConfirmRetainsDurableDeliveryForRetry() {

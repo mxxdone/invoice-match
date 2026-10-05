@@ -29,8 +29,11 @@ public class GraphProposalAssembler {
             var review=store.review(run.id()).orElseThrow(()->GraphExecutionService.conflict("GRAPH_REVIEW_MISSING"));
             var checkpoint=store.latest(run.id()).orElseThrow(()->GraphExecutionService.conflict("GRAPH_CHECKPOINT_MISSING"));
             var values=wire.decode(parse(checkpoint.envelope()).path("body"),0,false).path("channel_values");
+            var resolution=store.stages(run.id()).stream().filter(s->s.stage().equals("resolution")).findFirst()
+                .orElseThrow(()->GraphExecutionService.conflict("GRAPH_RESUME_NOT_READY"));
             if(!store.reviewConsumed(run.id(),review.id()) || !values.path("reviewRef").asText().equals(review.id().toString())
-                || !values.has("resolutionStageRef"))throw GraphExecutionService.conflict("GRAPH_RESUME_NOT_READY");
+                || !values.path("resolutionStageRef").asText().equals(resolution.id().toString()))
+                throw GraphExecutionService.conflict("GRAPH_RESUME_NOT_READY");
             result.set("humanReview",mapper.createObjectNode().put("reviewId",review.id().toString()).put("confirmationHash",review.hash())
                 .set("confirmation",parse(review.confirmation())));
         }
