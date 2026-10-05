@@ -44,6 +44,14 @@ class GraphSuccessorIntegrationTest extends AbstractGraphReviewIntegrationTest {
         assertThat(jdbc.queryForObject("select count(*) from receipt_allocation",Integer.class)).isZero();
         assertThat(jdbc.queryForObject("select count(*) from payment_request",Integer.class)).isZero();
     }
+    private record QueuedRun(RunFixture parser,GraphExecutionService.Reserved graph) {}
+    private QueuedRun queuedRun(int documents) {
+        var f=preparePdfRun(documents);var c=claim(f);var d=f.documents().getFirst();
+        execution.recordResult(f.runId(),resultCommand(f,c.claimToken(),d.documentId(),"SUCCESS",pdfResult(d,"paper 60 2500"),null));
+        TestActors.run("operator","OPERATOR",()->matchingService.run(new RunMatchCommand(f.caseId(),UUID.randomUUID().toString())));
+        var r=TestActors.call("operator","OPERATOR",()->graph.reserve(f.caseId(),new ProposalService.ReserveCommand(UUID.randomUUID().toString(),caseVersion(f.caseId())))).body();
+        return new QueuedRun(f,r);
+    }
     @Test void actualMappingCancelsPendingResumeAndSuccessorStartsFreshWithIdempotentProvenance() throws Exception {
         var f=waiting(-1);confirm(f,command(f,"confirmed"));var snapshot=freeze(f);
         var event=json.readTree(jdbc.queryForObject("select payload::text from graph_resume_outbox where run_id=?",String.class,f.graph().id()));
@@ -179,5 +187,30 @@ class GraphSuccessorIntegrationTest extends AbstractGraphReviewIntegrationTest {
         assertThat(jdbc.queryForObject("select status from graph_run where id=?",String.class,f.graph().id())).isEqualTo("WAITING_HUMAN");
         TestActors.run("operator","OPERATOR",()->policies.publish(caseId,new PolicyCatalogService.Publish("current",caseVersion(caseId),"CONTRACT-1","current",1,"현재 기준",LocalDate.of(2020,1,1),LocalDate.of(2030,1,1),"manual-fixture","1",List.of(new PolicyCatalogService.ChunkInput(1,1,"현재 적용",new float[]{1,0})))));
         stale(f);assertThat(successor(f,"new-policy").id()).isNotEqualTo(f.graph().id());noAutomaticBusinessEffects();
+    }
+    @Test void databaseRejectsSuccessorProvenanceWhenPredecessorBelongsToAnotherCase() {
+        var base=queuedRun(1);
+        assertThat(jdbc.queryForObject("select status from graph_run where id=?",String.class,base.graph().id())).isEqualTo("QUEUED");
+        var other=waiting(-1);
+        TestActors.run("operator","OPERATOR",()->matchingService.run(new RunMatchCommand(other.parser().caseId(),"stale-other")));
+        assertThat(jdbc.queryForObject("select status from graph_run where id=?",String.class,other.graph().id())).isEqualTo("STALE");
+        assertDatabaseRejects("23503",()->jdbc.update("insert into graph_successor(run_id,predecessor_id,invoice_case_id) values(?,?,?)",
+                base.graph().id(),other.graph().id(),base.parser().caseId()));
+        assertThat(jdbc.queryForObject("select count(*) from graph_successor",Integer.class)).isZero();
+        noAutomaticBusinessEffects();
+    }
+    @Test void databaseRejectsSuccessorProvenanceForARunThatInheritedExecutionState() {
+        var base=queuedRun(1);
+        var claimed=graph.claim(base.graph().id(),base.graph().contextHash());
+        assertThat(delivery.failure(base.graph().id(),base.graph().contextHash(),claimed.token(),"AI_RATE_LIMIT").runStatus()).isEqualTo("QUEUED");
+        assertThat(jdbc.queryForMap("select status,active_segment,start_attempts from graph_run where id=?",base.graph().id()))
+                .containsEntry("status","QUEUED").containsEntry("active_segment","START").containsEntry("start_attempts",1);
+        var other=waiting(-1);
+        TestActors.run("operator","OPERATOR",()->matchingService.run(new RunMatchCommand(other.parser().caseId(),"stale-other")));
+        assertThat(jdbc.queryForObject("select status from graph_run where id=?",String.class,other.graph().id())).isEqualTo("STALE");
+        assertDatabaseRejects("23514",()->jdbc.update("insert into graph_successor(run_id,predecessor_id,invoice_case_id) values(?,?,?)",
+                base.graph().id(),other.graph().id(),base.parser().caseId()));
+        assertThat(jdbc.queryForObject("select count(*) from graph_successor",Integer.class)).isZero();
+        noAutomaticBusinessEffects();
     }
 }
