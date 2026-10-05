@@ -259,6 +259,8 @@ Phase 4는 **P4-00~P4-07**을 순차 인수한다. Head가 계약·검수·통�
 
 **상태: 계획.** 의존: P4-03~05. 기존 사건 상세의 AI 패널에 대기 사유·원문 위치·후보·확인 기록·재개 상태를 표시한다. OPERATOR는 후보/원문을 확인하고 확인 값/사유를 저장한다. 실제 품목 변경은 기존 매핑 action으로 이동하며 새 대사 후 successor 예약을 안내한다. 보완은 기존 사람 보완/제출 action을 사용한다.
 
+조회 계약은 [GraphViews](../core-api/src/main/java/com/invoicematch/core/analysis/application/GraphViews.java)를 사용한다. Core가 동결 원문·후보와 정확한 대기 참조를 투영하며 checkpoint body·lease token·SDK 상태는 브라우저에 노출하지 않는다. OPERATOR·APPROVER만 사건 권한 안에서 조회하고, 기본 비활성에서도 기존 이력은 보존한다. 지원하지 않는 저장 버전은 metadata만 보여 주며 자동 복원하지 않는다. 공유 입력 변경은 조회 transaction의 기존 currentness 잠금 경계에서 STALE 및 미발행 취소를 확정한다. 완료된 graph 제안은 기존 선택적 freeze 계약을 사용한다.
+
 확인 저장 중·저장됨/재개 대기·재개 실행·완료/실패·stale을 구분한다. 응답 불명에는 같은 intent/requestId/body를 유지하고 임의 재확인을 새 요청으로 만들지 않는다. session/case/interrupt/version 교체와 늦은 조회 응답은 기존 abort/generation 방식으로 차단한다. 모델 텍스트는 escape하고 브라우저가 계산/권한/최신성을 확정하지 않는다. 승인자는 완성된 제안만 기존 선택적 freeze로 편입한다.
 
 인수: 역할별 화면·후보 없음/모호함·단일 확인·응답 유실 재시도·늦은 응답/세션 교체 테스트. 실제 브라우저에서 확인 저장 → worker 중단/재시작 → 재개 완료, 매핑 변경 → stale/successor, AI-off 기존 검토·승인 흐름을 확인한다.
