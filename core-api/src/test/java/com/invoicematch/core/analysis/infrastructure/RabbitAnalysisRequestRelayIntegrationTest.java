@@ -34,6 +34,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.utility.DockerImageName;
@@ -84,6 +85,15 @@ class RabbitAnalysisRequestRelayIntegrationTest extends AbstractAnalysisRelayInt
 
     @Autowired
     ApplicationContext applicationContext;
+
+    /**
+     * A real opt-in relay is required here, but its automatic {@code @Scheduled}
+     * tick must not race the deterministic {@code relay.runOnce()} calls after a
+     * lease expires. Only the scheduler entry point is replaced; the relay,
+     * publisher, PostgreSQL and RabbitMQ stay real.
+     */
+    @MockitoBean
+    AnalysisRelayScheduler scheduler;
 
     @Test
     void publishesReservationWithStableEventIdAndPersistentMetadata() throws Exception {
