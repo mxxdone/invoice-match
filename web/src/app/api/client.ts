@@ -15,6 +15,9 @@ import type {
   CurrentUser,
   EvidenceBundleDetail,
   EvidenceBundleSummary,
+  GraphConfirmation,
+  GraphPage,
+  GraphView,
   InvoiceCaseDetail,
   InvoiceCasePage,
   MappingDecisionResult,
@@ -448,4 +451,57 @@ export function fetchProposals(credentials: Credentials, caseId: string, signal?
 }
 export function reserveProposal(credentials: Credentials, caseId: string, input: VersionedRequest, signal?: AbortSignal): Promise<Pick<ProposalSummary, 'id' | 'status' | 'contextHash'>> {
   return requestJson(`/api/invoice-cases/${encodeURIComponent(caseId)}/proposals`, credentials, { method: 'POST', body: input, signal });
+}
+
+// --- Graph workflow adapters (P4-06) ---------------------------------------
+// Reads mirror GraphViews.java. Writes send exactly one server intent with the
+// caller-owned idempotency request id; an exact retry reuses it.
+
+export type ReservedGraph = { id: string; status: string; contextHash: string };
+
+export type SavedGraphReview = {
+  graphExecutionId: string;
+  reviewId: string;
+  interruptId: string;
+  reviewVersion: number;
+  resumeEventId: string;
+  reviewStatus: string;
+  resumeStatus: string;
+};
+
+export type GraphReviewInput = {
+  expectedCaseVersion: number;
+  interruptId: string;
+  checkpointHash: string;
+  reviewVersion: number;
+  confirmation: GraphConfirmation;
+  reason: string;
+};
+
+export function fetchGraphs(credentials: Credentials, caseId: string, signal?: AbortSignal): Promise<GraphPage> {
+  return requestJson<GraphPage>(`/api/invoice-cases/${encodeURIComponent(caseId)}/graphs`, credentials, { signal });
+}
+export function fetchGraph(credentials: Credentials, caseId: string, graphId: string, signal?: AbortSignal): Promise<GraphView> {
+  return requestJson<GraphView>(
+    `/api/invoice-cases/${encodeURIComponent(caseId)}/graphs/${encodeURIComponent(graphId)}`,
+    credentials,
+    { signal },
+  );
+}
+export function reserveGraph(credentials: Credentials, caseId: string, input: VersionedRequest, signal?: AbortSignal): Promise<ReservedGraph> {
+  return requestJson<ReservedGraph>(`/api/invoice-cases/${encodeURIComponent(caseId)}/graphs`, credentials, { method: 'POST', body: input, signal });
+}
+export function reserveGraphSuccessor(credentials: Credentials, caseId: string, predecessor: string, input: VersionedRequest, signal?: AbortSignal): Promise<ReservedGraph> {
+  return requestJson<ReservedGraph>(
+    `/api/invoice-cases/${encodeURIComponent(caseId)}/graphs/${encodeURIComponent(predecessor)}/successors`,
+    credentials,
+    { method: 'POST', body: input, signal },
+  );
+}
+export function confirmGraphReview(credentials: Credentials, caseId: string, graphId: string, input: GraphReviewInput & { requestId: string }, signal?: AbortSignal): Promise<SavedGraphReview> {
+  return requestJson<SavedGraphReview>(
+    `/api/invoice-cases/${encodeURIComponent(caseId)}/graphs/${encodeURIComponent(graphId)}/reviews`,
+    credentials,
+    { method: 'POST', body: input, signal },
+  );
 }

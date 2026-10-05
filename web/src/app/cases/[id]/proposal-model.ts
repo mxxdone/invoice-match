@@ -1,4 +1,4 @@
-import type { CandidateSource, ProposalView, SelectedProposal } from '../../api/contract.ts';
+import type { CandidateSource, ProposalSource, ProposalView, SelectedProposal } from '../../api/contract.ts';
 
 export function eligibleProposal(view: ProposalView | null): SelectedProposal | null {
   return view?.run.current && view.run.status === 'COMPLETED' && view.run.payloadHash && view.payload
@@ -8,7 +8,9 @@ export function exactFact(value: string): string {
   if (!/^[0-9]{1,19}$/.test(value)) return '표시할 수 없는 수치';
   return new Intl.NumberFormat('ko-KR').format(BigInt(value));
 }
-export function sourceQuote(view: ProposalView, source: CandidateSource): { quote: string; location: string } | null {
+// The same frozen source projection is shared by the v1 advisory and the graph
+// workflow, so the quote/location reader only requires a `sources` list.
+export function sourceQuote(view: { sources: ProposalSource[] }, source: CandidateSource): { quote: string; location: string } | null {
   const segment = view.sources.find(s => s.id === source.segmentId);
   if (!segment || !Number.isInteger(source.start) || !Number.isInteger(source.end)) return null;
   const points = Array.from(segment.text);

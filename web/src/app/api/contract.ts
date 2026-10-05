@@ -412,3 +412,81 @@ export type ProposalPayload = {
 export type ProposalView = { run: ProposalSummary; payload: ProposalPayload | null; sources: ProposalSource[] };
 export type ProposalPage = { enabled: boolean; latest: ProposalView | null; history: ProposalSummary[] };
 export type SelectedProposal = { proposalId: string; proposalHash: string };
+
+// --- Default-off graph workflow read contracts (P4-06) ---------------------
+// These mirror GraphViews.java exactly. `pending.document`/`pending.mapping` are
+// each stage's `payload.result`; `sources` reuse the existing ProposalSource
+// shape. The browser never sees checkpoint bodies, lease tokens or SDK state and
+// never recomputes a hash.
+
+export type GraphSummary = {
+  id: string;
+  status: string;
+  segment: string;
+  current: boolean;
+  supported: boolean;
+  caseVersion: number;
+  contextHash: string;
+  payloadHash: string | null;
+  startAttempts: number;
+  resumeAttempts: number;
+  reservedCalls: number;
+  reservedTokens: number;
+  toolCalls: number;
+  errorCode: string | null;
+  completedStages: string[];
+  predecessorId: string | null;
+  createdAt: string;
+};
+
+export type GraphPending = {
+  interruptId: string;
+  checkpointHash: string;
+  reviewVersion: number;
+  documentStageRef: string;
+  mappingStageRef: string;
+  reasonCodes: string[];
+  document: ProposalPayload['document']['result'] | null;
+  mapping: ProposalPayload['mapping']['result'] | null;
+};
+
+export type GraphReviewRecord = {
+  id: string;
+  actor: string;
+  reason: string;
+  confirmation: unknown;
+  createdAt: string;
+  resumeStatus: string;
+};
+
+// advisory-proposal-v2 is the existing ProposalPayload shape plus the graph
+// version and the consumed human review.
+export type GraphPayload = Omit<ProposalPayload, 'schemaVersion'> & {
+  schemaVersion: 'advisory-proposal-v2';
+  graphVersion: string;
+  humanReview: { reviewId: string; confirmationHash: string; confirmation: GraphConfirmation };
+};
+
+export type GraphView = {
+  run: GraphSummary;
+  pending: GraphPending | null;
+  review: GraphReviewRecord | null;
+  payload: GraphPayload | null;
+  sources: ProposalSource[];
+};
+
+export type GraphPage = { enabled: boolean; latest: GraphView | null; history: GraphSummary[] };
+
+export type GraphItemDecision = {
+  lineNumber: number;
+  source: CandidateSource;
+  itemId: string | null;
+  purchaseOrderLineId: string | null;
+};
+
+export type GraphConfirmation = {
+  documentStageRef: string;
+  mappingStageRef: string;
+  documentDecision: 'CONFIRMED' | 'NEEDS_CORRECTION' | 'NOT_REQUIRED';
+  itemDecisions: GraphItemDecision[];
+};

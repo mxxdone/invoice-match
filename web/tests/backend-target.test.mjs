@@ -119,3 +119,18 @@ test('advisory reads and reservation reach exact human endpoints while worker ac
   assert.equal(resolveBackendMutationTarget(base, 'POST', [...root, CASE, 'complete']), null);
   assert.equal(resolveBackendTarget(base, ['internal', 'proposal-runs', CASE, 'claim'], ''), null);
 });
+
+test('graph reads, reservations and reviews reach exact human endpoints while machine runs stay inaccessible', () => {
+  const base = 'http://localhost:8080';
+  const root = ['api', 'invoice-cases', CASE, 'graphs'];
+  assert.equal(resolveBackendTarget(base, root, ''), `${base}/api/invoice-cases/${CASE}/graphs`);
+  assert.equal(resolveBackendTarget(base, [...root, CASE], ''), `${base}/api/invoice-cases/${CASE}/graphs/${CASE}`);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', root), `${base}/api/invoice-cases/${CASE}/graphs`);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', [...root, CASE, 'successors']), `${base}/api/invoice-cases/${CASE}/graphs/${CASE}/successors`);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', [...root, CASE, 'reviews']), `${base}/api/invoice-cases/${CASE}/graphs/${CASE}/reviews`);
+  assert.equal(resolveBackendMutationTarget(base, 'GET', [...root, CASE, 'reviews']), null);
+  assert.equal(resolveBackendMutationTarget(base, 'PUT', root), null);
+  assert.equal(resolveBackendTarget(base, [...root, 'bad'], ''), null);
+  assert.equal(resolveBackendTarget(base, ['internal', 'graph-runs', CASE, 'claim'], ''), null);
+  assert.equal(resolveBackendMutationTarget(base, 'POST', ['internal', 'graph-runs', CASE, 'claim']), null);
+});

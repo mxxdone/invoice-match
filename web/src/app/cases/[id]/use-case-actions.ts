@@ -3,12 +3,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   approveInvoiceCase,
+  confirmGraphReview,
   freezeReviewSnapshot,
   recordMappingDecision,
   requestSupplement,
   rejectInvoiceCase,
+  reserveGraph,
+  reserveGraphSuccessor,
   runMatch,
   reserveProposal,
+  type GraphReviewInput,
   type MappingDecisionInput,
 } from '../../api/client.ts';
 import type { SelectedProposal } from '../../api/contract.ts';
@@ -18,6 +22,7 @@ import {
   classifyMutationFailure,
   intentSignature,
   isDefiniteFailure,
+  isGraphOperation,
   newRequestId,
   type MutationFailure,
   type MutationOperation,
@@ -26,10 +31,15 @@ import {
 // The hook owns the idempotency request id, so callers pass the intent without it.
 type MappingInput = Omit<MappingDecisionInput, 'requestId'>;
 
+export type GraphConfirmCommand = { graphId: string } & GraphReviewInput;
+
 export type CaseActionsOptions = {
   credentials: Credentials | null;
   sessionId: number;
   caseId: string;
+  // A change to the exact waiting graph/interrupt/review identity invalidates
+  // only graph intents; page intents stay bound to the session/case.
+  graphIdentity?: string;
   onUnauthorized: () => void;
   // Called after a successful write so the page re-reads the authoritative
   // state instead of applying the response locally.
@@ -42,6 +52,7 @@ type FrozenAction = {
   operation: MutationOperation;
   requestId: string;
   signature: string;
+  identity: string;
   payload: unknown;
   invoke: (requestId: string, signal: AbortSignal) => Promise<unknown>;
 };
@@ -50,6 +61,7 @@ export function useCaseActions({
   credentials,
   sessionId,
   caseId,
+  graphIdentity = '',
   onUnauthorized,
   onCompleted,
 }: CaseActionsOptions) {
@@ -62,6 +74,7 @@ export function useCaseActions({
   const activeController = useRef<AbortController | null>(null);
   const sessionRef = useRef(sessionId);
   const caseIdRef = useRef(caseId);
+  const graphRef = useRef(graphIdentity);
   const credentialsRef = useRef(credentials);
   const alive = useRef(false);
   const generations = useRef(new Generation());
@@ -99,6 +112,21 @@ export function useCaseActions({
     activeController.current?.abort();
   }, [sessionId, caseId]);
 
+  // A graph/interrupt/review change drops only graph intents; a page action that
+  // is in flight or unresolved keeps its identity and is not invalidated.
+  useEffect(() => {
+    graphRef.current = graphIdentity;
+    const existing = frozen.current;
+    if (existing && isGraphOperation(existing.operation)) {
+      frozen.current = null;
+      setUnresolved(null);
+      setPendingAction(null);
+      return;
+    }
+    setUnresolved((current) => (current && isGraphOperation(current.operation) ? null : current));
+    setPendingAction((current) => (current && isGraphOperation(current) ? null : current));
+  }, [graphIdentity]);
+
   const run = useCallback(
     async <T,>(
       operation: MutationOperation,
@@ -112,6 +140,7 @@ export function useCaseActions({
         setFailure(unauthorized);
         return false;
       }
+      const graphAtStart = graphRef.current;
       const token = generations.current.next();
       const signature = intentSignature(operation, businessPayload);
       const existing = frozen.current;
@@ -128,7 +157,14 @@ export function useCaseActions({
       }
       const intent: FrozenAction = existing && existing.signature === signature
         ? existing
-        : { operation, requestId: newRequestId('web'), signature, payload: businessPayload, invoke };
+        : {
+            operation,
+            requestId: newRequestId('web'),
+            signature,
+            identity: isGraphOperation(operation) ? `${sessionId}#${runCaseId}#${graphAtStart}` : `${sessionId}#${runCaseId}`,
+            payload: businessPayload,
+            invoke,
+          };
 
       setFailure(null);
       if (alive.current && generations.current.isCurrent(token)) setPendingAction(operation);
@@ -137,7 +173,8 @@ export function useCaseActions({
       const stillCurrent = () => alive.current
         && generations.current.isCurrent(token)
         && sessionRef.current === sessionId
-        && caseIdRef.current === runCaseId;
+        && caseIdRef.current === runCaseId
+        && (!isGraphOperation(operation) || graphRef.current === graphAtStart);
       try {
         await intent.invoke(intent.requestId, controller.signal);
         if (!stillCurrent()) return false;
@@ -176,6 +213,14 @@ export function useCaseActions({
     const intent = frozen.current;
     if (!intent) return false;
     const runCaseId = caseIdRef.current;
+    const expectedIdentity = isGraphOperation(intent.operation)
+      ? `${sessionRef.current}#${runCaseId}#${graphRef.current}`
+      : `${sessionRef.current}#${runCaseId}`;
+    if (intent.identity !== expectedIdentity) {
+      frozen.current = null;
+      setUnresolved(null);
+      return false;
+    }
     const token = generations.current.next();
     setFailure(null);
     setPendingAction(intent.operation);
@@ -183,7 +228,7 @@ export function useCaseActions({
     activeController.current = controller;
     try {
       await intent.invoke(intent.requestId, controller.signal);
-      if (!alive.current || !generations.current.isCurrent(token) || caseIdRef.current !== runCaseId) return false;
+      if (!alive.current || !generations.current.isCurrent(token) || caseIdRef.current !== runCaseId || intent.identity !== expectedIdentity) return false;
       frozen.current = null;
       setUnresolved(null);
       setPendingAction(null);
@@ -242,6 +287,23 @@ export function useCaseActions({
       (input: { expectedCaseVersion: number; reviewSnapshotId: string; reviewPayloadHash: string }) =>
         run('approve', { caseId, ...input }, (requestId, signal) =>
           approveInvoiceCase(credentialsRef.current as Credentials, caseId, { ...input, requestId }, signal)),
+      [run, caseId],
+    ),
+    graphReserve: useCallback(
+      (expectedCaseVersion: number) => run('graphReserve', { caseId, expectedCaseVersion }, (requestId, signal) =>
+        reserveGraph(credentialsRef.current as Credentials, caseId, { requestId, expectedCaseVersion }, signal)),
+      [run, caseId],
+    ),
+    graphSuccessor: useCallback(
+      (predecessorId: string, expectedCaseVersion: number) => run('graphSuccessor', { caseId, predecessorId, expectedCaseVersion }, (requestId, signal) =>
+        reserveGraphSuccessor(credentialsRef.current as Credentials, caseId, predecessorId, { requestId, expectedCaseVersion }, signal)),
+      [run, caseId],
+    ),
+    graphConfirm: useCallback(
+      (command: GraphConfirmCommand) => run('graphConfirm', { caseId, ...command }, (requestId, signal) => {
+        const { graphId, ...review } = command;
+        return confirmGraphReview(credentialsRef.current as Credentials, caseId, graphId, { ...review, requestId }, signal);
+      }),
       [run, caseId],
     ),
   };

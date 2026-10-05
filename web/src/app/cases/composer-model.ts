@@ -48,7 +48,16 @@ export type MutationOperation =
   | 'mapping'
   | 'supplement'
   | 'reject'
-  | 'approve';
+  | 'approve'
+  | 'graphReserve'
+  | 'graphSuccessor'
+  | 'graphConfirm';
+
+// Graph intents are scoped to the exact waiting run/interrupt/version, so a
+// graph or review change must never let an old response mark the new one done.
+export function isGraphOperation(operation: MutationOperation): boolean {
+  return operation === 'graphReserve' || operation === 'graphSuccessor' || operation === 'graphConfirm';
+}
 
 export type PendingIntent = {
   operation: MutationOperation;
