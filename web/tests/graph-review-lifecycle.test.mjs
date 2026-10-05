@@ -197,6 +197,33 @@ test('an unsupported stored run shows metadata only and offers no reserve, confi
   } finally { await panel.close(); }
 });
 
+test('a non-null latest proof cannot be selected next to a different history view', async () => {
+  const completed = (id, current, payloadHash) => ({
+    run: { ...run, id, status: 'COMPLETED', current, supported: true, payloadHash },
+    pending: null, review: null, sources: [],
+    payload: {
+      resolution: { result: { recommendation: 'REVIEW_REQUIRED', summary: 's', warnings: [], citations: [] } },
+      document: { result: { fields: [], lines: [], warnings: [] } },
+      mapping: { result: { lines: [] } },
+      policyEvidence: { status: 'NOT_REQUIRED', result: [] },
+      facts: {}, schemaVersion: 'advisory-proposal-v2', graphVersion: 'v1',
+      humanReview: { reviewId: 'r', confirmationHash: 'h', confirmation: {} },
+    },
+  });
+  const latest = completed('g1', true, 'hash-g');
+  const history = completed('g0', false, 'hash-old');
+  const page4 = { enabled: true, latest, history: [latest.run, history.run] };
+  const panel = await renderPanel({ load: { status: 'ready', data: page4 }, view: history, isOperator: false, isApprover: true, proofCandidate: { proposalId: 'g1', proposalHash: 'hash-g' } });
+  try {
+    assert.equal(panel.container.querySelectorAll('input[type=checkbox]').length, 0, 'the history view is not the eligible proof');
+    assert.match(panel.container.textContent, /검토 근거로 선택할 수 없습니다/);
+  } finally { await panel.close(); }
+  const current = await renderPanel({ load: { status: 'ready', data: page4 }, view: latest, isOperator: false, isApprover: true, proofCandidate: { proposalId: 'g1', proposalHash: 'hash-g' } });
+  try {
+    assert.equal(current.container.querySelectorAll('input[type=checkbox]').length, 1, 'the exact eligible latest proof is selectable');
+  } finally { await current.close(); }
+});
+
 test('resume status labels map the Core terminal values', async () => {
   const { presentGraphResumeStatus } = await import('../src/app/cases/[id]/graph-model.ts');
   assert.equal(presentGraphResumeStatus('COMPLETED'), '재개 완료');

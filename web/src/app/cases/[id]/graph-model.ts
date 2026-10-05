@@ -115,4 +115,3 @@ export function eligibleGraphProposal(view: GraphView | null): SelectedProposal 
     ? { proposalId: view.run.id, proposalHash: view.run.payloadHash }
     : null;
 }
-

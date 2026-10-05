@@ -21,6 +21,7 @@ import { exactFact, sourceQuote } from './proposal-model';
 import {
   buildConfirmation,
   documentDecisionOptions,
+  eligibleGraphProposal,
   hasDocumentReview,
   pendingMappingLines,
   presentGraphReason,
@@ -227,6 +228,12 @@ function CompletedPayload({ view, isApprover, proofCandidate, proofSelected, blo
 }) {
   const payload = view.payload;
   if (!payload) return <p>완료된 결과가 저장되면 후보와 근거가 표시됩니다.</p>;
+  // The proof control is only offered when this displayed view is itself the
+  // eligible current proposal and the parent supplied the exact same id/hash.
+  // A non-null latest candidate must never select a different history view.
+  const eligible = eligibleGraphProposal(view);
+  const selectable = eligible !== null && proofCandidate !== null
+    && proofCandidate.proposalId === eligible.proposalId && proofCandidate.proposalHash === eligible.proposalHash;
   return (
     <>
       <h3>처리 초안 · {label(RECOMMENDATION_LABELS, payload.resolution.result.recommendation)}</h3>
@@ -246,13 +253,13 @@ function CompletedPayload({ view, isApprover, proofCandidate, proofSelected, blo
       <details><summary>적용 정책 근거 · {payload.policyEvidence.status}</summary>{payload.policyEvidence.result.map((chunk) => (
         <div className="proposal-entry" key={chunk.chunkId}><strong>{chunk.title} · 버전 {chunk.documentVersion} · {chunk.page}쪽 · 문단 {chunk.paragraph}</strong><blockquote>{chunk.text}</blockquote></div>
       ))}</details>
-      {isApprover && proofCandidate && (
+      {isApprover && selectable && (
         <label className="proposal-choice">
-          <input type="checkbox" disabled={blocked} checked={proofSelected} onChange={(event) => onSelectProof(event.target.checked ? proofCandidate : null)} />
+          <input type="checkbox" disabled={blocked} checked={proofSelected} onChange={(event) => onSelectProof(event.target.checked ? eligible : null)} />
           이 AI 제안을 검토 근거에 포함
         </label>
       )}
-      {isApprover && !proofCandidate && (
+      {isApprover && !selectable && (
         <p className="review-warning">현재 입력의 완료 제안이 아니므로 검토 근거로 선택할 수 없습니다.</p>
       )}
       <details className="snapshot-technical"><summary>분석 기준 확인</summary><p>증빙 {payload.evidenceBundleId} · 대사 {payload.matchResultId}</p><p>제안 {view.run.id}</p><p>결과 hash {view.run.payloadHash}</p><p>입력 hash {view.run.contextHash}</p></details>

@@ -166,6 +166,9 @@ export function useCaseActions({
         setFailure(unauthorized);
         return false;
       }
+      // Only one mutation may be in flight: a second synchronous call must not
+      // create another fetch/request id before React re-renders.
+      if (activeRef.current) return false;
       const identity = currentIdentity(operation);
       const token = generations.current.next();
       const signature = intentSignature(operation, businessPayload);
@@ -241,6 +244,7 @@ export function useCaseActions({
   const retry = useCallback(async (): Promise<boolean> => {
     const intent = frozen.current;
     if (!intent) return false;
+    if (activeRef.current) return false;
     const runCaseId = caseIdRef.current;
     if (intent.identity !== currentIdentity(intent.operation)) {
       frozen.current = null;

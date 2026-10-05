@@ -267,6 +267,54 @@ test('a retry whose graph identity changes mid-flight cannot sign out or complet
   } finally { await t.unmount(); t.restore(); }
 });
 
+test('two synchronous confirm dispatches create a single in-flight request', async () => {
+  let resolveConfirm;
+  const pending = new Promise((resolve) => { resolveConfirm = resolve; });
+  const t = setup(() => pending);
+  try {
+    await t.render();
+    let first, second;
+    await act(async () => {
+      first = latest.graphConfirm(confirmCommand());
+      second = latest.graphConfirm(confirmCommand());
+      await Promise.resolve();
+    });
+    assert.equal(t.calls.length, 1, 'a duplicate dispatch must not create a second fetch');
+    assert.equal(await second, false);
+    resolveConfirm(jsonResponse(202, { reviewStatus: 'SAVED' }));
+    await act(async () => { await first; });
+    assert.deepEqual(t.completed, ['graphConfirm']);
+  } finally { await t.unmount(); t.restore(); }
+});
+
+test('two synchronous retry dispatches create a single in-flight request', async () => {
+  let attempts = 0;
+  let resolveRetry;
+  const retryPending = new Promise((resolve) => { resolveRetry = resolve; });
+  const t = setup(() => {
+    attempts += 1;
+    if (attempts === 1) return jsonResponse(503, { code: 'CORE_API_UNAVAILABLE', message: 'x' });
+    if (attempts === 2) return retryPending;
+    return jsonResponse(500, { code: 'X', message: 'unexpected' });
+  });
+  try {
+    await t.render();
+    await t.run(() => latest.graphConfirm(confirmCommand()));
+    assert.equal(latest.unresolved.operation, 'graphConfirm');
+    let first, second;
+    await act(async () => {
+      first = latest.retry();
+      second = latest.retry();
+      await Promise.resolve();
+    });
+    assert.equal(t.calls.length, 2, 'a duplicate retry must not create a third fetch');
+    assert.equal(await second, false);
+    resolveRetry(jsonResponse(202, { reviewStatus: 'SAVED' }));
+    await act(async () => { await first; });
+    assert.deepEqual(t.completed, ['graphConfirm']);
+  } finally { await t.unmount(); t.restore(); }
+});
+
 test('mutating the caller confirmation after a lost response cannot rewrite the retried body', async () => {
   let attempts = 0;
   const t = setup(() => {
