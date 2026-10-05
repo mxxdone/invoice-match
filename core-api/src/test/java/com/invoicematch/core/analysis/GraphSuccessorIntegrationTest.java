@@ -22,6 +22,8 @@ class GraphSuccessorIntegrationTest extends AbstractGraphReviewIntegrationTest {
     @Autowired PolicyCatalogService policies;
     @Autowired com.invoicematch.core.purchasingreference.application.PurchasingReferenceService purchasing;
     @Autowired com.invoicematch.core.approval.application.ApprovalApplicationService approvals;
+    @Autowired com.invoicematch.core.analysis.persistence.ProposalStore inputs;
+    @Autowired ProposalContextFactory contexts;
 
     private ReviewSnapshotView freeze(Fixture f) {
         return TestActors.call("approver","APPROVER",()->reviewService.freezeSnapshot(
@@ -200,16 +202,36 @@ class GraphSuccessorIntegrationTest extends AbstractGraphReviewIntegrationTest {
         noAutomaticBusinessEffects();
     }
     @Test void databaseRejectsSuccessorProvenanceForARunThatInheritedExecutionState() {
-        var base=queuedRun(1);
-        var claimed=graph.claim(base.graph().id(),base.graph().contextHash());
-        assertThat(delivery.failure(base.graph().id(),base.graph().contextHash(),claimed.token(),"AI_RATE_LIMIT").runStatus()).isEqualTo("QUEUED");
-        assertThat(jdbc.queryForMap("select status,active_segment,start_attempts from graph_run where id=?",base.graph().id()))
-                .containsEntry("status","QUEUED").containsEntry("active_segment","START").containsEntry("start_attempts",1);
-        var other=waiting(-1);
-        TestActors.run("operator","OPERATOR",()->matchingService.run(new RunMatchCommand(other.parser().caseId(),"stale-other")));
-        assertThat(jdbc.queryForObject("select status from graph_run where id=?",String.class,other.graph().id())).isEqualTo("STALE");
+        var parent=queuedRun(1);UUID caseId=parent.parser().caseId();
+        TestActors.run("operator","OPERATOR",()->matchingService.run(new RunMatchCommand(caseId,"changed-input")));
+        assertThat(jdbc.queryForObject("select status from graph_run where id=?",String.class,parent.graph().id())).isEqualTo("STALE");
+        String childHash="d".repeat(64);
+        UUID child=new TransactionTemplate(transactions).execute(tx->{
+            var source=inputs.source(caseId).orElseThrow();
+            var context=contexts.create(caseId,source);
+            UUID id=UUID.randomUUID();
+            store.insert(id,caseId,caseVersion(caseId),source,context.toString(),childHash,store.costCeiling(parent.graph().id()));
+            deliveries.start(id,json.createObjectNode().put("schemaVersion","graph-request-v1").put("eventId",id.toString())
+                .put("graphExecutionId",id.toString())
+                .put("workflowVersion",com.invoicematch.core.analysis.domain.GraphRun.WORKFLOW).put("contextHash",childHash).toString());
+            return id;
+        });
+        assertThat(store.predecessor(child)).isEmpty();
+        String parentHash=jdbc.queryForObject("select context_hash from graph_run where id=?",String.class,parent.graph().id());
+        assertThat(jdbc.queryForObject("select invoice_case_id from graph_run where id=?",UUID.class,child)).isEqualTo(caseId);
+        assertThat(jdbc.queryForObject("select invoice_case_id from graph_run where id=?",UUID.class,parent.graph().id())).isEqualTo(caseId);
+        assertThat(jdbc.queryForObject("select context_hash from graph_run where id=?",String.class,child)).isEqualTo(childHash);
+        assertThat(childHash).isNotEqualTo(parentHash);
+        var claimed=graph.claim(child,childHash);
+        assertThat(claimed.disposition()).isEqualTo("CLAIMED");
+        assertThat(delivery.failure(child,childHash,claimed.token(),"AI_RATE_LIMIT").runStatus()).isEqualTo("QUEUED");
+        assertThat(jdbc.queryForMap("select status,active_segment,start_attempts,resume_attempts,reserved_calls,"
+                +"reserved_tokens,tool_calls,reserved_cost,checkpoint_count,write_count from graph_run where id=?",child))
+                .containsEntry("status","QUEUED").containsEntry("active_segment","START").containsEntry("start_attempts",1)
+                .containsEntry("resume_attempts",0).containsEntry("reserved_calls",0).containsEntry("reserved_tokens",0)
+                .containsEntry("tool_calls",0).containsEntry("checkpoint_count",0).containsEntry("write_count",0);
         assertDatabaseRejects("23514",()->jdbc.update("insert into graph_successor(run_id,predecessor_id,invoice_case_id) values(?,?,?)",
-                base.graph().id(),other.graph().id(),base.parser().caseId()));
+                child,parent.graph().id(),caseId));
         assertThat(jdbc.queryForObject("select count(*) from graph_successor",Integer.class)).isZero();
         noAutomaticBusinessEffects();
     }
