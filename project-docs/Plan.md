@@ -1,6 +1,6 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 P4-04 완료·P4-05 대기**
+문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 P4-05 완료·P4-06 대기**
 작성일: **2026-09-25**
 최신화: **2026-10-05**
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
@@ -18,7 +18,7 @@
 | 4 — Human-in-the-loop | 사람 대기와 재개를 안전하게 모델링 | LangGraph checkpoint, mapping interrupt, 새 증빙 재분석, resume 멱등성, stale 차단 | worker/message 점유 없이 정확한 version만 재개·반영 |
 | 5 — 최적화·장애 시연·포트폴리오 | 측정 가능한 개선과 재현 가능한 설명 완성 | 조회·인덱스 실험, 부하·경합·장애 주입, ERP 대사, 관측성, README/ERD/보고서 | 5~7분 시연, Docker Compose 재현, 성능·AI 평가 결과와 trade-off 설명 |
 
-Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4는 P4-00~04를 완료했으며 다음 Ticket은 P4-05다. API 설정 없이도 격리 provider fixture로 내구성 구현·검증을 진행할 수 있지만 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 착수 검토 때 상세화한다.
+Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4는 P4-00~05를 완료했으며 다음 Ticket은 P4-06이다. API 설정 없이도 격리 provider fixture로 내구성 구현·검증을 진행할 수 있지만 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 착수 검토 때 상세화한다.
 
 ### 후속 설계 결정·보류 (2026-10-01)
 
@@ -213,7 +213,7 @@ Phase 3의 **P3-00~P3-09** 구현과 자동 통합 인수는 Head가 완료했�
 
 ## 5. Phase 4 Backlog
 
-Phase 4는 **P4-00~P4-07**을 Head가 순차 구현한다. 기존 Spec 8.3·14절과 Phase 3의 출처·예산·선택적 freeze 계약을 따른다. 구현 목표는 사람이 검토하는 동안 process와 메시지를 점유하지 않고, 저장된 정확한 입력에만 재개를 적용하는 것이다.
+Phase 4는 **P4-00~P4-07**을 순차 인수한다. Head가 계약·검수·통합을 맡고 구현은 격리된 Worker에 위임한다. 기존 Spec 8.3·14절과 Phase 3의 출처·예산·선택적 freeze 계약을 따른다. 구현 목표는 사람이 검토하는 동안 process와 메시지를 점유하지 않고, 저장된 정확한 입력에만 재개를 적용하는 것이다.
 
 ### 공통 계약
 
@@ -251,11 +251,9 @@ Phase 4는 **P4-00~P4-07**을 Head가 순차 구현한다. 기존 Spec 8.3·14�
 
 ### P4-05 — 매핑·보완 successor와 stale 경합
 
-**상태: 계획.** 의존: P4-03~04. 기존 사람 매핑 action, 보완 제출, 새 대사와 구매/정책 version 변경이 pending/running graph를 무효화하도록 currentness를 연결한다. 업무 변경 성공과 옛 실행 취소를 같은 Core transaction으로 묶을 수 있는 경계만 적용하고 외부 API를 잠금 안에서 호출하지 않는다.
+**상태: 완료.** 같은 사건의 업무 변경과 옛 실행·미발행 재개의 취소, 정확한 currentness fencing, 명시적 OPERATOR successor 예약을 인수했다. 후속 진입점은 `GraphInvalidationService`, `GraphExecutionService.successor`, `GraphStore`와 V25 migration이다. successor는 변경된 입력과 새 실행 예산을 사용하며 provenance만 연결한다. 파서 성공·최신 대사가 없으면 예약을 거부하고 기존 수동 검토는 유지한다.
 
-옛 대기/lease/미발행 resume는 취소하고 이미 발행된 이벤트는 consumer currentness로 막는다. 새 매핑의 재대사 결과 또는 새 증빙의 파서 성공·최신 대사로 OPERATOR가 successor를 예약한다. parser pending/실패에는 예약을 거부하고 수동 검토는 허용한다. successor는 provenance를 연결하지만 새 thread/context이며 옛 모델 단계와 사람 확인을 자동 계승하지 않는다.
-
-인수: 실제 매핑·보완 흐름, resume와 매핑/정책 publication/승인 경합, 업무 action audit 실패 rollback, 옛 이벤트 지연 전달, 새 parser 실패, successor 중복 예약. 옛 thread 완료·새 Proposal 편입·배분/지급 자동 생성은 0이어야 한다. 기존 approval/legacy freeze 전체 회귀를 유지한다.
+공유 구매·정책 변경은 다른 사건의 잠금을 잡아 일괄 취소하지 않는다. 잠금 역전을 피하면서 다음 Core 동작에서 최신성을 확인하고 저장·완료를 차단한다. P4-06 조회에도 같은 경계를 적용하며, 화면의 상태 계산으로 최신성을 대신하지 않는다.
 
 ### P4-06 — 사람 확인 UI와 대기·재개 이력
 
