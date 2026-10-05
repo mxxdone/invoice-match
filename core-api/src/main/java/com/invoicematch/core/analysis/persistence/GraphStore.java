@@ -209,7 +209,8 @@ public class GraphStore {
     }
     private static GraphRun run(java.sql.ResultSet rs) throws java.sql.SQLException {
         var until=rs.getTimestamp("lease_until");
-        return new GraphRun(rs.getObject("id",UUID.class),rs.getObject("invoice_case_id",UUID.class),rs.getLong("case_version"),
+        return new GraphRun(rs.getObject("id",UUID.class),rs.getObject("invoice_case_id",UUID.class),
+                rs.getObject("evidence_bundle_id",UUID.class),rs.getObject("match_result_id",UUID.class),rs.getLong("case_version"),
                 rs.getString("context"),rs.getString("context_hash"),rs.getString("status"),rs.getString("active_segment"),
                 rs.getInt("start_attempts"),rs.getInt("resume_attempts"),rs.getInt("reserved_calls"),rs.getInt("reserved_tokens"),
                 rs.getInt("tool_calls"),rs.getObject("execution_token",UUID.class),

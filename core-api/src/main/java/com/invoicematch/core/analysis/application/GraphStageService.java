@@ -17,14 +17,14 @@ public class GraphStageService {
     private final GraphExecutionService execution;
     private final GraphStore store;
     private final ProposalStageValidator validator;
-    private final ProposalAssembler assembler;
+    private final GraphProposalAssembler proposals;
     private final ProposalToolService tools;
     private final PolicySearchService policies;
     private final ObjectMapper mapper;
     private final com.invoicematch.core.document.persistence.DocumentStore documents;
     public GraphStageService(GraphExecutionService execution,GraphStore store,ProposalStageValidator validator,
-            ProposalAssembler assembler,ProposalToolService tools,PolicySearchService policies,ObjectMapper mapper,com.invoicematch.core.document.persistence.DocumentStore documents) {
-        this.execution=execution;this.store=store;this.validator=validator;this.assembler=assembler;this.tools=tools;this.policies=policies;this.mapper=mapper;this.documents=documents;
+            GraphProposalAssembler proposals,ProposalToolService tools,PolicySearchService policies,ObjectMapper mapper,com.invoicematch.core.document.persistence.DocumentStore documents) {
+        this.execution=execution;this.store=store;this.validator=validator;this.proposals=proposals;this.tools=tools;this.policies=policies;this.mapper=mapper;this.documents=documents;
     }
     public record Stage(UUID ref,String stage,String hash,JsonNode payload) {}
     @Transactional public List<Stage> read(UUID id,String hash,UUID token) {
@@ -78,20 +78,8 @@ public class GraphStageService {
         var run=execution.lock(id,hash);execution.active(run,token);
         var input=store.advisoryInput(id);var steps=store.validationSteps(id);
         if(run.segment().equals("START") && !humanReasons(steps).isEmpty())throw GraphExecutionService.conflict("GRAPH_HUMAN_REQUIRED");
-        var assembled=assembler.assemble(input,steps);
-        var result=(com.fasterxml.jackson.databind.node.ObjectNode)parse(assembled.canonical());
-        result.put("schemaVersion","advisory-proposal-v2").put("graphVersion",com.invoicematch.core.analysis.domain.GraphRun.GRAPH);
-        if(run.segment().equals("RESUME")) {
-            var review=store.review(id).orElseThrow(()->GraphExecutionService.conflict("GRAPH_REVIEW_MISSING"));
-            var checkpoint=store.latest(id).orElseThrow(()->GraphExecutionService.conflict("GRAPH_CHECKPOINT_MISSING"));
-            var values=new GraphPayloadValidator(mapper).decode(parse(checkpoint.envelope()).path("body"),0,false).path("channel_values");
-            if(!store.reviewConsumed(id,review.id()) || !values.path("reviewRef").asText().equals(review.id().toString())
-                || !values.has("resolutionStageRef"))throw GraphExecutionService.conflict("GRAPH_RESUME_NOT_READY");
-            result.set("humanReview",mapper.createObjectNode().put("reviewId",review.id().toString()).put("confirmationHash",review.hash())
-                .set("confirmation",parse(review.confirmation())));
-        }
-        String canonical=AnalysisCanonicalJson.canonicalize(result);
-        bounded(canonical);store.complete(id,canonical,AnalysisCanonicalJson.sha256Hex(canonical),token);
+        var assembled=proposals.assemble(run,input,steps);
+        bounded(assembled.canonical());store.complete(id,assembled.canonical(),assembled.hash(),token);
         return store.result(id).orElseThrow();
     }
     static Set<String> humanReasons(List<ProposalStore.Step> steps) {

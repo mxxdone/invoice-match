@@ -4,7 +4,8 @@ import java.time.Instant;
 import java.util.UUID;
 
 /** Frozen graph input with execution-segment counters independent of thread budgets. */
-public record GraphRun(UUID id, UUID caseId, long caseVersion, String context, String contextHash,
+public record GraphRun(UUID id, UUID caseId, UUID evidenceBundleId, UUID matchResultId, long caseVersion,
+        String context, String contextHash,
         String status, String segment, int startAttempts, int resumeAttempts, int reservedCalls, int reservedTokens,
         int toolCalls, UUID token, Instant leaseUntil, boolean leaseActive, int checkpointCount, int writeCount,
         int storedBytes, int checkpointSchema, String errorCode, Instant createdAt) {
