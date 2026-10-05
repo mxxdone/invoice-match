@@ -84,12 +84,19 @@ async function wait(label, predicate, timeoutMs = 120000) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
   while (Date.now() < deadline) {
-    try { const value = await predicate(); if (value) return value; last = value; } catch (error) { last = error.message; }
+    // A predicate failure is a real failure (for example an owned service that
+    // exited permanently); it must abort immediately instead of being retried
+    // until the timeout. Readiness predicates return false for "not yet ready".
+    const value = await predicate();
+    if (value) return value;
+    last = value;
     await sleep(500);
   }
   throw new VerifyError(`Timed out: ${label} (last=${last})`);
 }
 async function running(id) { return (await command(['inspect', '--format', '{{.State.Running}}', id])) === 'true'; }
+async function exitCode(id) { return Number(await command(['inspect', '--format', '{{.State.ExitCode}}', id])); }
+async function containerIp(id) { return command(['inspect', '--format', '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}', id]); }
 async function ready(url, id, timeoutMs = 240000) {
   await wait(url, async () => {
     if (!(await running(id))) throw new VerifyError(`owned service exited: ${id.slice(0, 12)}`);
@@ -170,12 +177,12 @@ function coreEnv(graphEnabled) {
   return env;
 }
 
-let pg, rabbit, minio, purchasing, core, web, coreOff, webOff, parserWorker, graphStart;
+let pg, rabbit, rabbitIp, minio, purchasing, core, web, coreOff, webOff, parserWorker, graphStart;
 
 function samplePdf() {
   const pdfPath = join(output, 'sample.pdf');
   if (!existsSync(pdfPath)) {
-    const code = 'import sys,pathlib;sys.path.insert(0,"ai-worker/tests");from fixtures import build_pdf;p=pathlib.Path(sys.argv[1]);p.write_bytes(build_pdf(["Premium Copy Paper A4",None]))';
+    const code = 'import sys,pathlib;sys.path.insert(0,"ai-worker/tests");from fixtures import build_pdf;p=pathlib.Path(sys.argv[1]);p.write_bytes(build_pdf(["Premium Copy Paper A4 7 2500","Laser Toner Black 9 55000"]))';
     const result = spawnSync(process.env.PYTHON_BIN ?? 'python', ['-c', code, pdfPath], { cwd: repo, encoding: 'utf8' });
     if (result.status !== 0) throw new VerifyError('sample.pdf generation failed: ' + (result.stderr || result.stdout || ''));
   }
@@ -212,13 +219,18 @@ async function seedCase(base, invoiceNumber, itemId) {
   return { id: created.id, invoiceNumber, caseVersion: submitted.version };
 }
 
-async function startGraphWorker(suffix, mode, segment, target) {
+async function startGraphWorker(suffix, mode, segment, target, { addHost = null, deadlineSeconds = 45 } = {}) {
   const dummyRun = randomUUID();
   const dummyHash = createHash('sha256').update(suffix).digest('hex');
-  return container(suffix, IMAGE.worker,
-    ['--memory', '1g', '--pids-limit', '256', '--add-host', 'host.docker.internal:host-gateway'],
-    { GRAPH_FIXTURE_WORKER_TOKEN: workerToken },
-    ['python', '/pkg/tests/graph_core_fixture.py', mode, 'http://core:8080', dummyRun, dummyHash, String(ports.rabbit), segment, String(target)]);
+  const options = ['--init', '--memory', '1g', '--pids-limit', '256',
+    '-v', join(repo, 'scripts', 'lib', 'p4-06-graph-fixture.py') + ':/scripts/fixture.py:ro'];
+  // host.docker.internal resolves to the broker's own container IP, so the
+  // test-only fixture (which hardcodes that host name) needs no host publish.
+  if (addHost) options.push('--add-host', `host.docker.internal:${addHost}`);
+  return container(suffix, IMAGE.worker, options,
+    { GRAPH_FIXTURE_WORKER_TOKEN: workerToken, P406_RABBIT_HOST: 'host.docker.internal',
+      P406_RABBIT_USER: rabbitUser, P406_RABBIT_PASSWORD: rabbitPassword, P406_FIXTURE_DEADLINE: String(deadlineSeconds) },
+    ['python', '/scripts/fixture.py', mode, 'http://core:8080', dummyRun, dummyHash, '5672', segment, String(target)]);
 }
 
 try {
@@ -236,13 +248,17 @@ try {
     { POSTGRES_DB: 'invoice_match', POSTGRES_USER: 'invoice_match', POSTGRES_PASSWORD: pgPassword });
   await wait('postgres', async () => (await docker.exec(pg, ['pg_isready', '-h', '127.0.0.1', '-U', 'invoice_match'])).code === 0);
 
-  rabbit = await container('rabbit', IMAGE.rabbit, ['--memory', '640m', '-p', `${ports.rabbit}:5672`],
+  // No host publish: the graph worker reaches the broker over the isolated
+  // network through host.docker.internal mapped to the broker's own IP, so the
+  // broker is never bound to a host interface.
+  rabbit = await container('rabbit', IMAGE.rabbit, ['--memory', '640m'],
     { RABBITMQ_DEFAULT_USER: rabbitUser, RABBITMQ_DEFAULT_PASS: rabbitPassword });
   await wait('rabbit', async () => {
     if (!(await running(rabbit))) throw new VerifyError('RabbitMQ exited');
     return (await rabbitCommand(['rabbitmq-diagnostics', '-q', 'check_running'])).code === 0
       && (await rabbitCommand(['rabbitmq-diagnostics', '-q', 'check_port_connectivity'])).code === 0;
   });
+  rabbitIp = await containerIp(rabbit);
 
   minio = await container('minio', IMAGE.minio,
     ['-p', `127.0.0.1:${ports.minio}:9000`, '--tmpfs', '/data:rw,size=256m,uid=10001,gid=10001'],
@@ -295,36 +311,82 @@ try {
   const offCase = await seedCase(coreOffUrl, 'INV-P406-OFF-' + randomUUID().slice(0, 8), 'ITEM-A4-80');
   record('isolated PostgreSQL/RabbitMQ/purchasing/Core/Web and seeded graph + AI-off cases');
 
+  const evidence = {};
   const onBeforeStep = async (step) => {
-    if (step === 'reserve-confirm') {
-      graphStart = await startGraphWorker('graph-start', 'broker-start', 'start', 1);
+    if (step === 'reserve') {
+      graphStart = await startGraphWorker('graph-start', 'broker-start', 'start', 1, { addHost: rabbitIp });
     } else if (step === 'verify-completed') {
-      const before = await sql(`select id from graph_run where invoice_case_id='${graphCase.id}' order by created_at desc limit 1`);
-      console.log('INFO graph run before resume ' + before);
-      const killId = await startGraphWorker('graph-kill', 'kill-resume', 'resume', 1);
-      await wait('kill-resume worker to exit', async () => !(await running(killId)), 90000).catch(() => {});
-      const resumeWorker = await startGraphWorker('graph-resume', 'broker-resume', 'resume', 1);
-      await wait('graph resume completed', async () => (await sql(`select status from graph_run where id='${before}'`)) === 'COMPLETED', 180000);
-      console.log('INFO graph resume worker ' + resumeWorker.slice(0, 12));
+      evidence.graphRunId = await sql(`select id from graph_run where invoice_case_id='${graphCase.id}' order by created_at asc limit 1`);
+      console.log('INFO graph run before resume ' + evidence.graphRunId);
+      const killId = await startGraphWorker('graph-kill', 'kill-resume', 'resume', 1, { addHost: rabbitIp });
+      await wait('kill-resume worker to exit', async () => !(await running(killId)), 90000);
+      evidence.killExitCode = await exitCode(killId);
+      if (evidence.killExitCode !== 137) throw new VerifyError(`kill-resume worker did not die by SIGKILL (exit=${evidence.killExitCode})`);
+      // The killed worker's lease is still active, so the real redelivery is
+      // BUSY/deferred until the lease expires; this consumer stays alive across
+      // that recovery window and completes the run exactly once.
+      const resumeId = await startGraphWorker('graph-resume', 'broker-resume', 'resume', 2, { addHost: rabbitIp, deadlineSeconds: 300 });
+      evidence.resumeWorkerId = resumeId.slice(0, 12);
+      await wait('graph resume completed', async () => (await sql(`select status from graph_run where id='${evidence.graphRunId}'`)) === 'COMPLETED', 300000);
+      evidence.resumeConsumption = await sql(`select count(*) from graph_resume_consumption where run_id='${evidence.graphRunId}'`);
+      evidence.resumeAttempts = await sql(`select resume_attempts from graph_run where id='${evidence.graphRunId}'`);
+      evidence.startAttempts = await sql(`select start_attempts from graph_run where id='${evidence.graphRunId}'`);
+      evidence.reservedCalls = await sql(`select reserved_calls from graph_run where id='${evidence.graphRunId}'`);
+      evidence.reservedTokens = await sql(`select reserved_tokens from graph_run where id='${evidence.graphRunId}'`);
+      evidence.graphPayloadHash = await sql(`select payload_hash from graph_proposal where run_id='${evidence.graphRunId}'`);
+      evidence.graphContextHash = await sql(`select context_hash from graph_run where id='${evidence.graphRunId}'`);
+      if (evidence.resumeConsumption !== '1') throw new VerifyError(`expected one resume consumption, got ${evidence.resumeConsumption}`);
     }
   };
 
-  if (!existsSync(join(output, 'seed-only'))) {
-    await runP406BrowserChecks({
-      config: { ports },
-      guard: () => {
-        if (!existsSync(join(repo, 'core-api', 'build', 'libs', 'core-api-0.1.0-SNAPSHOT.jar'))) throw new VerifyError('core jar disappeared');
-      },
-      log: (message) => console.log(message),
-      invoices: { graph: graphCase.invoiceNumber, off: offCase.invoiceNumber },
-      onBeforeStep,
-    });
-  }
+  await runP406BrowserChecks({
+    config: { ports },
+    guard: () => {
+      if (!existsSync(join(repo, 'core-api', 'build', 'libs', 'core-api-0.1.0-SNAPSHOT.jar'))) throw new VerifyError('core jar disappeared');
+    },
+    log: (message) => console.log(message),
+    invoices: { graph: graphCase.invoiceNumber, off: offCase.invoiceNumber },
+    onBeforeStep,
+  });
 
+  // Immutable DB evidence: the frozen snapshot must carry the exact completed
+  // graph proposal id and payload hash, and the graph review/business effects
+  // must be the real committed rows.
+  evidence.reviewSnapshotPayload = await sql(`select payload::text from review_snapshot order by snapshot_number asc limit 1`);
+  evidence.snapshotProposalIdMatches = evidence.reviewSnapshotPayload.includes(evidence.graphRunId ?? '');
+  evidence.snapshotProposalHashMatches = evidence.reviewSnapshotPayload.includes(evidence.graphPayloadHash ?? '');
+  if (!evidence.snapshotProposalIdMatches || !evidence.snapshotProposalHashMatches) {
+    throw new VerifyError('frozen snapshot does not carry the exact graph proposal id/hash');
+  }
+  evidence.graphReviewId = await sql(`select id from graph_review where run_id='${evidence.graphRunId}' order by created_at asc limit 1`);
+  evidence.graphReviewConfirmation = await sql(`select confirmation::text from graph_review where run_id='${evidence.graphRunId}' order by created_at asc limit 1`);
+  evidence.graphReviewHasCandidateChoice = evidence.graphReviewConfirmation.includes('ITEM-');
+  evidence.graphReviewHasUnresolved = /"itemId":\s*null/.test(evidence.graphReviewConfirmation);
+  if (!evidence.graphReviewHasCandidateChoice || !evidence.graphReviewHasUnresolved) {
+    throw new VerifyError('stored confirmation does not record one chosen candidate and one unresolved line');
+  }
   const graphStatus = await sql(`select status from graph_run where invoice_case_id='${graphCase.id}' order by created_at desc limit 1`);
   const successorCount = await sql(`select count(*) from graph_successor where invoice_case_id='${graphCase.id}'`);
-  record(`graph run latest status=${graphStatus} successorRows=${successorCount}`);
-  writeFileSync(join(output, 'summary.json'), JSON.stringify({ ok: true, steps, graphCase, offCase, graphStatus, successorCount }, null, 2));
+  evidence.latestGraphStatus = graphStatus;
+  evidence.successorCount = successorCount;
+  evidence.offPaymentRequests = await sql(`select count(*) from payment_request where invoice_case_id='${offCase.id}'`);
+  evidence.offAllocations = await sql(`select count(*) from receipt_allocation where invoice_case_id='${offCase.id}'`).catch(() => 'n/a');
+  if (Number(evidence.offPaymentRequests) < 1) throw new VerifyError('AI-off approval did not create a payment request');
+  record(`graph run latest status=${graphStatus} successorRows=${successorCount} resumeConsumption=${evidence.resumeConsumption}`);
+  record(`frozen graph proof id/hash exact match; confirmation candidate+unresolved recorded; AI-off paymentRequests=${evidence.offPaymentRequests}`);
+  writeFileSync(join(output, 'summary.json'), JSON.stringify({
+    ok: true, steps, graphCase, offCase,
+    evidence: {
+      ...evidence,
+      graphCaseId: graphCase.id, offCaseId: offCase.id,
+      graphInvoice: graphCase.invoiceNumber, offInvoice: offCase.invoiceNumber,
+      killExitCode: evidence.killExitCode, resumeConsumption: evidence.resumeConsumption,
+      resumeAttempts: evidence.resumeAttempts, startAttempts: evidence.startAttempts,
+      reservedCalls: evidence.reservedCalls, reservedTokens: evidence.reservedTokens,
+      graphContextHash: evidence.graphContextHash, graphPayloadHash: evidence.graphPayloadHash,
+      graphReviewId: evidence.graphReviewId,
+    },
+  }, null, 2));
 } catch (error) {
   console.error(error.message);
   try {
@@ -338,7 +400,8 @@ try {
   writeFileSync(join(output, 'failure.json'), JSON.stringify({ message: error.message, steps }, null, 2));
   for (const id of owned) {
     const result = await docker.run(['logs', id]);
-    const safe = (result.stdout + result.stderr).replaceAll(workerToken, '[redacted]').replaceAll(rabbitPassword, '[redacted]').replaceAll(pgPassword, '[redacted]');
+    const safe = (result.stdout + result.stderr).replaceAll(workerToken, '[redacted]').replaceAll(rabbitPassword, '[redacted]')
+      .replaceAll(pgPassword, '[redacted]').replaceAll(storagePassword, '[redacted]').replaceAll(storageUser, '[redacted]');
     writeFileSync(join(output, id.slice(0, 12) + '.log'), safe);
   }
   process.exitCode = 1;

@@ -78,7 +78,7 @@ export async function runP406BrowserChecks({ config, guard, log = () => {}, invo
   };
 
   const session = `p406-${process.pid}`;
-  const stepsOrder = ['reserve-confirm', 'verify-completed', 'mapping', 'successor', 'submitter-read', 'ai-off'];
+  const stepsOrder = ['reserve', 'approver-pending-read', 'confirm', 'verify-completed', 'graph-proof-freeze', 'mapping', 'successor', 'submitter-read', 'ai-off'];
   const summaries = [];
   let flowError = null;
   try {
@@ -93,11 +93,19 @@ export async function runP406BrowserChecks({ config, guard, log = () => {}, invo
         const detail = run.stdout.split(/\r?\n/).filter((line) => /Error|ASSERT|Timed out/.test(line)).join(' ').trim();
         throw new VerifyError(`browser step ${step} failed${detail ? `: ${detail}` : ''}`);
       }
-      if (summary.unexpectedHttpErrors && summary.unexpectedHttpErrors.length > 0) {
-        throw new VerifyError(`browser ${step} unexpected HTTP errors: ${summary.unexpectedHttpErrors.join(' | ')}`);
+      // Only the empty review-snapshot read (GET .../review-snapshots/latest 404)
+      // is an accepted error; a generic console 404 is justified only while it is
+      // backed by one of those allowlisted responses. A 403 is never ignored.
+      const allowed404 = (summary.httpErrors ?? []).filter((entry) => /^404 GET \/api\/invoice-cases\/[0-9a-fA-F-]{36}\/review-snapshots\/latest$/.test(entry));
+      const unexpectedHttpErrors = (summary.httpErrors ?? []).filter((entry) => !allowed404.includes(entry));
+      const console404 = (summary.consoleErrors ?? []).filter((message) => /status of 404/.test(message));
+      const otherConsole = (summary.consoleErrors ?? []).filter((message) => !/status of 404/.test(message));
+      const unexpectedConsoleErrors = console404.length <= allowed404.length ? otherConsole : [...otherConsole, ...console404.slice(allowed404.length)];
+      if (unexpectedHttpErrors.length > 0) {
+        throw new VerifyError(`browser ${step} unexpected HTTP errors: ${unexpectedHttpErrors.join(' | ')}`);
       }
-      if (summary.unexpectedConsoleErrors && summary.unexpectedConsoleErrors.length > 0) {
-        throw new VerifyError(`browser ${step} console errors: ${summary.unexpectedConsoleErrors.join(' | ')}`);
+      if (unexpectedConsoleErrors.length > 0) {
+        throw new VerifyError(`browser ${step} console errors: ${unexpectedConsoleErrors.join(' | ')}`);
       }
       summaries.push(summary);
       log(`PASS browser ${step}`);
