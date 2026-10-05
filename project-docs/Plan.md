@@ -1,6 +1,6 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 P4-06 완료·P4-07 대기**
+문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 완료**
 작성일: **2026-09-25**
 최신화: **2026-10-05**
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
@@ -18,7 +18,7 @@
 | 4 — Human-in-the-loop | 사람 대기와 재개를 안전하게 모델링 | LangGraph checkpoint, mapping interrupt, 새 증빙 재분석, resume 멱등성, stale 차단 | worker/message 점유 없이 정확한 version만 재개·반영 |
 | 5 — 최적화·장애 시연·포트폴리오 | 측정 가능한 개선과 재현 가능한 설명 완성 | 조회·인덱스 실험, 부하·경합·장애 주입, ERP 대사, 관측성, README/ERD/보고서 | 5~7분 시연, Docker Compose 재현, 성능·AI 평가 결과와 trade-off 설명 |
 
-Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4는 P4-00~06을 완료했으며 다음 Ticket은 P4-07이다. API 설정 없이도 격리 provider fixture로 내구성 구현·검증을 진행할 수 있지만 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 착수 검토 때 상세화한다.
+Phase 1~2와 Phase 3 구현·자동 통합 인수, Phase 4 P4-00~07은 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. 격리 provider fixture의 내구성 검증은 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 자동 착수하지 않으며 착수 검토 때 상세화한다.
 
 ### 후속 설계 결정·보류 (2026-10-01)
 
@@ -269,7 +269,7 @@ Phase 4는 **P4-00~P4-07**을 순차 인수한다. Head가 계약·검수·통�
 
 ### P4-07 — Phase 4 통합 인수
 
-**상태: 계획.** 의존: P4-00~06. 기존 검증 harness를 확장해 격리 Core/PostgreSQL/RabbitMQ/설치 Linux worker와 실제 LangGraph를 사용한다. 모델 fixture는 품목 모호함과 정상/오류를 결정적으로 재현하고 live 제공자 품질 검증과 구분한다.
+**상태: 완료.** 의존: P4-00~06. 기존 검증 harness를 확장해 격리 Core/PostgreSQL/RabbitMQ/설치 Linux worker와 실제 LangGraph를 사용한다. 모델 fixture는 품목 모호함과 정상/오류를 결정적으로 재현하고 live 제공자 품질 검증과 구분한다.
 
 인수: 여러 사건 중 하나만 사람 대기, 대기 상태에서 모든 worker 종료 후 복원, 동일/역순 resume, checkpoint/사람 저장/confirm/완료 응답 유실, lease 회수, 실패 소진·누적 예산, 새 매핑/증빙/정책 경합과 오래된 승인 근거 거부. backend 전체 test/bootJar, Web lint/test/build, 실제 Linux wheel/CLI·broker·pgvector 회귀와 브라우저 흐름을 통과한다. 자신이 만든 자원은 성공/실패 모두 회수한다.
 

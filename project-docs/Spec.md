@@ -502,7 +502,7 @@ flowchart LR
 | 영역 | 선택 |
 |---|---|
 | 업무 백엔드 | Java 21, Spring Boot 3, Spring Data JPA, Spring Security |
-| Worker | Python 3.12 격리 parser·별도 파싱/AI RabbitMQ consumer; LangGraph는 Phase 4 |
+| Worker | Python 3.12 격리 parser·별도 파싱/AI/opt-in LangGraph RabbitMQ consumer |
 | 데이터베이스 | PostgreSQL; 선택적 정책 vector 검색은 pgvector |
 | 메시징 | RabbitMQ |
 | 파일 | S3 호환 저장소, 로컬 개발은 MinIO |
@@ -515,7 +515,7 @@ flowchart LR
 
 - `web`: 업무 화면
 - `core-api`: Spring 업무 코어와 integration API
-- `ai-worker`: 문서 파싱 consumer와 opt-in AI/RAG consumer를 별도 process로 실행; LangGraph는 Phase 4 확장
+- `ai-worker`: 문서 파싱 consumer와 opt-in AI/RAG·LangGraph 시작/재개 consumer를 별도 process로 실행
 - `outbox-relay`: 초기에는 Spring process 내부 scheduler로 시작 가능
 - `postgres`
 - `rabbitmq`
