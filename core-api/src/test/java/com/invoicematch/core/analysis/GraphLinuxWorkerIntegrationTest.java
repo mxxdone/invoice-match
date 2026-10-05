@@ -1,76 +1,27 @@
 package com.invoicematch.core.analysis;
 
 import static org.assertj.core.api.Assertions.*;
+
 import com.invoicematch.core.analysis.application.*;
 import com.invoicematch.core.matching.application.RunMatchCommand;
 import com.invoicematch.core.support.TestActors;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.utility.DockerImageName;
 
 /** Explicit installed Linux wheel acceptance; regular tests require no provider or image build. */
 @SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.RANDOM_PORT)
 @EnabledIfEnvironmentVariable(named="INVOICE_MATCH_GRAPH_LINUX_IMAGE",matches=".+")
-class GraphLinuxWorkerIntegrationTest extends AbstractAnalysisExecutionIntegrationTest {
+class GraphLinuxWorkerIntegrationTest extends AbstractGraphWorkerIntegrationTest {
     @DynamicPropertySource static void graphProperties(DynamicPropertyRegistry r) {
-        r.add("analysis.graph.enabled",()->true);r.add("analysis.graph.cost-ceiling",()->"1");
         r.add("analysis.graph.lease-duration",()->"75s");
     }
-    @Autowired GraphExecutionService graph;
-    @Autowired GraphDeliveryService delivery;
-    @Autowired GraphReviewService reviews;
-    @Autowired com.invoicematch.core.analysis.persistence.GraphStore graphs;
-    @Autowired com.invoicematch.core.approval.application.ApprovalApplicationService approvals;
-    @LocalServerPort int port;
-    private GraphExecutionService.Reserved ready() {
-        var f=preparePdfRun(1);var c=claim(f);var d=f.documents().getFirst();
-        execution.recordResult(f.runId(),resultCommand(f,c.claimToken(),d.documentId(),"SUCCESS",pdfResult(d,"Premium Copy Paper A4"),null));
-        TestActors.run("operator","OPERATOR",()->matchingService.run(new RunMatchCommand(f.caseId(),UUID.randomUUID().toString())));
-        return TestActors.call("operator","OPERATOR",()->graph.reserve(f.caseId(),new ProposalService.ReserveCommand(UUID.randomUUID().toString(),caseVersion(f.caseId())))).body();
-    }
-    private GenericContainer<?> worker() {
-        return new GenericContainer<>(DockerImageName.parse(System.getenv("INVOICE_MATCH_GRAPH_LINUX_IMAGE")))
-            .withCopyFileToContainer(org.testcontainers.utility.MountableFile.forHostPath(java.nio.file.Path.of("../ai-worker/tests/graph_core_fixture.py").toAbsolutePath()),"/pkg/tests/graph_core_fixture.py")
-            .withEnv("GRAPH_FIXTURE_WORKER_TOKEN",WORKER_TOKEN).withCommand("sleep","600")
-            .withLabel("invoice-match.test-run",System.getenv().getOrDefault("INVOICE_MATCH_TEST_RUN_ID","unmanaged"))
-            .withCreateContainerCmdModifier(cmd->cmd.getHostConfig().withMemory(512L*1024*1024).withPidsLimit(128L));
-    }
-    private String run(GenericContainer<?> worker,String mode,GraphExecutionService.Reserved r) throws Exception {
-        var result=worker.execInContainer("python","/pkg/tests/graph_core_fixture.py",mode,"http://host.docker.internal:"+port,r.id().toString(),r.contextHash());
-        assertThat(result.getExitCode()).withFailMessage("Linux graph fixture: %s",result.getStderr()).isZero();
-        return result.getStdout();
-    }
-    private com.invoicematch.core.analysis.infrastructure.RabbitAnalysisRequestPublisher publisher(GenericContainer<?> rabbit,String segment) {
-        return new com.invoicematch.core.analysis.infrastructure.RabbitAnalysisRequestPublisher(
-            new AnalysisRelayProperties(true,java.time.Duration.ofSeconds(60),java.time.Duration.ZERO,10,java.time.Duration.ofSeconds(5),
-                new AnalysisRelayProperties.Rabbit(rabbit.getHost(),rabbit.getMappedPort(5672),"/","graph-test","graph-test-secret",
-                    "invoice.graph","invoice.graph."+segment,"ai-review-v2."+segment)),
-            segment.equals("start")?"InvoiceGraphRequested":"InvoiceGraphResumeRequested");
-    }
-    private void publish(GenericContainer<?> rabbit,com.invoicematch.core.analysis.persistence.GraphDeliveryStore.Dispatch d) throws Exception {
-        try(var publisher=publisher(rabbit,d.segment().toLowerCase(java.util.Locale.ROOT))) {
-            assertThat(publisher.publish(new AnalysisPublishCommand(d.eventId(),d.payload()))).isInstanceOf(AnalysisPublishResult.Published.class);
-        }
-    }
-    private String broker(GenericContainer<?> worker,GenericContainer<?> rabbit,String mode,String segment,int acks,GraphExecutionService.Reserved r) throws Exception {
-        var result=worker.execInContainer("python","/pkg/tests/graph_core_fixture.py",mode,"http://host.docker.internal:"+port,r.id().toString(),r.contextHash(),
-            rabbit.getMappedPort(5672).toString(),segment,Integer.toString(acks));
-        if(mode.equals("kill-resume")) {assertThat(result.getExitCode()).isEqualTo(137);return "killed";}
-        assertThat(result.getExitCode()).withFailMessage("Broker graph fixture: %s",result.getStderr()).isZero();return result.getStdout();
-    }
     @Test void realConfirmFinalizeLossKillAndExactResumeReclaimRetainBudgetAndAckProof() throws Exception {
-        try(var rabbit=new GenericContainer<>(DockerImageName.parse("rabbitmq:4.2-alpine"))
-                .withEnv("RABBITMQ_DEFAULT_USER","graph-test").withEnv("RABBITMQ_DEFAULT_PASS","graph-test-secret").withExposedPorts(5672)
-                .withLabel("invoice-match.test-run",System.getenv().getOrDefault("INVOICE_MATCH_TEST_RUN_ID","unmanaged"))
-                .waitingFor(org.testcontainers.containers.wait.strategy.Wait.forLogMessage(".*Server startup complete.*",1))
-                .withStartupTimeout(java.time.Duration.ofMinutes(2));var worker=worker()) {
+        try(var rabbit=rabbit();var worker=worker()) {
             rabbit.start();worker.start();var r=ready();var first=delivery.claimDispatch().orElseThrow();
             publish(rabbit,first); // Simulate process death after real confirm, before finalize.
             jdbc.update("update graph_dispatch set lease_until=clock_timestamp()-interval '1 second' where id=?",first.id());
