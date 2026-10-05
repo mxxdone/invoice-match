@@ -22,6 +22,9 @@ public class GraphProposalAssembler {
     }
     public record Assembled(String canonical,String hash) {}
     public Assembled assemble(GraphRun run,ProposalRun input,List<ProposalStore.Step> steps) {
+        // A START execution with human-review reasons can never be completed; the proof reuses this guard.
+        if(run.segment().equals("START") && !GraphStageService.humanReasons(steps).isEmpty())
+            throw GraphExecutionService.conflict("GRAPH_HUMAN_REQUIRED");
         var assembled=assembler.assemble(input,steps);
         var result=(ObjectNode)parse(assembled.canonical());
         result.put("schemaVersion","advisory-proposal-v2").put("graphVersion",GraphRun.GRAPH);

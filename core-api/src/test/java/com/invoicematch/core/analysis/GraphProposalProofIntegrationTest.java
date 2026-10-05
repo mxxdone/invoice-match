@@ -22,6 +22,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 /** P4-06 graph completion must be freezable and approvable through the shared assembly boundary. */
 class GraphProposalProofIntegrationTest extends AbstractGraphReviewIntegrationTest {
     @Autowired GraphProposalAssembler graphProposals;
+    @Autowired ProposalAssembler proposalAssembler;
     @Autowired GraphProposalProofService graphProof;
     @Autowired com.invoicematch.core.approval.application.ApprovalApplicationService approval;
 
@@ -228,6 +229,43 @@ class GraphProposalProofIntegrationTest extends AbstractGraphReviewIntegrationTe
         assertDatabaseRejects("P0001",()->jdbc.update("delete from graph_review where run_id=?",g.runId()));
         assertDatabaseRejects("P0001",()->jdbc.update("delete from graph_resume_consumption where run_id=?",g.runId()));
         assertDatabaseRejects("P0001",()->jdbc.update("delete from graph_checkpoint where run_id=?",g.runId()));
+    }
+
+    @Test void directlyStoredStartCompletionWithHumanRequiredStagesIsRejectedByProof() throws Exception {
+        var f=preparePdfRun(1);var c=claim(f);var d=f.documents().getFirst();
+        execution.recordResult(f.runId(),resultCommand(f,c.claimToken(),d.documentId(),"SUCCESS",pdfResult(d,"paper 60 2500"),null));
+        TestActors.run("operator","OPERATOR",()->matchingService.run(new RunMatchCommand(f.caseId(),UUID.randomUUID().toString())));
+        var reserved=TestActors.call("operator","OPERATOR",()->graph.reserve(f.caseId(),
+            new ProposalService.ReserveCommand(UUID.randomUUID().toString(),caseVersion(f.caseId())))).body();
+        var token=graph.claim(reserved.id(),reserved.contextHash()).token();
+        var plan=json.createObjectNode().put("schemaVersion","ai-execution-plan-v1").put("model","fixture").put("providerFingerprint","1".repeat(64))
+            .put("inputPricePerMillion",1).put("outputPricePerMillion",2).put("currency","USD").put("costCeiling",1)
+            .put("tokenParameter","max_completion_tokens").put("promptVersion","invoice-advisory-1");plan.putNull("embedding");
+        stages.save(reserved.id(),reserved.contextHash(),token,"execution",plan);stages.reserve(reserved.id(),reserved.contextHash(),token,UUID.randomUUID(),2000);
+        var document=stage("invoice-extraction-v1");var result=document.putObject("result");
+        result.putArray("fields");result.putArray("lines");result.putArray("warnings").add("EMPTY_DOCUMENT");
+        stages.save(reserved.id(),reserved.contextHash(),token,"document",document);
+        var mapping=stage("item-mapping-v1");mapping.putArray("calls");mapping.putObject("result").putArray("lines");
+        stages.save(reserved.id(),reserved.contextHash(),token,"mapping",mapping);
+        var evidence=json.createObjectNode().put("schemaVersion","ai-evidence-stage-v1");evidence.putArray("calls");
+        evidence.putObject("result").put("status","NOT_REQUIRED").putNull("toolRequestId");
+        stages.save(reserved.id(),reserved.contextHash(),token,"evidence",evidence);
+        var resolution=json.createObjectNode().put("schemaVersion","ai-resolution-v1").put("promptVersion","invoice-advisory-1");resolution.putArray("calls");
+        var resolutionResult=resolution.putObject("result").put("recommendation","REVIEW_REQUIRED").put("summary","원문과 근거를 사람이 검토해야 합니다.");
+        resolutionResult.putArray("factIds").add("invoiceTotal");resolutionResult.putArray("citations");
+        resolutionResult.putArray("warnings").add("DOCUMENT_REVIEW");
+        stages.save(reserved.id(),reserved.contextHash(),token,"resolution",resolution);
+        // Direct DB origin: store the v2 completion the unguarded v1 assembly would produce.
+        var run=store.read(reserved.id()).orElseThrow();
+        var assembled=proposalAssembler.assemble(store.advisoryInput(reserved.id()),store.validationSteps(reserved.id()));
+        var payload=(ObjectNode)json.readTree(assembled.canonical());
+        payload.put("schemaVersion","advisory-proposal-v2").put("graphVersion",GraphRun.GRAPH);
+        String payloadJson=json.writeValueAsString(sortedJson(payload)),hash=sha256(payloadJson);
+        store.complete(reserved.id(),payloadJson,hash,token);
+        assertThatThrownBy(()->new TransactionTemplate(transactions).execute(tx->TestActors.call("operator","OPERATOR",()->
+            graphProof.verify(f.caseId(),run.evidenceBundleId(),run.matchResultId(),reserved.id(),hash))))
+            .isInstanceOf(ReviewStateConflictException.class);
+        assertThat(count("review_snapshot")).isZero();
     }
 
     private JsonNode sortedJson(JsonNode node) {

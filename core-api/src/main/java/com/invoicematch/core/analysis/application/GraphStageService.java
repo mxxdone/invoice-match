@@ -77,7 +77,6 @@ public class GraphStageService {
     @Transactional public GraphStore.Result complete(UUID id,String hash,UUID token) {
         var run=execution.lock(id,hash);execution.active(run,token);
         var input=store.advisoryInput(id);var steps=store.validationSteps(id);
-        if(run.segment().equals("START") && !humanReasons(steps).isEmpty())throw GraphExecutionService.conflict("GRAPH_HUMAN_REQUIRED");
         var assembled=proposals.assemble(run,input,steps);
         bounded(assembled.canonical());store.complete(id,assembled.canonical(),assembled.hash(),token);
         return store.result(id).orElseThrow();
