@@ -335,11 +335,6 @@ function Detail() {
                   <strong>승인 대상 확인</strong>
                   <p>검토 #{snapshot.snapshotNumber} · 청구서 v{data.detail.version} · 현재 자료와 일치함</p>
                   <p>서버가 표시된 검토 대상과 최신성을 재검증합니다. 화면에 보이는 값으로만 결정합니다.</p>
-                  <details className="snapshot-technical">
-                    <summary>기술 정보 보기</summary>
-                    <p>검토 지문(해시): {snapshot.payloadHash}</p>
-                    <p>검토 대상 snapshot #{snapshot.snapshotNumber} · 증빙 v{snapshot.evidenceBundleVersion} · 비교 결과 #{snapshot.matchResultNumber ?? '—'}</p>
-                  </details>
                 </div>
               </div>
 
@@ -375,9 +370,10 @@ function Detail() {
         {unsupportedTab ? (
           <SectionMessage tone="forbidden">이 탭은 현재 계정 역할에서 허용되지 않습니다. 서버도 이 계정의 해당 자료 조회를 허용하지 않습니다.</SectionMessage>
         ) : tab === 'compare' ? <ComparePanel data={data} />
-          : tab === 'evidence' ? credentials ? <OriginalDocuments key={`${sessionId}:${caseId}`} credentials={credentials} sessionId={sessionId} caseId={caseId} onUnauthorized={onUnauthorized}><EvidencePanel data={data} /></OriginalDocuments> : <EvidencePanel data={data} />
+          : tab === 'evidence' ? !credentials && <EvidencePanel data={data} />
             : tab === 'decisions' ? <DecisionsPanel data={data} />
               : <AuditPanel data={data} entries={auditEntries} nextCursor={auditNextCursor} loadingMore={auditLoadingMore} error={auditError} onMore={loadMoreAudit} />}
+        {credentials && <OriginalDocuments key={`${sessionId}:${caseId}`} credentials={credentials} sessionId={sessionId} caseId={caseId} onUnauthorized={onUnauthorized} visible={tab === 'evidence' && !unsupportedTab}><EvidencePanel data={data} /></OriginalDocuments>}
       </section>
 
       <footer className="action-bar">

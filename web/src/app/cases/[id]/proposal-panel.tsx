@@ -55,9 +55,8 @@ export function ProposalPanel({ load, match, canReserve, pending, blocked, onRes
         <h3>적용 정책 근거 · {labels[p.policyEvidence.status] ?? p.policyEvidence.status}</h3>
         {p.policyEvidence.result.map(chunk => <div className="proposal-entry" key={chunk.chunkId}><strong>{chunk.title} · 버전 {chunk.documentVersion} · {chunk.page}쪽 · 문단 {chunk.paragraph}</strong><blockquote>{chunk.text}</blockquote></div>)}
         {p.resolution.result.citations.map(c => <blockquote className="proposal-citation" key={c.chunkId}><strong>초안 인용 · 버전 {c.documentVersion} · {c.page}쪽 · 문단 {c.paragraph}</strong><p>{c.quote}</p></blockquote>)}
-        <details><summary>분석 기준 확인</summary><p>증빙 {p.evidenceBundleId} · 대사 {p.matchResultId}</p><p>제안 {view.run.id}</p><p>결과 hash {view.run.payloadHash}</p><p>입력 hash {view.run.contextHash}</p></details>
       </>}
     </>}
-    {page.history.length > 1 && <details><summary>이전 분석 이력</summary><ul>{page.history.slice(1).map(r => <li key={r.id}>{labels[r.status]} · 시도 {r.attempt} · {r.id}{r.errorCode ? ` · ${r.errorCode}` : ''}</li>)}</ul></details>}
+    {page.history.length > 1 && <details><summary>이전 분석 이력</summary><ul>{page.history.slice(1).map(r => <li key={r.id}>{labels[r.status]} · 시도 {r.attempt}{r.errorCode ? ` · ${r.errorCode}` : ''}</li>)}</ul></details>}
   </section>;
 }

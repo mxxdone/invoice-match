@@ -75,15 +75,6 @@ function RunSummary({ view, enabled, isOperator, blocked, pending, onSuccessor }
         <strong>{presentGraphStatus(run.status)}</strong>
         <span>{presentGraphSegment(run.segment)} · 청구 버전 v{run.caseVersion} · {run.current ? '현재 입력' : '이전 입력'}</span>
       </div>
-      <details className="snapshot-technical">
-        <summary>실행 정보 보기</summary>
-        <p>실행 {run.id} · 시작 시도 {run.startAttempts} · 재개 시도 {run.resumeAttempts}</p>
-        <p>예약 호출 {run.reservedCalls} · 예약 토큰 {run.reservedTokens} · 도구 {run.toolCalls}</p>
-        <p>완료 단계: {run.completedStages.join(', ') || '아직 없음'}</p>
-        <p>입력 hash {run.contextHash}{run.payloadHash ? ` · 결과 hash ${run.payloadHash}` : ''}</p>
-        {run.predecessorId && <p>이전 실행 {run.predecessorId}</p>}
-        <p>생성 {formatInstant(run.createdAt)}</p>
-      </details>
       {!run.supported && <p className="review-note">지원하지 않는 저장 형식입니다. 요약 정보만 표시하며 자동으로 복원하거나 다시 예약하지 않습니다.</p>}
       {run.errorCode && (run.status === 'FAILED'
         ? <p role="alert">분석 오류: {run.errorCode}. 원인을 해결하고 최신 입력을 준비해야 합니다.</p>
@@ -213,12 +204,18 @@ function ConfirmForm({ view, pending, blocked, inFlight, onConfirm }: {
 }
 
 function ReviewRecord({ review }: { review: NonNullable<GraphView['review']> }) {
+  const confirmation = review.confirmation && typeof review.confirmation === 'object'
+    ? review.confirmation as Record<string, unknown> : null;
+  const documentDecision = confirmation?.documentDecision;
+  const items = Array.isArray(confirmation?.itemDecisions)
+    ? confirmation.itemDecisions.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object') : [];
   return (
     <div className="review-note" role="status">
       <strong>사람 확인 기록 · {presentGraphResumeStatus(review.resumeStatus)}</strong>
       <span>작업자 {review.actor} · {formatInstant(review.createdAt)}</span>
       <p>사유: {review.reason}</p>
-      <details className="snapshot-technical"><summary>확인 내용 보기</summary><p>{JSON.stringify(review.confirmation)}</p></details>
+      {typeof documentDecision === 'string' && <p>문서 검토: {documentDecision === 'CONFIRMED' ? '확인 완료' : documentDecision === 'NEEDS_CORRECTION' ? '수정 필요' : documentDecision === 'NOT_REQUIRED' ? '추가 확인 불필요' : '확인 결과를 표시할 수 없습니다.'}</p>}
+      {items.length > 0 && <ul>{items.map((item, index) => <li key={index}>추출 순번 {typeof item.lineNumber === 'number' ? item.lineNumber : '—'} · {typeof item.itemId === 'string' ? `선택 품목 ${item.itemId}` : '품목 미확정'}{typeof item.purchaseOrderLineId === 'string' ? ` · 발주 라인 ${item.purchaseOrderLineId}` : ''}</li>)}</ul>}
     </div>
   );
 }
@@ -262,7 +259,6 @@ function CompletedPayload({ view, isApprover, proofCandidate, proofSelected, blo
       {isApprover && !selectable && (
         <p className="review-warning">현재 입력의 완료 제안이 아니므로 검토 근거로 선택할 수 없습니다.</p>
       )}
-      <details className="snapshot-technical"><summary>분석 기준 확인</summary><p>증빙 {payload.evidenceBundleId} · 대사 {payload.matchResultId}</p><p>제안 {view.run.id}</p><p>결과 hash {view.run.payloadHash}</p><p>입력 hash {view.run.contextHash}</p></details>
     </>
   );
 }

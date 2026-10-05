@@ -1,18 +1,14 @@
 'use client';
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import type { Credentials } from '../../api/transport';
 import { useCaseDocuments } from './use-case-documents';
 
-export function OriginalDocuments({ credentials, sessionId, caseId, onUnauthorized, children }: {
-  credentials: Credentials; sessionId: number; caseId: string; onUnauthorized: () => void; children?: ReactNode;
+export function OriginalDocuments({ credentials, sessionId, caseId, onUnauthorized, children, visible = true }: {
+  credentials: Credentials; sessionId: number; caseId: string; onUnauthorized: () => void; children?: ReactNode; visible?: boolean;
 }) {
   const documents = useCaseDocuments({ credentials, sessionId, caseId, onUnauthorized });
-  const previewPanel = useRef<HTMLElement>(null);
-  useEffect(() => {
-    if (documents.preview) previewPanel.current?.scrollIntoView?.({ block: 'start' });
-  }, [documents.preview]);
-  return <div className="evidence-workspace">
+  return <><div className="evidence-workspace" hidden={!visible}>
     <div className="evidence-records">
     <section className="history-content original-documents" aria-label="원본 문서">
     <div className="section-heading"><h2>원본 문서</h2><button className="button" onClick={documents.refresh}>목록 새로고침</button></div>
@@ -34,12 +30,16 @@ export function OriginalDocuments({ credentials, sessionId, caseId, onUnauthoriz
     </section>
     {children}
     </div>
-    <section ref={previewPanel} className="original-preview" aria-label="PDF 미리보기 영역">
-    {documents.preview ? <>
-      <div className="section-heading"><h3>{documents.preview.fileName}</h3><a className="button" href={documents.preview.url} target="_blank" rel="noopener noreferrer">PDF 새 탭에서 열기</a></div>
-      <p className="muted-text">뷰어가 표시되지 않으면 새 탭에서 열거나 원본을 다운로드하세요. 인쇄는 PDF 뷰어의 인쇄 기능을 사용하세요.</p>
+    </div>
+    {documents.preview && <aside className="pdf-preview-drawer" aria-label="PDF 미리보기 영역">
+      <div className="pdf-drawer-header">
+        <div className="section-heading"><h3>{documents.preview.fileName}</h3><button className="button" aria-label="PDF 미리보기 닫기" onClick={documents.closePreview}>닫기</button></div>
+        <a className="button" href={documents.preview.url} target="_blank" rel="noopener noreferrer">PDF 새 탭에서 열기</a>
+        <p className="muted-text">인쇄는 PDF 뷰어에서 할 수 있습니다.</p>
+      </div>
+      <div className="pdf-drawer-body">
       <iframe className="original-pdf-frame" title={`${documents.preview.fileName} 원본 PDF`} src={`${documents.preview.url}#view=Fit&zoom=page-fit`} referrerPolicy="no-referrer" />
-    </> : <div className="pdf-preview-placeholder"><h3>PDF 미리보기</h3><p>{documents.pending ? '원본 PDF를 준비하고 있습니다.' : '문서 목록에서 PDF 미리보기를 선택하세요.'}</p></div>}
-    </section>
-  </div>;
+      </div>
+    </aside>}
+  </>;
 }

@@ -107,6 +107,7 @@ test('the live panel offers PDF preview and attachment for both formats, with a 
   const t = mount((url) => url.includes('download-url') ? link() : page(), OriginalDocuments);
   try {
     await t.render();
+    assert.equal(t.container.querySelector('.pdf-preview-drawer'), null);
     const buttons = [...t.container.querySelectorAll('button')];
     assert.equal(buttons.filter((button) => button.textContent === 'PDF 미리보기').length, 1);
     assert.equal(buttons.filter((button) => button.textContent === '다운로드 링크 받기').length, 2);
@@ -118,5 +119,9 @@ test('the live panel offers PDF preview and attachment for both formats, with a 
     await act(async () => buttons.find((button) => button.textContent === '다운로드 링크 받기').click());
     assert.ok(t.calls.some(({ url }) => url.endsWith('disposition=attachment')));
     assert.ok(t.container.querySelector('a[rel="noopener noreferrer"]'));
+    await act(async () => t.container.querySelector('[aria-label="PDF 미리보기 닫기"]').click());
+    assert.equal(t.container.querySelector('iframe'), null);
+    assert.equal(t.container.querySelector('.pdf-preview-drawer'), null);
+    assert.match(t.container.textContent, /원본 문서/);
   } finally { await t.cleanup(); }
 });

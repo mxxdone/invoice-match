@@ -126,7 +126,9 @@ export function useCaseDocuments({ credentials, sessionId, caseId, onUnauthorize
     setReload((value) => value + 1);
   }, []);
 
+  const closePreview = useCallback(() => setPreview(null), []);
+
   return { list: list?.scope === scope ? list : null, preview: preview?.scope === scope ? preview : null,
     download: download?.scope === scope ? download : null, pending, loadingMore, error, more, open,
-    refresh };
+    refresh, closePreview };
 }

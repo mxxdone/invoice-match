@@ -149,11 +149,6 @@ export function ComparePanel({ data }: { data: CaseDetailData }) {
           비교 결과 #{match.data.resultNumber} · 증빙 v{bundleVersion} 기준{stale ? ' · 오래된 결과' : ''} · 판정 {issues}개 라인
         </span>
       </div>
-      <details className="snapshot-technical">
-        <summary>기술 정보 보기</summary>
-        <p>비교 해시: {match.data.resultHash}</p>
-        <p>증빙 v{bundleVersion} 지문: {match.data.payload.evidenceBundle.payloadHash}</p>
-      </details>
       {caseExceptions.length > 0 && (
         <SectionMessage tone="notice">
           <strong>확인 필요 항목 (청구서 전체)</strong>
@@ -236,10 +231,6 @@ export function EvidencePanel({ data }: { data: CaseDetailData }) {
             ))}
           </tbody>
         </table>
-        <details className="snapshot-technical">
-          <summary>기술 정보 보기</summary>
-          {bundles.map((bundle) => <p key={bundle.version}>제출 차수 #{bundle.version} 지문(해시): {bundle.payloadHash}</p>)}
-        </details>
       </>
     );
   } else {
@@ -274,13 +265,6 @@ export function EvidencePanel({ data }: { data: CaseDetailData }) {
       {bundleBody}
       <div className="section-heading"><h3>{sealedPayloadLines.source === 'draft' ? '작성 중 청구 라인' : `최신 제출 본문${newest ? ` · 제출 차수 #${newest.version}` : ''}`}</h3></div>
       {linesBody}
-      {sealedPayloadLines.source === 'evidence' && data.sealed.status === 'ready' && (
-        <details className="snapshot-technical">
-          <summary>기술 정보 보기</summary>
-          <p>증빙 v{data.sealed.data.version} 지문(해시): {data.sealed.data.payloadHash}</p>
-          <p>동결된 제출 본문의 전체 지문입니다. 사용자가 입력할 값이 아닙니다.</p>
-        </details>
-      )}
     </div>
   );
 }
@@ -302,14 +286,6 @@ function FreshnessBlock({ freshness }: { freshness: SectionState<ReviewFreshness
       {detail.current
         ? <p>서버가 현재 사건·증빙·대사·매핑·구매 스냅샷과 일치한다고 판정했습니다.</p>
         : <p>불일치 사유: {detail.reasons.map((reason) => presentFreshnessReason(reason)).join(' · ')}</p>}
-      <details className="snapshot-technical">
-        <summary>기술 정보 보기</summary>
-        <p>검토 대상 snapshot #{detail.snapshotNumber} · 청구서 변경 버전 {detail.snapshotCaseVersion} → 현재 {detail.currentCaseVersion}</p>
-        <p>증빙 {shortId(detail.snapshotEvidenceBundleId)} → 최신 {shortId(detail.latestEvidenceBundleId)}</p>
-        <p>대사 {shortId(detail.snapshotMatchResultId)} → 최신 {shortId(detail.latestMatchResultId)}</p>
-        <p>매핑 watermark {detail.snapshotMappingWatermark} → 현재 {detail.currentMappingWatermark}</p>
-        <p>구매 스냅샷 v{detail.snapshotPurchasingSnapshotVersion} → 현재 {detail.currentPurchasingSnapshotVersion ?? '—'}</p>
-      </details>
     </div>
   );
 }
@@ -336,10 +312,6 @@ export function DecisionsPanel({ data }: { data: CaseDetailData }) {
                   <div><dt>비교 결과 번호</dt><dd>{snapshot.data.matchResultNumber === null ? '—' : `#${snapshot.data.matchResultNumber}`}</dd></div>
                   <div><dt>생성 시각 (KST)</dt><dd>{formatInstant(snapshot.data.createdAt)}</dd></div>
                 </dl>
-                <details className="snapshot-technical">
-                  <summary>기술 정보 보기</summary>
-                  <p>검토 지문(해시): {snapshot.data.payloadHash}</p>
-                </details>
                 <FreshnessBlock freshness={data.freshness} />
               </>}
       <div className="section-heading"><h3>결정 이력</h3></div>
