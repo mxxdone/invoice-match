@@ -1,6 +1,6 @@
 # Invoice Match 구현 계획
 
-문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 P4-05 완료·P4-06 대기**
+문서 상태: **Phase 2 완료 · Phase 3 실제 품질 평가 대기 · Phase 4 P4-06 완료·P4-07 대기**
 작성일: **2026-09-25**
 최신화: **2026-10-05**
 기준 문서: [`Spec.md` 1.1-confirmed](./Spec.md)  
@@ -18,7 +18,7 @@
 | 4 — Human-in-the-loop | 사람 대기와 재개를 안전하게 모델링 | LangGraph checkpoint, mapping interrupt, 새 증빙 재분석, resume 멱등성, stale 차단 | worker/message 점유 없이 정확한 version만 재개·반영 |
 | 5 — 최적화·장애 시연·포트폴리오 | 측정 가능한 개선과 재현 가능한 설명 완성 | 조회·인덱스 실험, 부하·경합·장애 주입, ERP 대사, 관측성, README/ERD/보고서 | 5~7분 시연, Docker Compose 재현, 성능·AI 평가 결과와 trade-off 설명 |
 
-Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4는 P4-00~05를 완료했으며 다음 Ticket은 P4-06이다. API 설정 없이도 격리 provider fixture로 내구성 구현·검증을 진행할 수 있지만 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 착수 검토 때 상세화한다.
+Phase 1~2와 Phase 3 구현·자동 통합 인수는 완료했다. 실제 제공자 품질 평가, 최신 원격 CI, PC 인쇄 미리보기와 사람의 5~7분 시연은 별도 확인 항목으로 유지한다. Phase 4는 P4-00~06을 완료했으며 다음 Ticket은 P4-07이다. API 설정 없이도 격리 provider fixture로 내구성 구현·검증을 진행할 수 있지만 실제 AI 품질 인수를 대신하지 않는다. Phase 5는 착수 검토 때 상세화한다.
 
 ### 후속 설계 결정·보류 (2026-10-01)
 
@@ -257,7 +257,7 @@ Phase 4는 **P4-00~P4-07**을 순차 인수한다. Head가 계약·검수·통�
 
 ### P4-06 — 사람 확인 UI와 대기·재개 이력
 
-**상태: 계획.** 의존: P4-03~05. 기존 사건 상세의 AI 패널에 대기 사유·원문 위치·후보·확인 기록·재개 상태를 표시한다. OPERATOR는 후보/원문을 확인하고 확인 값/사유를 저장한다. 실제 품목 변경은 기존 매핑 action으로 이동하며 새 대사 후 successor 예약을 안내한다. 보완은 기존 사람 보완/제출 action을 사용한다.
+**상태: 완료.** 의존: P4-03~05. 기존 사건 상세의 AI 패널에 대기 사유·원문 위치·후보·확인 기록·재개 상태를 표시한다. OPERATOR는 후보/원문을 확인하고 확인 값/사유를 저장한다. 실제 품목 변경은 기존 매핑 action으로 이동하며 새 대사 후 successor 예약을 안내한다. 보완은 기존 사람 보완/제출 action을 사용한다.
 
 조회 계약은 [GraphViews](../core-api/src/main/java/com/invoicematch/core/analysis/application/GraphViews.java)를 사용한다. Core가 동결 원문·후보와 정확한 대기 참조를 투영하며 checkpoint body·lease token·SDK 상태는 브라우저에 노출하지 않는다. OPERATOR·APPROVER만 사건 권한 안에서 조회하고, 기본 비활성에서도 기존 이력은 보존한다. 지원하지 않는 저장 버전은 metadata만 보여 주며 자동 복원하지 않는다. 공유 입력 변경은 조회 transaction의 기존 currentness 잠금 경계에서 STALE 및 미발행 취소를 확정한다. 완료된 graph 제안은 기존 선택적 freeze 계약을 사용한다.
 
