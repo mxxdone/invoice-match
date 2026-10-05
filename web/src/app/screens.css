@@ -133,6 +133,35 @@ button.session-link:focus-visible { outline: 2px solid #798769; outline-offset: 
 .graph-confirm textarea { width: 100%; margin-top: 8px; padding: 10px 12px; border: 1px solid #d9dcd0; border-radius: 2px; background: #fff; color: #424a34; }
 .graph-history { list-style: none; padding: 0; margin: 12px 0; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 .graph-history .button { max-width: 100%; white-space: normal; text-align: left; }
+
+/* Detail content shares one gutter; tables keep their own horizontal scroll. */
+.case-detail { --detail-gutter: 44px; display: flex; flex: 1; min-width: 0; flex-direction: column; font-size: 15px; line-height: 1.6; }
+.case-detail .page-header { padding: 32px var(--detail-gutter) 24px; }
+.case-detail .title-row { flex-wrap: wrap; }
+.case-detail .tabs { padding: 0 var(--detail-gutter); min-height: 58px; height: auto; flex-wrap: wrap; gap: 12px 28px; }
+.case-detail .tabs button { min-height: 58px; font-size: 14px; }
+.case-detail > .form-section { margin: 24px var(--detail-gutter); min-width: 0; }
+.case-detail .form-section h2, .case-detail .section-heading h2 { font-size: 18px; }
+.case-detail .form-section > p { margin: 12px 0; }
+.case-detail .section-heading { flex-wrap: wrap; gap: 12px; }
+.case-detail .section-heading > span { font-size: 13px; }
+.case-detail .action-panel { padding: 20px var(--detail-gutter) 0; }
+.case-detail .form-content { padding: 24px var(--detail-gutter); }
+.case-detail .original-documents { margin: 24px var(--detail-gutter); padding-top: 20px; }
+.case-detail .tab-content > .snapshot-technical { margin: 16px var(--detail-gutter); }
+.case-detail .toolbar { padding: 12px var(--detail-gutter); flex-wrap: wrap; }
+.case-detail .review-warning { margin-left: 0; margin-right: 0; font-size: 14px; }
+.case-detail .button, .case-detail .comparison-table, .case-detail .history-table { font-size: 14px; }
+.case-detail .comparison-table th, .case-detail .history-table th,
+.case-detail .case-meta dt, .case-detail .case-meta dd, .case-detail .breadcrumb,
+.case-detail .muted-text, .case-detail .demo-description, .case-detail .item-secondary,
+.case-detail .table-summary, .case-detail .snapshot-technical, .case-detail .panel-footnote,
+.case-detail .review-note, .case-detail .line-badge, .case-detail .case-status { font-size: 13px; }
+.case-detail .case-meta { flex-wrap: wrap; gap: 12px 24px; }
+.case-detail .invoice-id { font-size: 15px; }
+.case-detail .action-bar { padding-left: var(--detail-gutter); padding-right: var(--detail-gutter); }
+@media (max-width: 1200px) { .case-detail { --detail-gutter: 30px; } }
+@media (max-width: 760px) { .case-detail { --detail-gutter: 20px; } }
 .analysis-table td:first-child .button { max-width: 280px; white-space: normal; overflow-wrap: anywhere; text-align: left; line-height: 1.6; }
 .analysis-history h2 { overflow-wrap: anywhere; font-size: 17px; font-weight: 500; margin-bottom: 16px; }
 .analysis-history .history-table { margin: 16px 0; }

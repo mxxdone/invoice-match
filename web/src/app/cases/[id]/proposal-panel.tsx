@@ -24,6 +24,7 @@ export function ProposalPanel({ load, match, canReserve, pending, blocked, onRes
   if (load.status === 'error') return <section className="form-section" aria-label="AI 검토 자료"><h2>AI 검토 자료</h2><p role="alert">{load.message}</p><button className="button" onClick={onRefresh}>다시 조회</button></section>;
   if (load.status !== 'ready') return null;
   const page = load.data, view = page.latest, p = view?.payload;
+  if (!page.enabled && !view && page.history.length === 0) return null;
   return <section className="form-section proposal-panel" aria-label="AI 검토 자료">
     <div className="section-heading"><h2>AI 검토 자료</h2><span>확정 입력과 사람의 검토 결정을 유지합니다</span></div>
     <p>추출값·품목 후보·처리 초안은 참고 자료입니다. 매핑과 승인·보완·거절은 아래 검토 동작에서 사람이 결정합니다.</p>

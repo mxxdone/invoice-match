@@ -217,6 +217,7 @@ function Detail() {
 
   return (
     <Shell active="cases" preview={false}>
+      <div className="case-detail">
       <header className="page-header">
         <nav className="breadcrumb" aria-label="현재 위치">
           <Link href={listHref}><Icon name="arrow" size={12} />청구서</Link>
@@ -231,7 +232,7 @@ function Detail() {
               <span className={`case-status status-${status.tone}`}><span className="case-status-dot" />{status.label}</span>
             </p>
           </div>
-          <span className="demo-tag">실제 서버 연결 · 역할별 동작</span>
+          <button className="button" onClick={() => selectTab('evidence')}>원본 문서·제출 이력 보기</button>
         </div>
         <dl className="case-meta">
           <div><dt>공급사 ID</dt><dd>{data.detail.supplierId}</dd></div>
@@ -243,6 +244,11 @@ function Detail() {
           <div><dt>제출 시각 (KST)</dt><dd>{formatInstant(newest?.submittedAt ?? null)}</dd></div>
         </dl>
       </header>
+      <div className="tabs" role="tablist" aria-label="청구서 상세">
+        {tabs.map(([id, label]) => (
+          <button key={id} role="tab" id={`tab-${id}`} aria-controls={`panel-${id}`} aria-selected={tab === id} className={tab === id ? 'active' : ''} onClick={() => selectTab(id)}>{id === 'evidence' ? '원본 문서·제출 이력' : label}</button>
+        ))}
+      </div>
 
       {actions.failure && (
         <MutationFailureNotice
@@ -271,11 +277,6 @@ function Detail() {
         onConfirm={(command) => actions.graphConfirm(command)} onRefresh={() => setReloadToken(value => value + 1)}
         proofCandidate={graphCandidateProof} proofSelected={selectedProof !== null && proposalSelection?.kind === 'graph'}
         onSelectProof={(proof) => setProposalSelection(proof ? { ...proof, identity, kind: 'graph' } : null)} />}
-      <div className="tabs" role="tablist" aria-label="청구서 상세">
-        {tabs.map(([id, label]) => (
-          <button key={id} role="tab" id={`tab-${id}`} aria-controls={`panel-${id}`} aria-selected={tab === id} className={tab === id ? 'active' : ''} onClick={() => selectTab(id)}>{label}</button>
-        ))}
-      </div>
 
       <div className="action-panel">
       {actionUnresolved && (
@@ -291,7 +292,7 @@ function Detail() {
         </section>
       )}
 
-      {isApprover && (
+      {isApprover && data.detail.status === 'REVIEW_PENDING' && (
         <section className="form-section" aria-label="승인자 검토 동작">
           <div className="section-heading"><h2>검토 동작</h2><span>서버가 권한·소유권·최신성을 검증합니다</span></div>
           {!subjectReady && (
@@ -374,7 +375,7 @@ function Detail() {
         {unsupportedTab ? (
           <SectionMessage tone="forbidden">이 탭은 현재 계정 역할에서 허용되지 않습니다. 서버도 이 계정의 해당 자료 조회를 허용하지 않습니다.</SectionMessage>
         ) : tab === 'compare' ? <ComparePanel data={data} />
-          : tab === 'evidence' ? <><EvidencePanel data={data} />{credentials && <OriginalDocuments key={`${sessionId}:${caseId}`} credentials={credentials} sessionId={sessionId} caseId={caseId} onUnauthorized={onUnauthorized} />}</>
+          : tab === 'evidence' ? <>{credentials && <OriginalDocuments key={`${sessionId}:${caseId}`} credentials={credentials} sessionId={sessionId} caseId={caseId} onUnauthorized={onUnauthorized} />}<EvidencePanel data={data} /></>
             : tab === 'decisions' ? <DecisionsPanel data={data} />
               : <AuditPanel data={data} entries={auditEntries} nextCursor={auditNextCursor} loadingMore={auditLoadingMore} error={auditError} onMore={loadMoreAudit} />}
       </section>
@@ -388,6 +389,7 @@ function Detail() {
           {!isApprover && !isOperator && <span className="muted-text">이 계정은 검토 결정 권한이 없습니다. 화면 표시는 안내일 뿐 서버가 권한을 판정합니다.</span>}
         </div>
       </footer>
+      </div>
     </Shell>
   );
 }
