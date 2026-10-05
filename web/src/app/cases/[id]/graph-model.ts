@@ -11,12 +11,12 @@ import type {
 } from '../../api/contract.ts';
 
 const GRAPH_STATUS_LABELS: Record<string, string> = {
-  QUEUED: '실행 예약됨',
+  QUEUED: '분석 예약됨',
   RUNNING: '분석 중',
   WAITING_HUMAN: '사람 확인 대기',
   COMPLETED: '분석 완료',
   FAILED: '분석 실패',
-  STALE: '이전 입력의 실행',
+  STALE: '이전 입력의 분석',
 };
 
 export function presentGraphStatus(status: string): string {
@@ -24,8 +24,8 @@ export function presentGraphStatus(status: string): string {
 }
 
 const GRAPH_SEGMENT_LABELS: Record<string, string> = {
-  START: '최초 실행 구간',
-  RESUME: '사람 확인 후 재개 구간',
+  START: '최초 분석',
+  RESUME: '확인 후 분석',
 };
 
 export function presentGraphSegment(segment: string): string {
@@ -42,10 +42,18 @@ export function presentGraphReason(code: string): string {
   return GRAPH_REASON_LABELS[code] ?? code;
 }
 
+// Core reports the resume outbox status; COMPLETED/CANCELLED are the terminal
+// values. The non-terminal values share the same wait/in-progress phrasing.
 const GRAPH_RESUME_LABELS: Record<string, string> = {
   QUEUED: '재개 대기',
+  READY: '재개 대기',
+  CLAIMED: '재개 중',
+  PUBLISHED: '재개 중',
+  SENDING: '재개 중',
   RUNNING: '재개 중',
+  COMPLETED: '재개 완료',
   DONE: '재개 완료',
+  CANCELLED: '재개 취소',
   FAILED: '재개 실패',
 };
 

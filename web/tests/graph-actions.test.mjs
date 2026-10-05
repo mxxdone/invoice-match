@@ -225,3 +225,65 @@ test('under React StrictMode a graph confirm still completes exactly once', asyn
     assert.equal(t.calls.length, 1);
   } finally { await t.unmount(); t.restore(); }
 });
+
+test('an A to B to A graph identity change cannot revive the first late confirm', async () => {
+  let resolveConfirm;
+  const pending = new Promise((resolve) => { resolveConfirm = resolve; });
+  const t = setup(() => pending);
+  try {
+    await t.render({ graphIdentity: 'graph-1#i1#2#' });
+    let promise;
+    await act(async () => { promise = latest.graphConfirm(confirmCommand()); });
+    await t.render({ graphIdentity: 'graph-1#i9#2#' });
+    await t.render({ graphIdentity: 'graph-1#i1#2#' });
+    resolveConfirm(jsonResponse(202, { reviewStatus: 'SAVED' }));
+    await act(async () => { await promise; });
+    assert.deepEqual(t.completed, [], 'a late confirm after an A to B to A return must not complete');
+    assert.equal(latest.unresolved, null);
+  } finally { await t.unmount(); t.restore(); }
+});
+
+test('a retry whose graph identity changes mid-flight cannot sign out or complete', async () => {
+  let confirmAttempts = 0;
+  let resolveRetry;
+  const retryPending = new Promise((resolve) => { resolveRetry = resolve; });
+  const t = setup((url) => {
+    if (!url.endsWith('/reviews')) return jsonResponse(500, { code: 'X', message: 'x' });
+    confirmAttempts += 1;
+    if (confirmAttempts === 1) return jsonResponse(503, { code: 'CORE_API_UNAVAILABLE', message: 'x' });
+    return retryPending;
+  });
+  try {
+    await t.render({ graphIdentity: 'graph-1#i1#2#' });
+    await t.run(() => latest.graphConfirm(confirmCommand()));
+    assert.equal(latest.unresolved.operation, 'graphConfirm');
+    let retryPromise;
+    await act(async () => { retryPromise = latest.retry(); });
+    await t.render({ graphIdentity: 'graph-1#i1#3#', onUnauthorized: () => t.unauthorized.push('late') });
+    resolveRetry(jsonResponse(401, { code: 'UNAUTHENTICATED' }));
+    await act(async () => { await retryPromise; });
+    assert.deepEqual(t.unauthorized, [], 'a late retry 401 from the old review version must not log out');
+    assert.deepEqual(t.completed, []);
+  } finally { await t.unmount(); t.restore(); }
+});
+
+test('mutating the caller confirmation after a lost response cannot rewrite the retried body', async () => {
+  let attempts = 0;
+  const t = setup(() => {
+    attempts += 1;
+    return attempts === 1 ? Promise.reject(new TypeError('connection lost')) : jsonResponse(202, { reviewStatus: 'SAVED' });
+  });
+  try {
+    await t.render();
+    const command = confirmCommand();
+    await t.run(() => latest.graphConfirm(command));
+    const first = t.calls[0].body;
+    const firstBodyText = JSON.stringify(first);
+    command.reason = '사후에 바뀐 사유';
+    command.confirmation.itemDecisions[0].itemId = 'MUTATED';
+    command.confirmation.documentDecision = 'NEEDS_CORRECTION';
+    await t.run(() => latest.retry());
+    assert.equal(JSON.stringify(t.calls[1].body), firstBodyText, 'the retry must resend the exact frozen body');
+    assert.deepEqual(t.completed, ['graphConfirm']);
+  } finally { await t.unmount(); t.restore(); }
+});

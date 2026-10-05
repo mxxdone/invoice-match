@@ -24,7 +24,7 @@ import { OriginalDocuments } from './original-documents';
 import { useProposalReview } from './use-proposal-review';
 import { ProposalPanel } from './proposal-panel';
 import { eligibleProposal, frozenProposal } from './proposal-model';
-import { useGraphReview, useGraphRun } from './use-graph-review';
+import { useGraphActionIdentity, useGraphReview, useGraphRun } from './use-graph-review';
 import { GraphReviewPanel } from './graph-review-panel';
 import { eligibleGraphProposal } from './graph-model';
 import type { SelectedProposal } from '../../api/contract';
@@ -103,11 +103,11 @@ function Detail() {
     : graphRun.status === 'error' ? graphRun.message
       : graphRun.status === 'forbidden' ? '선택한 그래프 실행을 조회할 권한이 없습니다.'
         : null;
-  // The exact waiting identity: a graph/interrupt/review change invalidates only
-  // graph intents in the action hook, never the page's own pending write.
-  const graphIdentity = graphView
-    ? `${graphView.run.id}#${graphView.pending?.interruptId ?? ''}#${graphView.pending?.reviewVersion ?? ''}#${graphView.review?.id ?? ''}`
-    : '';
+  // The exact waiting identity: a server run/interrupt/review change or an
+  // explicit history selection invalidates only graph intents in the action
+  // hook; a read that is only loading does not, so an uncertain confirm keeps
+  // its exact retry. The page's own pending write is never touched.
+  const graphIdentity = useGraphActionIdentity(graphSelectedId, graphView);
   // Successful writes re-read the authoritative case instead of applying the
   // response locally, so the displayed subject always matches the server.
   const onCompleted = useCallback(() => setReloadToken((value) => value + 1), []);
@@ -266,10 +266,10 @@ function Detail() {
         onReserve={() => actions.reserveProposal(data.detail.version)} onRefresh={() => setReloadToken(value => value + 1)} />}
       {reviewReader && <GraphReviewPanel load={graphLoad} view={graphView} historySelectedId={graphSelectedId} onSelectHistory={setGraphSelectedId}
         historyLoading={graphViewLoading} historyError={graphViewError} isOperator={isOperator} isApprover={isApprover} blocked={actionBlocked}
-        confirmPending={actions.pendingAction === 'graphConfirm'} lastSuccess={actions.lastSuccess}
+        reservePending={actions.pendingAction === 'graphReserve' || actions.pendingAction === 'graphSuccessor'} confirmPending={actions.pendingAction === 'graphConfirm'} lastSuccess={actions.lastSuccess}
         onReserve={() => actions.graphReserve(data.detail.version)} onSuccessor={(predecessorId) => actions.graphSuccessor(predecessorId, data.detail.version)}
         onConfirm={(command) => actions.graphConfirm(command)} onRefresh={() => setReloadToken(value => value + 1)}
-        proofSelected={selectedProof !== null && proposalSelection?.kind === 'graph'}
+        proofCandidate={graphCandidateProof} proofSelected={selectedProof !== null && proposalSelection?.kind === 'graph'}
         onSelectProof={(proof) => setProposalSelection(proof ? { ...proof, identity, kind: 'graph' } : null)} />}
       <div className="tabs" role="tablist" aria-label="청구서 상세">
         {tabs.map(([id, label]) => (

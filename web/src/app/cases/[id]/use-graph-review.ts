@@ -14,6 +14,28 @@ import type { SectionState } from './use-case-detail.ts';
 export type GraphLoad = SectionState<GraphPage> | { status: 'loading' };
 export type GraphRunLoad = SectionState<GraphView> | { status: 'loading' } | { status: 'idle' };
 
+// The exact server identity of a displayed run: a new run, interrupt, review
+// version or saved review is a new human-review target.
+export function graphServerIdentity(view: GraphView): string {
+  return `${view.run.id}#${view.pending?.interruptId ?? ''}#${view.pending?.reviewVersion ?? ''}#${view.review?.id ?? ''}`;
+}
+
+// The identity the action hook invalidates graph intents on. A read that is
+// merely loading (view null) must keep the last server identity so an uncertain
+// confirm survives a refresh back to the same wait; only a real server target
+// change or an explicit history selection change replaces it.
+export function useGraphActionIdentity(selection: string | null, view: GraphView | null): string {
+  const serverNow = view ? graphServerIdentity(view) : null;
+  const [epoch, setEpoch] = useState<{ selection: string | null; server: string }>({ selection, server: serverNow ?? '' });
+  if (epoch.selection !== selection) {
+    setEpoch({ selection, server: serverNow ?? '' });
+  } else if (serverNow !== null && serverNow !== epoch.server) {
+    setEpoch({ selection, server: serverNow });
+  }
+  const server = serverNow ?? (epoch.selection === selection ? epoch.server : '');
+  return `${selection ?? 'latest'}#${server}`;
+}
+
 export function useGraphReview({ credentials, sessionId, caseId, enabled, reloadToken, onUnauthorized }: {
   credentials: Credentials | null; sessionId: number; caseId: string; enabled: boolean; reloadToken: number; onUnauthorized: () => void;
 }): GraphLoad {

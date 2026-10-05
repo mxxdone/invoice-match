@@ -5,7 +5,7 @@
 // supported versions or hashes; those come from the Core projection. The real
 // item mapping and supplement stay on the existing page actions.
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { formatInstant } from '../../api/contract';
 import type {
   CandidateSource,
@@ -58,12 +58,16 @@ function Source({ view, source }: { view: GraphView; source: CandidateSource }) 
     : <p>원문 위치를 표시할 수 없습니다.</p>;
 }
 
-function RunSummary({ view, isOperator, blocked, pending, onReserve, onSuccessor }: {
-  view: GraphView; isOperator: boolean; blocked: boolean; pending: boolean;
-  onReserve: () => void; onSuccessor: () => void;
+function RunSummary({ view, enabled, isOperator, blocked, pending, onSuccessor }: {
+  view: GraphView; enabled: boolean; isOperator: boolean; blocked: boolean; pending: boolean;
+  onSuccessor: () => void;
 }) {
   const run = view.run;
-  const stale = run.status === 'STALE' || !run.current;
+  const oldInput = run.status === 'STALE' || !run.current;
+  // Reservation/successor are only offered when the server reports a supported
+  // run and the workflow is enabled; an unsupported stored version is metadata
+  // only and never looks like it can be resumed or re-reserved.
+  const canReserve = enabled && run.supported;
   return (
     <>
       <div className="review-note" role="status">
@@ -79,15 +83,14 @@ function RunSummary({ view, isOperator, blocked, pending, onReserve, onSuccessor
         {run.predecessorId && <p>이전 실행 {run.predecessorId}</p>}
         <p>생성 {formatInstant(run.createdAt)}</p>
       </details>
-      {!run.supported && <p className="review-note">지원하지 않는 저장 버전입니다. 메타데이터만 표시하며 자동으로 복원하지 않습니다.</p>}
+      {!run.supported && <p className="review-note">지원하지 않는 저장 형식입니다. 요약 정보만 표시하며 자동으로 복원하거나 다시 예약하지 않습니다.</p>}
       {run.errorCode && (run.status === 'FAILED'
         ? <p role="alert">분석 오류: {run.errorCode}. 원인을 해결하고 최신 입력을 준비해야 합니다.</p>
         : <p>이전 시도 오류: {run.errorCode}</p>)}
-      {stale && <p className="review-warning">이전 입력으로 만든 실행입니다. 현재 자료의 승인 근거로 사용할 수 없습니다.</p>}
-      {isOperator && (
+      {oldInput && run.supported && <p className="review-warning">이전 입력으로 만든 분석입니다. 현재 자료의 승인 근거로 사용할 수 없습니다.</p>}
+      {isOperator && canReserve && (
         <div className="dialog-actions">
-          {run.status === 'STALE' && <button className="button" disabled={blocked} onClick={onSuccessor}>{pending ? '예약 중…' : '이 입력으로 새 실행 예약'}</button>}
-          <button className="button" disabled={blocked} onClick={onReserve}>{pending ? '예약 중…' : '그래프 분석 예약'}</button>
+          {oldInput && <button className="button" disabled={blocked} onClick={onSuccessor}>{pending ? '예약 중…' : '이 입력으로 새 분석 예약'}</button>}
         </div>
       )}
     </>
@@ -219,12 +222,11 @@ function ReviewRecord({ review }: { review: NonNullable<GraphView['review']> }) 
   );
 }
 
-function CompletedPayload({ view, isApprover, proofSelected, blocked, onSelectProof }: {
-  view: GraphView; isApprover: boolean; proofSelected: boolean; blocked: boolean; onSelectProof: (proof: SelectedProposal | null) => void;
+function CompletedPayload({ view, isApprover, proofCandidate, proofSelected, blocked, onSelectProof }: {
+  view: GraphView; isApprover: boolean; proofCandidate: SelectedProposal | null; proofSelected: boolean; blocked: boolean; onSelectProof: (proof: SelectedProposal | null) => void;
 }) {
   const payload = view.payload;
   if (!payload) return <p>완료된 결과가 저장되면 후보와 근거가 표시됩니다.</p>;
-  const proposal = view.run.payloadHash ? { proposalId: view.run.id, proposalHash: view.run.payloadHash } : null;
   return (
     <>
       <h3>처리 초안 · {label(RECOMMENDATION_LABELS, payload.resolution.result.recommendation)}</h3>
@@ -244,11 +246,14 @@ function CompletedPayload({ view, isApprover, proofSelected, blocked, onSelectPr
       <details><summary>적용 정책 근거 · {payload.policyEvidence.status}</summary>{payload.policyEvidence.result.map((chunk) => (
         <div className="proposal-entry" key={chunk.chunkId}><strong>{chunk.title} · 버전 {chunk.documentVersion} · {chunk.page}쪽 · 문단 {chunk.paragraph}</strong><blockquote>{chunk.text}</blockquote></div>
       ))}</details>
-      {isApprover && proposal && (
+      {isApprover && proofCandidate && (
         <label className="proposal-choice">
-          <input type="checkbox" disabled={blocked} checked={proofSelected} onChange={(event) => onSelectProof(event.target.checked ? proposal : null)} />
-          이 그래프 제안을 검토 근거에 포함
+          <input type="checkbox" disabled={blocked} checked={proofSelected} onChange={(event) => onSelectProof(event.target.checked ? proofCandidate : null)} />
+          이 AI 제안을 검토 근거에 포함
         </label>
+      )}
+      {isApprover && !proofCandidate && (
+        <p className="review-warning">현재 입력의 완료 제안이 아니므로 검토 근거로 선택할 수 없습니다.</p>
       )}
       <details className="snapshot-technical"><summary>분석 기준 확인</summary><p>증빙 {payload.evidenceBundleId} · 대사 {payload.matchResultId}</p><p>제안 {view.run.id}</p><p>결과 hash {view.run.payloadHash}</p><p>입력 hash {view.run.contextHash}</p></details>
     </>
@@ -256,7 +261,7 @@ function CompletedPayload({ view, isApprover, proofSelected, blocked, onSelectPr
 }
 
 export function GraphReviewPanel({
-  load, view, historySelectedId, onSelectHistory, historyLoading, historyError, isOperator, isApprover, blocked, confirmPending, lastSuccess, onReserve, onSuccessor, onConfirm, onRefresh, proofSelected, onSelectProof,
+  load, view, historySelectedId, onSelectHistory, historyLoading, historyError, isOperator, isApprover, blocked, reservePending, confirmPending, lastSuccess, onReserve, onSuccessor, onConfirm, onRefresh, proofCandidate, proofSelected, onSelectProof,
 }: {
   load: GraphLoad;
   view: GraphView | null;
@@ -267,49 +272,69 @@ export function GraphReviewPanel({
   isOperator: boolean;
   isApprover: boolean;
   blocked: boolean;
+  reservePending: boolean;
   confirmPending: boolean;
   lastSuccess: MutationOperation | null;
   onReserve: () => void;
   onSuccessor: (predecessorId: string) => void;
   onConfirm: (command: GraphConfirmCommand) => void;
   onRefresh: () => void;
+  proofCandidate: SelectedProposal | null;
   proofSelected: boolean;
   onSelectProof: (proof: SelectedProposal | null) => void;
 }) {
   if (load.status === 'forbidden') return null;
-  if (load.status === 'loading') return <section className="form-section proposal-panel" aria-label="그래프 검토"><h2>그래프 검토</h2><p role="status">그래프 분석 상태를 확인하고 있습니다.</p></section>;
-  if (load.status === 'error') return <section className="form-section proposal-panel" aria-label="그래프 검토"><h2>그래프 검토</h2><p role="alert">{load.message}</p><button className="button" onClick={onRefresh}>다시 조회</button></section>;
+  if (load.status === 'loading') return <section className="form-section proposal-panel" aria-label="AI 확인·재개"><h2>AI 확인·재개</h2><p role="status">AI 분석 상태를 확인하고 있습니다.</p></section>;
+  if (load.status === 'error') return <section className="form-section proposal-panel" aria-label="AI 확인·재개"><h2>AI 확인·재개</h2><p role="alert">{load.message}</p><button className="button" onClick={onRefresh}>다시 조회</button></section>;
   if (load.status !== 'ready') return null;
 
   const page: GraphPage = load.data;
   const history: GraphSummary[] = page.history;
+  // The default-off workflow keeps the existing AI-off screen: an empty graph
+  // panel is hidden entirely, while any stored history stays visible read-only.
+  if (!page.enabled && history.length === 0) return null;
 
-  return <section className="form-section proposal-panel" aria-label="그래프 검토">
-    <div className="section-heading"><h2>그래프 검토</h2><span>사람 확인이 필요한 경우에만 멈추고, 저장 후 재개합니다</span></div>
-    <p>그래프 결과는 참고 자료입니다. 실제 품목 매핑과 보완은 아래 기존 검토 동작에서 사람이 결정합니다.</p>
-    {!page.enabled && <p className="review-note">그래프 신규 분석이 비활성화되어 있습니다. 기존 이력은 그대로 조회합니다.</p>}
+  let body: ReactNode = null;
+  if (view && view.run.supported && view.pending && page.enabled && view.run.current && view.run.status === 'WAITING_HUMAN') {
+    body = <>
+      <CandidateList view={view} pending={view.pending} />
+      {isOperator
+        ? <ConfirmForm key={`${view.run.id}#${view.pending.interruptId}#${view.pending.reviewVersion}`} view={view} pending={view.pending} blocked={blocked} inFlight={confirmPending} onConfirm={onConfirm} />
+        : <p className="review-note">운영자만 사람 확인을 저장할 수 있습니다.</p>}
+    </>;
+  } else if (view && view.run.supported && view.pending && !page.enabled) {
+    body = <p className="review-note">AI 확인·재개가 비활성화되어 저장할 수 없습니다. 기존 기록만 조회합니다.</p>;
+  } else if (view && view.run.supported && view.pending) {
+    body = <p className="review-warning">현재 입력의 대기가 아니어서 확인을 저장할 수 없습니다. 최신 입력으로 다시 분석해야 합니다.</p>;
+  } else if (view && view.run.supported && view.run.status === 'COMPLETED') {
+    body = <CompletedPayload view={view} isApprover={isApprover} proofCandidate={proofCandidate} proofSelected={proofSelected} blocked={blocked} onSelectProof={onSelectProof} />;
+  } else if (view && view.run.supported) {
+    body = <p>대기 중인 사람 확인이 없습니다.</p>;
+  }
+
+  return <section className="form-section proposal-panel" aria-label="AI 확인·재개">
+    <div className="section-heading"><h2>AI 확인·재개</h2><span>사람 확인이 필요한 경우에만 멈추고, 저장 후 재개합니다</span></div>
+    <p>AI 분석 결과는 참고 자료입니다. 실제 품목 매핑과 보완은 아래 기존 검토 동작에서 사람이 결정합니다.</p>
+    {!page.enabled && <p className="review-note">AI 신규 분석이 비활성화되어 있습니다. 기존 이력은 그대로 조회합니다.</p>}
     <div className="dialog-actions">
-      <button className="button" disabled={blocked} onClick={onRefresh}>그래프 상태 새로 조회</button>
-      {historySelectedId && <button className="button" disabled={blocked} onClick={() => onSelectHistory(null)}>최신 실행 보기</button>}
+      <button className="button" disabled={blocked} onClick={onRefresh}>AI 분석 상태 새로 조회</button>
+      {historySelectedId && <button className="button" disabled={blocked} onClick={() => onSelectHistory(null)}>최신 분석 보기</button>}
     </div>
-    {!view && historyLoading ? <p role="status">선택한 그래프 실행을 확인하고 있습니다.</p> : null}
+    {!view && historyLoading ? <p role="status">선택한 분석을 확인하고 있습니다.</p> : null}
     {!view && historyError ? <p role="alert">{historyError}</p> : null}
-    {!view && !historyLoading && !historyError ? <p>예약된 그래프 분석이 없습니다. 파서 완료와 최신 대사 후 운영자가 예약할 수 있습니다.</p> : null}
+    {!view && !historyLoading && !historyError ? <>
+      <p>예약된 AI 분석이 없습니다. 파서 완료와 최신 대사 후 운영자가 예약할 수 있습니다.</p>
+      {page.enabled && isOperator && <div className="dialog-actions"><button className="button" disabled={blocked} onClick={onReserve}>{reservePending ? '예약 중…' : 'AI 분석 예약'}</button></div>}
+    </> : null}
     {view ? <>
-      <RunSummary view={view} isOperator={isOperator} blocked={blocked} pending={confirmPending} onReserve={onReserve} onSuccessor={() => onSuccessor(view.run.id)} />
+      <RunSummary view={view} enabled={page.enabled} isOperator={isOperator} blocked={blocked} pending={reservePending} onSuccessor={() => onSuccessor(view.run.id)} />
       {view.review && <ReviewRecord review={view.review} />}
-      {!view.run.supported ? null : view.pending
-        ? <><CandidateList view={view} pending={view.pending} />{isOperator
-              ? <ConfirmForm key={`${view.run.id}#${view.pending.interruptId}#${view.pending.reviewVersion}`} view={view} pending={view.pending} blocked={blocked} inFlight={confirmPending} onConfirm={onConfirm} />
-              : <p className="review-note">운영자만 사람 확인을 저장할 수 있습니다.</p>}</>
-        : view.run.status === 'COMPLETED'
-          ? <CompletedPayload view={view} isApprover={isApprover} proofSelected={proofSelected} blocked={blocked} onSelectProof={onSelectProof} />
-          : <p>대기 중인 사람 확인이 없습니다.</p>}
+      {body}
     </> : null}
     {lastSuccess === 'graphConfirm' && <div className="review-note" role="status"><span className="status-dot" /><span>사람 확인이 저장되어 재개가 예약되었습니다. 완료 여부는 서버 재조회로 확인합니다.</span></div>}
     {history.length > 1 && (
       <details open={historySelectedId !== null}>
-        <summary>그래프 실행 이력</summary>
+        <summary>AI 분석 이력</summary>
         <ul className="graph-history">
           {history.map((run) => (
             <li key={run.id}>

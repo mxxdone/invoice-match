@@ -48,6 +48,14 @@ export type CaseActionsOptions = {
 
 export type UnresolvedAction = { operation: MutationOperation; requestId: string };
 
+// Deep-copies the plain-JSON confirmation command so the frozen retry body can
+// never be changed by a later caller mutation. structuredClone is used when
+// present; the JSON fallback is equivalent for this wire shape.
+function cloneCommand(command: GraphConfirmCommand): GraphConfirmCommand {
+  if (typeof globalThis.structuredClone === 'function') return globalThis.structuredClone(command);
+  return JSON.parse(JSON.stringify(command)) as GraphConfirmCommand;
+}
+
 type FrozenAction = {
   operation: MutationOperation;
   requestId: string;
@@ -78,6 +86,14 @@ export function useCaseActions({
   const credentialsRef = useRef(credentials);
   const alive = useRef(false);
   const generations = useRef(new Generation());
+  // The in-flight operation is tracked so a graph identity change can cancel
+  // only a graph request, never a page write that is still valid.
+  const activeRef = useRef<{ token: number; operation: MutationOperation } | null>(null);
+  // Reads the live identity from refs at call time, so a late response is
+  // checked against the current session/case/graph instead of a captured value.
+  const currentIdentity = useCallback((operation: MutationOperation): string => isGraphOperation(operation)
+    ? `${sessionRef.current}#${caseIdRef.current}#${graphRef.current}`
+    : `${sessionRef.current}#${caseIdRef.current}`, []);
 
   // A session or case change resets the visible action state during render; the
   // effect below only clears refs so no late response can mark another case done.
@@ -109,22 +125,32 @@ export function useCaseActions({
     caseIdRef.current = caseId;
     generations.current.next();
     frozen.current = null;
+    activeRef.current = null;
     activeController.current?.abort();
   }, [sessionId, caseId]);
 
-  // A graph/interrupt/review change drops only graph intents; a page action that
-  // is in flight or unresolved keeps its identity and is not invalidated.
-  useEffect(() => {
-    graphRef.current = graphIdentity;
-    const existing = frozen.current;
-    if (existing && isGraphOperation(existing.operation)) {
-      frozen.current = null;
-      setUnresolved(null);
-      setPendingAction(null);
-      return;
-    }
+  // A graph/interrupt/review change drops only graph intents. The visible
+  // graph-only state is reset during render (like the session/case marker); the
+  // effect updates the live refs and cancels an in-flight graph request by
+  // advancing the generation, so even an A→B→A return can never revive its late
+  // response, while a page write keeps its identity and is never cancelled.
+  const [graphMarker, setGraphMarker] = useState(graphIdentity);
+  if (graphMarker !== graphIdentity) {
+    setGraphMarker(graphIdentity);
     setUnresolved((current) => (current && isGraphOperation(current.operation) ? null : current));
     setPendingAction((current) => (current && isGraphOperation(current) ? null : current));
+  }
+
+  useEffect(() => {
+    graphRef.current = graphIdentity;
+    const active = activeRef.current;
+    if (active && isGraphOperation(active.operation)) {
+      generations.current.next();
+      activeController.current?.abort();
+      activeRef.current = null;
+    }
+    const existing = frozen.current;
+    if (existing && isGraphOperation(existing.operation)) frozen.current = null;
   }, [graphIdentity]);
 
   const run = useCallback(
@@ -140,7 +166,7 @@ export function useCaseActions({
         setFailure(unauthorized);
         return false;
       }
-      const graphAtStart = graphRef.current;
+      const identity = currentIdentity(operation);
       const token = generations.current.next();
       const signature = intentSignature(operation, businessPayload);
       const existing = frozen.current;
@@ -161,7 +187,7 @@ export function useCaseActions({
             operation,
             requestId: newRequestId('web'),
             signature,
-            identity: isGraphOperation(operation) ? `${sessionId}#${runCaseId}#${graphAtStart}` : `${sessionId}#${runCaseId}`,
+            identity,
             payload: businessPayload,
             invoke,
           };
@@ -170,11 +196,12 @@ export function useCaseActions({
       if (alive.current && generations.current.isCurrent(token)) setPendingAction(operation);
       const controller = new AbortController();
       activeController.current = controller;
+      activeRef.current = { token, operation };
       const stillCurrent = () => alive.current
         && generations.current.isCurrent(token)
         && sessionRef.current === sessionId
         && caseIdRef.current === runCaseId
-        && (!isGraphOperation(operation) || graphRef.current === graphAtStart);
+        && currentIdentity(operation) === identity;
       try {
         await intent.invoke(intent.requestId, controller.signal);
         if (!stillCurrent()) return false;
@@ -204,19 +231,18 @@ export function useCaseActions({
           onUnauthorized();
         }
         return false;
+      } finally {
+        if (activeRef.current?.token === token) activeRef.current = null;
       }
     },
-    [caseId, onCompleted, onUnauthorized, sessionId],
+    [caseId, currentIdentity, onCompleted, onUnauthorized, sessionId],
   );
 
   const retry = useCallback(async (): Promise<boolean> => {
     const intent = frozen.current;
     if (!intent) return false;
     const runCaseId = caseIdRef.current;
-    const expectedIdentity = isGraphOperation(intent.operation)
-      ? `${sessionRef.current}#${runCaseId}#${graphRef.current}`
-      : `${sessionRef.current}#${runCaseId}`;
-    if (intent.identity !== expectedIdentity) {
+    if (intent.identity !== currentIdentity(intent.operation)) {
       frozen.current = null;
       setUnresolved(null);
       return false;
@@ -226,9 +252,17 @@ export function useCaseActions({
     setPendingAction(intent.operation);
     const controller = new AbortController();
     activeController.current = controller;
+    activeRef.current = { token, operation: intent.operation };
+    // Re-read the live identity after the await (and on failure) so a request
+    // that changed session/case/graph while it was in flight can never mark the
+    // new identity complete or sign it out.
+    const stillCurrent = () => alive.current
+      && generations.current.isCurrent(token)
+      && caseIdRef.current === runCaseId
+      && currentIdentity(intent.operation) === intent.identity;
     try {
       await intent.invoke(intent.requestId, controller.signal);
-      if (!alive.current || !generations.current.isCurrent(token) || caseIdRef.current !== runCaseId || intent.identity !== expectedIdentity) return false;
+      if (!stillCurrent()) return false;
       frozen.current = null;
       setUnresolved(null);
       setPendingAction(null);
@@ -236,14 +270,17 @@ export function useCaseActions({
       onCompleted(intent.operation);
       return true;
     } catch (caught) {
-      if (!alive.current || !generations.current.isCurrent(token) || caseIdRef.current !== runCaseId) return false;
+      if (caught instanceof Error && caught.name === 'AbortError') return false;
+      if (!stillCurrent()) return false;
       const classified = classifyMutationFailure(caught);
       if (classified.kind === 'unauthorized') onUnauthorized();
       setPendingAction(null);
       setFailure(classified);
       return false;
+    } finally {
+      if (activeRef.current?.token === token) activeRef.current = null;
     }
-  }, [onCompleted, onUnauthorized]);
+  }, [currentIdentity, onCompleted, onUnauthorized]);
 
   return {
     pendingAction,
@@ -300,10 +337,15 @@ export function useCaseActions({
       [run, caseId],
     ),
     graphConfirm: useCallback(
-      (command: GraphConfirmCommand) => run('graphConfirm', { caseId, ...command }, (requestId, signal) => {
-        const { graphId, ...review } = command;
-        return confirmGraphReview(credentialsRef.current as Credentials, caseId, graphId, { ...review, requestId }, signal);
-      }),
+      (command: GraphConfirmCommand) => {
+        // Freeze the exact intent at call time: a later mutation of the caller's
+        // reason/confirmation objects must not rewrite the retried body.
+        const frozenCommand = cloneCommand(command);
+        return run('graphConfirm', { caseId, ...frozenCommand }, (requestId, signal) => {
+          const { graphId, ...review } = frozenCommand;
+          return confirmGraphReview(credentialsRef.current as Credentials, caseId, graphId, { ...review, requestId }, signal);
+        });
+      },
       [run, caseId],
     ),
   };

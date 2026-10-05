@@ -10,7 +10,7 @@ for (const key of Object.getOwnPropertyNames(dom.window)) {
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement, act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { useGraphReview, useGraphRun } = await import('../src/app/cases/[id]/use-graph-review.ts');
+const { useGraphReview, useGraphRun, useGraphActionIdentity, graphServerIdentity } = await import('../src/app/cases/[id]/use-graph-review.ts');
 const { GraphReviewPanel } = await import('../src/app/cases/[id]/graph-review-panel.tsx');
 
 const credentials = { username: 'operator', password: 'fixture' };
@@ -77,8 +77,8 @@ const view = { run, pending, review: null, payload: null, sources: [{ id: 's1', 
 const graphPage = { enabled: true, latest: view, history: [run] };
 const baseProps = {
   load: { status: 'ready', data: graphPage }, view, historySelectedId: null, onSelectHistory() {},
-  historyLoading: false, historyError: null, isOperator: true, isApprover: false, blocked: false, confirmPending: false,
-  lastSuccess: null, onReserve() {}, onSuccessor() {}, onConfirm() {}, onRefresh() {}, proofSelected: false, onSelectProof() {},
+  historyLoading: false, historyError: null, isOperator: true, isApprover: false, blocked: false, reservePending: false, confirmPending: false,
+  lastSuccess: null, onReserve() {}, onSuccessor() {}, onConfirm() {}, onRefresh() {}, proofCandidate: null, proofSelected: false, onSelectProof() {},
 };
 
 async function renderPanel(overrides = {}) {
@@ -86,6 +86,27 @@ async function renderPanel(overrides = {}) {
   await act(async () => root.render(createElement(GraphReviewPanel, { ...baseProps, ...overrides })));
   return { container, async close() { await act(async () => root.unmount()); container.remove(); } };
 }
+
+let identityLatest;
+function IdentityHarness({ selection, view: v }) { identityLatest = useGraphActionIdentity(selection, v); return null; }
+
+test('graph action identity survives a read loading but changes on the server wait or history selection', async () => {
+  const container = document.createElement('div'); document.body.appendChild(container); const root = createRoot(container);
+  const render = (props) => act(async () => root.render(createElement(IdentityHarness, props)));
+  try {
+    await render({ selection: null, view });
+    const loaded = identityLatest;
+    assert.equal(loaded, `latest#${graphServerIdentity(view)}`);
+    await render({ selection: null, view: null });
+    assert.equal(identityLatest, loaded, 'a merely loading read must keep the identity');
+    await render({ selection: null, view: { ...view, review: { id: 'r1', actor: 'op', reason: 'x', confirmation: {}, createdAt: '', resumeStatus: 'QUEUED' } } });
+    const changed = identityLatest;
+    assert.notEqual(changed, loaded, 'a new server wait/review must change the identity');
+    await render({ selection: 'history-1', view: null });
+    assert.equal(identityLatest, 'history-1#', 'an explicit history selection starts a new identity even while loading');
+    assert.notEqual(identityLatest, changed);
+  } finally { await act(async () => root.unmount()); container.remove(); }
+});
 
 test('the graph panel is hidden for a non-reviewer and shows a single confirm surface for an operator', async () => {
   const hidden = await renderPanel({ load: { status: 'forbidden' } });
@@ -126,11 +147,59 @@ test('a completed current graph proposal can be selected as the single freeze pr
   const completed = { run: { ...run, status: 'COMPLETED', payloadHash: 'hash-g' }, pending: null, review: null, payload: { resolution: { result: { recommendation: 'REVIEW_REQUIRED', summary: 's', warnings: [], citations: [] } }, document: { result: { fields: [], lines: [], warnings: [] } }, mapping: { result: { lines: [] } }, policyEvidence: { status: 'NOT_REQUIRED', result: [] }, facts: {}, schemaVersion: 'advisory-proposal-v2', graphVersion: 'v1', humanReview: { reviewId: 'r', confirmationHash: 'h', confirmation: {} } }, sources: [] };
   const page2 = { enabled: true, latest: completed, history: [completed.run] };
   const selected = [];
-  const panel = await renderPanel({ load: { status: 'ready', data: page2 }, view: completed, isOperator: false, isApprover: true, onSelectProof: (proof) => selected.push(proof) });
+  const panel = await renderPanel({ load: { status: 'ready', data: page2 }, view: completed, isOperator: false, isApprover: true, proofCandidate: { proposalId: 'g1', proposalHash: 'hash-g' }, onSelectProof: (proof) => selected.push(proof) });
   try {
     const checkbox = [...panel.container.querySelectorAll('input[type=checkbox]')][0];
     assert.ok(checkbox, 'the approver sees the graph proof checkbox');
     await act(async () => checkbox.click());
     assert.deepEqual(selected, [{ proposalId: 'g1', proposalHash: 'hash-g' }]);
   } finally { await panel.close(); }
+});
+
+test('an operator can start the first analysis when there is no run yet', async () => {
+  const empty = { enabled: true, latest: null, history: [] };
+  let reserved = 0;
+  const panel = await renderPanel({ load: { status: 'ready', data: empty }, view: null, onReserve: () => { reserved += 1; } });
+  try {
+    const button = [...panel.container.querySelectorAll('button')].find((b) => b.textContent.includes('AI 분석 예약'));
+    assert.ok(button, 'the first-reserve button is offered');
+    await act(async () => button.click());
+    assert.equal(reserved, 1);
+  } finally { await panel.close(); }
+});
+
+test('a disabled workflow hides an empty panel and never offers reserve or confirm, but keeps history readable', async () => {
+  const emptyOff = { enabled: false, latest: null, history: [] };
+  const hidden = await renderPanel({ load: { status: 'ready', data: emptyOff }, view: null });
+  try { assert.equal(hidden.container.textContent, ''); } finally { await hidden.close(); }
+
+  const historyOff = { enabled: false, latest: view, history: [run, { ...run, id: 'g0' }] };
+  let reserved = 0;
+  const off = await renderPanel({ load: { status: 'ready', data: historyOff }, view, onReserve: () => { reserved += 1; } });
+  try {
+    assert.doesNotMatch(off.container.textContent, /사람 확인 저장/);
+    assert.doesNotMatch(off.container.textContent, /AI 분석 예약/);
+    assert.match(off.container.textContent, /AI 분석 이력/);
+    assert.match(off.container.textContent, /AI 신규 분석이 비활성화되어 있습니다/);
+    assert.equal(reserved, 0);
+  } finally { await off.close(); }
+});
+
+test('an unsupported stored run shows metadata only and offers no reserve, confirm or proof', async () => {
+  const unsupported = { run: { ...run, supported: false, status: 'COMPLETED', payloadHash: 'h' }, pending, review: null, payload: null, sources: [] };
+  const page3 = { enabled: true, latest: unsupported, history: [unsupported.run] };
+  const panel = await renderPanel({ load: { status: 'ready', data: page3 }, view: unsupported, isApprover: true, proofCandidate: null });
+  try {
+    assert.match(panel.container.textContent, /지원하지 않는 저장 형식입니다/);
+    assert.doesNotMatch(panel.container.textContent, /AI 분석 예약/);
+    assert.doesNotMatch(panel.container.textContent, /사람 확인 저장/);
+    assert.equal(panel.container.querySelectorAll('input[type=checkbox]').length, 0);
+  } finally { await panel.close(); }
+});
+
+test('resume status labels map the Core terminal values', async () => {
+  const { presentGraphResumeStatus } = await import('../src/app/cases/[id]/graph-model.ts');
+  assert.equal(presentGraphResumeStatus('COMPLETED'), '재개 완료');
+  assert.equal(presentGraphResumeStatus('CANCELLED'), '재개 취소');
+  assert.equal(presentGraphResumeStatus('QUEUED'), '재개 대기');
 });
