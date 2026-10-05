@@ -25,6 +25,16 @@ public class GraphStore {
         return jdbc.query("select *,lease_until>clock_timestamp() lease_active from graph_run where invoice_case_id=? and context_hash=?",
                 (rs,n)->run(rs), caseId, hash).stream().findFirst();
     }
+    /** Normal read projection; never takes a row lock. */
+    public Optional<GraphRun> read(UUID id) {
+        return jdbc.query("select *,lease_until>clock_timestamp() lease_active from graph_run where id=?",
+                (rs,n)->run(rs),id).stream().findFirst();
+    }
+    /** Newest first, bounded history of one case; never takes a row lock. */
+    public List<GraphRun> recent(UUID caseId) {
+        return jdbc.query("select *,lease_until>clock_timestamp() lease_active from graph_run where invoice_case_id=?"
+                + " order by created_at desc,id desc limit 20",(rs,n)->run(rs),caseId);
+    }
     public List<UUID> lockCaseRuns(UUID caseId) {
         return jdbc.query("select id from graph_run where invoice_case_id=? and status<>'STALE' order by id for update",
                 (rs,n)->rs.getObject(1,UUID.class),caseId);
@@ -146,10 +156,11 @@ public class GraphStore {
     public void queueResume(UUID id) {
         jdbc.update("update graph_run set status='QUEUED',active_segment='RESUME',updated_at=clock_timestamp() where id=?",id);
     }
-    public record Review(UUID id,String confirmation,String hash,String actor,String reason) {}
+    public record Review(UUID id,String confirmation,String hash,String actor,String reason,Instant createdAt) {}
     public Optional<Review> review(UUID id) {
         return jdbc.query("select * from graph_review where run_id=?",(rs,n)->new Review(rs.getObject("id",UUID.class),
-            rs.getString("confirmation"),rs.getString("confirmation_hash"),rs.getString("actor"),rs.getString("reason")),id).stream().findFirst();
+            rs.getString("confirmation"),rs.getString("confirmation_hash"),rs.getString("actor"),rs.getString("reason"),
+            rs.getTimestamp("created_at").toInstant()),id).stream().findFirst();
     }
     public boolean reviewConsumed(UUID id,UUID review) {
         return Boolean.TRUE.equals(jdbc.queryForObject("select exists(select 1 from graph_resume_consumption where run_id=? and review_id=?)",Boolean.class,id,review));
@@ -199,8 +210,10 @@ public class GraphStore {
         var until=rs.getTimestamp("lease_until");
         return new GraphRun(rs.getObject("id",UUID.class),rs.getObject("invoice_case_id",UUID.class),rs.getLong("case_version"),
                 rs.getString("context"),rs.getString("context_hash"),rs.getString("status"),rs.getString("active_segment"),
-                rs.getInt("start_attempts"),rs.getInt("resume_attempts"),rs.getObject("execution_token",UUID.class),
-                until==null?null:until.toInstant(),rs.getBoolean("lease_active"),rs.getInt("checkpoint_count"),rs.getInt("write_count"),rs.getInt("stored_bytes"));
+                rs.getInt("start_attempts"),rs.getInt("resume_attempts"),rs.getInt("reserved_calls"),rs.getInt("reserved_tokens"),
+                rs.getInt("tool_calls"),rs.getObject("execution_token",UUID.class),
+                until==null?null:until.toInstant(),rs.getBoolean("lease_active"),rs.getInt("checkpoint_count"),rs.getInt("write_count"),rs.getInt("stored_bytes"),
+                rs.getInt("checkpoint_schema"),rs.getString("error_code"),rs.getTimestamp("created_at").toInstant());
     }
     private static Checkpoint checkpoint(java.sql.ResultSet rs) throws java.sql.SQLException {
         return new Checkpoint(rs.getObject("checkpoint_id",UUID.class),rs.getObject("parent_id",UUID.class),

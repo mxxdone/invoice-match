@@ -5,8 +5,9 @@ import java.util.UUID;
 
 /** Frozen graph input with execution-segment counters independent of thread budgets. */
 public record GraphRun(UUID id, UUID caseId, long caseVersion, String context, String contextHash,
-        String status, String segment, int startAttempts, int resumeAttempts, UUID token,
-        Instant leaseUntil, boolean leaseActive, int checkpointCount, int writeCount, int storedBytes) {
+        String status, String segment, int startAttempts, int resumeAttempts, int reservedCalls, int reservedTokens,
+        int toolCalls, UUID token, Instant leaseUntil, boolean leaseActive, int checkpointCount, int writeCount,
+        int storedBytes, int checkpointSchema, String errorCode, Instant createdAt) {
     public static final String WORKFLOW = "ai-review-v2";
     public static final String GRAPH = "invoice-review-graph-v1";
     public static final String SERIALIZER = "graph-checkpoint-json-v1";

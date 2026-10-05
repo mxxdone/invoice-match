@@ -7,6 +7,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import org.springframework.stereotype.Component;
 
 /** Confirms opinions about frozen candidates; never changes document values or item mappings. */
@@ -16,7 +17,9 @@ public class GraphReviewValidator {
     private final GraphPayloadValidator wire;
     private final com.fasterxml.jackson.databind.ObjectMapper mapper;
     public GraphReviewValidator(ProposalStageValidator stages,GraphPayloadValidator wire,com.fasterxml.jackson.databind.ObjectMapper mapper) {this.stages=stages;this.wire=wire;this.mapper=mapper;}
-    public void validate(GraphRun run,GraphStore.Waiting wait,JsonNode confirmation,GraphStore store) {
+    /** Frozen pending projection for reads; the same stored-stage/interrupt checks the confirm path uses. */
+    public record Pending(UUID documentStageRef,UUID mappingStageRef,List<String> reasonCodes,JsonNode document,JsonNode mapping) {}
+    public Pending pending(GraphRun run,GraphStore.Waiting wait,GraphStore store) {
         var saved=store.stages(run.id());var input=store.advisoryInput(run.id());var steps=store.validationSteps(run.id());
         var document=stage(saved,"document");var mapping=stage(saved,"mapping");
         // Revalidate the immutable outputs against their frozen original sources and server candidates.
@@ -27,13 +30,17 @@ public class GraphReviewValidator {
                 || !request.path("mappingStageRef").asText().equals(mapping.ref().toString()))throw invalid();
         var reasons=GraphStageService.humanReasons(steps);var actual=new HashSet<String>();request.path("reasonCodes").forEach(v->actual.add(v.asText()));
         if(!actual.equals(reasons) || reasons.isEmpty())throw invalid();
+        return new Pending(document.ref(),mapping.ref(),List.copyOf(reasons),document.payload().path("result"),mapping.payload().path("result"));
+    }
+    public void validate(GraphRun run,GraphStore.Waiting wait,JsonNode confirmation,GraphStore store) {
+        var pending=pending(run,wait,store);
         GraphPayloadValidator.keys(confirmation,"documentStageRef","mappingStageRef","documentDecision","itemDecisions");
-        if(!confirmation.path("documentStageRef").asText().equals(document.ref().toString())
-                || !confirmation.path("mappingStageRef").asText().equals(mapping.ref().toString()))throw invalid();
+        if(!confirmation.path("documentStageRef").asText().equals(pending.documentStageRef().toString())
+                || !confirmation.path("mappingStageRef").asText().equals(pending.mappingStageRef().toString()))throw invalid();
         String decision=GraphPayloadValidator.text(confirmation,"documentDecision");
-        if(!(reasons.contains("DOCUMENT_REVIEW_REQUIRED")?Set.of("CONFIRMED","NEEDS_CORRECTION"):Set.of("NOT_REQUIRED")).contains(decision))throw invalid();
+        if(!(pending.reasonCodes().contains("DOCUMENT_REVIEW_REQUIRED")?Set.of("CONFIRMED","NEEDS_CORRECTION"):Set.of("NOT_REQUIRED")).contains(decision))throw invalid();
         var expected=new HashMap<Integer,JsonNode>();
-        for(var line:mapping.payload().path("result").path("lines"))if(line.path("candidates").size()!=1)expected.put(line.path("lineNumber").asInt(),line);
+        for(var line:pending.mapping().path("lines"))if(line.path("candidates").size()!=1)expected.put(line.path("lineNumber").asInt(),line);
         var choices=confirmation.path("itemDecisions");
         if(!choices.isArray() || choices.size()!=expected.size() || choices.size()>100)throw invalid();
         var seen=new HashSet<Integer>();
