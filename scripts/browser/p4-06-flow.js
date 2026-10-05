@@ -29,7 +29,15 @@ async (page) => {
   });
 
   const must = (condition, message) => { if (!condition) throw new Error('ASSERT: ' + message); };
-  const shot = async (name) => { await page.screenshot({ path: `${OUT}/${name}.png` }); steps.push('shot:' + name); };
+  // Full-page captures so the Head can visually inspect the below-the-fold AI
+  // review panel (frozen source location plus the 0/2 mapping candidates), not
+  // just the top of the detail page. The frozen source proofs are collapsed
+  // <details>; expand them first so the quote is actually visible.
+  const shot = async (name) => { await page.screenshot({ path: `${OUT}/${name}.png`, fullPage: true }); steps.push('shot:' + name); };
+  const revealGraph = async () => {
+    await graphPanel().scrollIntoViewIfNeeded();
+    await graphPanel().locator('details.proposal-source').evaluateAll((nodes) => nodes.forEach((node) => { node.open = true; }));
+  };
   const onPath = (path) => new URL(page.url()).pathname === path;
   const caseIdFromUrl = () => { const m = page.url().match(/\/cases\/([0-9a-fA-F-]{36})/); must(m, 'case id in ' + page.url()); return m[1]; };
 
@@ -105,6 +113,7 @@ async (page) => {
       must(await selects.nth(1).locator('option').count() === 1, 'no-candidate line offers only unresolved');
       must(await selects.nth(1).locator('option').first().innerText() === '미해결로 기록', 'unresolved (null) option present');
       results.pendingRich = true;
+      await revealGraph();
       await shot('p4-06-01-pending-rich');
     } else if (STEP === 'approver-pending-read') {
       await switchUser(WEB, 'approver', 'approver-pass');
@@ -113,6 +122,7 @@ async (page) => {
       must(await graphPanel().getByRole('button', { name: '사람 확인 저장' }).count() === 0, 'approver cannot save a human confirmation');
       must((await graphPanel().innerText()).includes('운영자만 사람 확인을 저장할 수 있습니다'), 'approver sees the read-only notice');
       results.approverPendingReadOnly = true;
+      await revealGraph();
       await shot('p4-06-02-approver-pending-read');
     } else if (STEP === 'confirm') {
       await switchUser(WEB, 'operator', 'operator-pass');
@@ -125,6 +135,7 @@ async (page) => {
       await graphPanel().getByRole('button', { name: '사람 확인 저장' }).click();
       await page.getByText(/사람 확인이 저장되어 재개가 예약되었습니다/).first().waitFor({ timeout: 30000 });
       results.pendingConfirmed = true;
+      await revealGraph();
       await shot('p4-06-03-pending-confirmed');
     } else if (STEP === 'verify-completed') {
       await refreshGraph();

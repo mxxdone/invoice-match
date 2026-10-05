@@ -48,6 +48,12 @@ const steps = [];
 const record = (label) => { steps.push(label); console.log('PASS ' + label); };
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
+// Frozen thread budget shared by the graph contract (Plan Phase 4 common
+// contract): one thread spends at most 5 calls and 40,000 tokens across its
+// start and resume segments. A resume or redelivery must not reset it, so the
+// harness asserts the accumulated reservation stays inside these exact bounds.
+const GRAPH_THREAD_BUDGET = Object.freeze({ maxCalls: 5, maxTokens: 40000 });
+
 const IMAGE = {
   pg: process.env.PG_IMAGE ?? 'pgvector/pgvector:0.8.6-pg18-bookworm',
   rabbit: 'rabbitmq:4.2-alpine',
@@ -336,6 +342,23 @@ try {
       evidence.graphPayloadHash = await sql(`select payload_hash from graph_proposal where run_id='${evidence.graphRunId}'`);
       evidence.graphContextHash = await sql(`select context_hash from graph_run where id='${evidence.graphRunId}'`);
       if (evidence.resumeConsumption !== '1') throw new VerifyError(`expected one resume consumption, got ${evidence.resumeConsumption}`);
+      // Exact attempt/kill evidence: the start segment ran once, the killed
+      // resume attempt and the redelivered resume attempt make two, the worker
+      // really died by SIGKILL, and exactly one resume was consumed.
+      if (evidence.killExitCode !== 137) throw new VerifyError(`expected the resume worker to die by SIGKILL (137), got ${evidence.killExitCode}`);
+      if (evidence.startAttempts !== '1') throw new VerifyError(`expected exactly one start attempt, got ${evidence.startAttempts}`);
+      if (evidence.resumeAttempts !== '2') throw new VerifyError(`expected exactly two resume attempts, got ${evidence.resumeAttempts}`);
+      // The killed + redelivered resume must keep spending the same frozen
+      // thread budget instead of starting a fresh one.
+      const reservedCalls = Number(evidence.reservedCalls);
+      const reservedTokens = Number(evidence.reservedTokens);
+      if (reservedCalls !== 2) throw new VerifyError(`expected the fixture's two reserved model calls to be preserved, got ${evidence.reservedCalls}`);
+      if (!(reservedCalls > 0 && reservedCalls <= GRAPH_THREAD_BUDGET.maxCalls)) {
+        throw new VerifyError(`reserved calls ${evidence.reservedCalls} outside the frozen thread budget ${GRAPH_THREAD_BUDGET.maxCalls}`);
+      }
+      if (!(reservedTokens > 0 && reservedTokens <= GRAPH_THREAD_BUDGET.maxTokens)) {
+        throw new VerifyError(`reserved tokens ${evidence.reservedTokens} outside the frozen thread budget ${GRAPH_THREAD_BUDGET.maxTokens}`);
+      }
     }
   };
 
@@ -349,31 +372,48 @@ try {
     onBeforeStep,
   });
 
-  // Immutable DB evidence: the frozen snapshot must carry the exact completed
-  // graph proposal id and payload hash, and the graph review/business effects
-  // must be the real committed rows.
-  evidence.reviewSnapshotPayload = await sql(`select payload::text from review_snapshot order by snapshot_number asc limit 1`);
-  evidence.snapshotProposalIdMatches = evidence.reviewSnapshotPayload.includes(evidence.graphRunId ?? '');
-  evidence.snapshotProposalHashMatches = evidence.reviewSnapshotPayload.includes(evidence.graphPayloadHash ?? '');
-  if (!evidence.snapshotProposalIdMatches || !evidence.snapshotProposalHashMatches) {
-    throw new VerifyError('frozen snapshot does not carry the exact graph proposal id/hash');
+  // Immutable DB evidence: the case's first frozen snapshot must carry the
+  // exact completed graph proposal id, payload hash and context hash (parsed,
+  // not a substring of the whole payload), and the graph review/business
+  // effects must be the real committed rows.
+  evidence.reviewSnapshotPayload = await sql(`select payload::text from review_snapshot where invoice_case_id='${graphCase.id}' order by snapshot_number asc limit 1`);
+  const frozenSnapshot = JSON.parse(evidence.reviewSnapshotPayload);
+  const frozenProposal = frozenSnapshot.proposal ?? {};
+  evidence.snapshotProposalIdMatches = frozenProposal.id === evidence.graphRunId;
+  evidence.snapshotProposalPayloadHashMatches = frozenProposal.payloadHash === evidence.graphPayloadHash;
+  evidence.snapshotProposalContextHashMatches = frozenProposal.contextHash === evidence.graphContextHash;
+  if (!evidence.snapshotProposalIdMatches || !evidence.snapshotProposalPayloadHashMatches || !evidence.snapshotProposalContextHashMatches) {
+    throw new VerifyError('frozen snapshot does not carry the exact graph proposal id/payloadHash/contextHash');
   }
+  evidence.snapshotProposal = { id: frozenProposal.id, payloadHash: frozenProposal.payloadHash, contextHash: frozenProposal.contextHash };
   evidence.graphReviewId = await sql(`select id from graph_review where run_id='${evidence.graphRunId}' order by created_at asc limit 1`);
   evidence.graphReviewConfirmation = await sql(`select confirmation::text from graph_review where run_id='${evidence.graphRunId}' order by created_at asc limit 1`);
-  evidence.graphReviewHasCandidateChoice = evidence.graphReviewConfirmation.includes('ITEM-');
-  evidence.graphReviewHasUnresolved = /"itemId":\s*null/.test(evidence.graphReviewConfirmation);
-  if (!evidence.graphReviewHasCandidateChoice || !evidence.graphReviewHasUnresolved) {
-    throw new VerifyError('stored confirmation does not record one chosen candidate and one unresolved line');
+  const confirmation = JSON.parse(evidence.graphReviewConfirmation);
+  const itemDecisions = Array.isArray(confirmation.itemDecisions) ? confirmation.itemDecisions : [];
+  const candidateDecision = itemDecisions.find((decision) => decision.lineNumber === 1);
+  const unresolvedDecision = itemDecisions.find((decision) => decision.lineNumber === 2);
+  evidence.graphReviewItemDecisions = itemDecisions.map((decision) => ({
+    lineNumber: decision.lineNumber, itemId: decision.itemId, purchaseOrderLineId: decision.purchaseOrderLineId,
+  }));
+  evidence.graphReviewHasCandidateChoice = candidateDecision?.itemId === 'ITEM-A4-80' && candidateDecision?.purchaseOrderLineId === 'POL-1001-1';
+  evidence.graphReviewHasUnresolved = unresolvedDecision?.itemId === null && unresolvedDecision?.purchaseOrderLineId === null;
+  if (itemDecisions.length !== 2 || !evidence.graphReviewHasCandidateChoice || !evidence.graphReviewHasUnresolved) {
+    throw new VerifyError(`stored confirmation does not record the exact ITEM-A4-80/POL-1001-1 candidate pair and the exact null unresolved pair: ${evidence.graphReviewConfirmation}`);
   }
   const graphStatus = await sql(`select status from graph_run where invoice_case_id='${graphCase.id}' order by created_at desc limit 1`);
   const successorCount = await sql(`select count(*) from graph_successor where invoice_case_id='${graphCase.id}'`);
   evidence.latestGraphStatus = graphStatus;
   evidence.successorCount = successorCount;
+  if (graphStatus !== 'QUEUED') throw new VerifyError(`expected the successor run to be QUEUED, got ${graphStatus}`);
+  if (successorCount !== '1') throw new VerifyError(`expected exactly one successor row, got ${successorCount}`);
+  // AI-off approval must be a real committed payment request and one receipt
+  // allocation: a missing allocation is a failure, never an 'n/a' pass.
   evidence.offPaymentRequests = await sql(`select count(*) from payment_request where invoice_case_id='${offCase.id}'`);
-  evidence.offAllocations = await sql(`select count(*) from receipt_allocation where invoice_case_id='${offCase.id}'`).catch(() => 'n/a');
-  if (Number(evidence.offPaymentRequests) < 1) throw new VerifyError('AI-off approval did not create a payment request');
+  evidence.offAllocations = await sql(`select count(*) from receipt_allocation where invoice_case_id='${offCase.id}'`);
+  if (evidence.offPaymentRequests !== '1') throw new VerifyError(`AI-off approval did not create exactly one payment request, got ${evidence.offPaymentRequests}`);
+  if (evidence.offAllocations !== '1') throw new VerifyError(`AI-off approval did not create exactly one receipt allocation, got ${evidence.offAllocations}`);
   record(`graph run latest status=${graphStatus} successorRows=${successorCount} resumeConsumption=${evidence.resumeConsumption}`);
-  record(`frozen graph proof id/hash exact match; confirmation candidate+unresolved recorded; AI-off paymentRequests=${evidence.offPaymentRequests}`);
+  record(`frozen graph proof id/payloadHash/contextHash exact match; confirmation exact candidate+null pairs; AI-off paymentRequests=${evidence.offPaymentRequests} allocations=${evidence.offAllocations}`);
   writeFileSync(join(output, 'summary.json'), JSON.stringify({
     ok: true, steps, graphCase, offCase,
     evidence: {
