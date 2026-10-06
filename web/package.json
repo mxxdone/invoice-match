@@ -15,6 +15,7 @@
     "react-dom": "19.3.0"
   },
   "devDependencies": {
+    "@shadcn/lint": "0.2.0",
     "@types/node": "24.6.2",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
