@@ -242,7 +242,7 @@ function Detail() {
             <h1 className="text-[32px] font-medium leading-[1.2] tracking-[-1px] max-[760px]:text-[26px]">청구서 상세</h1>
             <p className="invoice-id mt-[13px] flex items-center gap-[13px] text-detail">
               {data.detail.invoiceNumber}{' '}
-              <Badge variant={status.tone as StatusTone} className={`case-status status-${status.tone} gap-1.5`}><span className="case-status-dot h-[5px] w-[5px] rounded-full bg-current" />{status.label}</Badge>
+              <Badge variant={status.tone as StatusTone} className="case-status gap-1.5"><span className="case-status-dot h-[5px] w-[5px] rounded-full bg-current" />{status.label}</Badge>
             </p>
           </div>
           <Button variant="outline" className="button" onClick={() => selectTab('evidence')}>원본 문서·제출 이력 보기</Button>
