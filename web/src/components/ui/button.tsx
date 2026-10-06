@@ -25,6 +25,8 @@ const buttonVariants = cva(
         sm: "h-8 px-2.5 py-1 text-label",
         lg: "h-11 px-6",
         icon: "h-10 w-10",
+        "icon-sm": "h-8 w-8 p-0",
+        content: "min-h-10 h-auto whitespace-normal text-left",
       },
     },
     defaultVariants: {
