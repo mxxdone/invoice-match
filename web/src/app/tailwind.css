@@ -1,0 +1,21 @@
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "./globals.css" layer(components);
+@import "./screens.css" layer(components);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+
+@source "../";
+
+/* Keep the existing base styles; Preflight would change the reviewed screens. */
+@theme inline {
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-lime: var(--lime);
+  --color-sidebar: var(--sidebar);
+  --color-mint: var(--mint);
+  --color-olive: var(--olive);
+  --color-green: var(--green);
+  --color-warning: var(--warning);
+  --font-sans: Arial, "Malgun Gothic", sans-serif;
+}

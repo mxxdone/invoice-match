@@ -1,7 +1,6 @@
 import type { Metadata } from 'next';
 import { AuthProvider } from './auth';
-import './globals.css';
-import './screens.css';
+import './tailwind.css';
 
 export const metadata: Metadata = {
   title: 'Invoice Match',

@@ -33,11 +33,11 @@ export function OriginalDocuments({ credentials, sessionId, caseId, onUnauthoriz
     </div>
     {documents.preview && <aside className="pdf-preview-drawer" aria-label="PDF 미리보기 영역">
       <div className="pdf-drawer-header">
-        <div className="section-heading"><h3>{documents.preview.fileName}</h3><button className="button" aria-label="PDF 미리보기 닫기" onClick={documents.closePreview}>닫기</button></div>
+        <div className="section-heading"><h3 className="text-ink">{documents.preview.fileName}</h3><button className="button" aria-label="PDF 미리보기 닫기" onClick={documents.closePreview}>닫기</button></div>
         <a className="button" href={documents.preview.url} target="_blank" rel="noopener noreferrer">PDF 새 탭에서 열기</a>
         <p className="muted-text">인쇄는 PDF 뷰어에서 할 수 있습니다.</p>
       </div>
-      <div className="pdf-drawer-body">
+      <div className="pdf-drawer-body flex-1 min-h-0 p-3">
       <iframe className="original-pdf-frame" title={`${documents.preview.fileName} 원본 PDF`} src={`${documents.preview.url}#view=Fit&zoom=page-fit`} referrerPolicy="no-referrer" />
       </div>
     </aside>}

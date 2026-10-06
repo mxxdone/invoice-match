@@ -174,7 +174,6 @@ button.session-link:focus-visible { outline: 2px solid #798769; outline-offset: 
 .pdf-drawer-header .section-heading { align-items: flex-start; margin-bottom: 12px; }
 .pdf-drawer-header h3 { min-width: 0; overflow-wrap: anywhere; }
 .pdf-drawer-header .muted-text { margin-top: 12px; }
-.pdf-drawer-body { flex: 1; min-height: 0; padding: 12px; }
 .case-detail .pdf-drawer-body .original-pdf-frame { height: 100%; min-height: 0; background: #fff; }
 @keyframes pdf-drawer-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
 @media (max-width: 1000px) {
