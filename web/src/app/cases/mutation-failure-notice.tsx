@@ -1,6 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 import { failureDetailLines, type MutationFailure } from './composer-model';
 
 // Shared presentation of a failed write. It shows the server code/message and
@@ -10,10 +11,12 @@ export function MutationFailureNotice({
   failure,
   onRefresh,
   refreshing = false,
+  className,
 }: {
   failure: MutationFailure;
   onRefresh?: () => void;
   refreshing?: boolean;
+  className?: string;
 }) {
   const details = failureDetailLines(failure);
   const title = failure.kind === 'conflict'
@@ -24,10 +27,10 @@ export function MutationFailureNotice({
         ? '이 작업을 수행할 권한이 없습니다'
         : '요청을 완료하지 못했습니다';
   return (
-    <div className="review-warning mx-[30px] mb-3 flex items-center justify-between gap-3 border border-[#e8ddae] bg-[#faf4df] px-4 py-3 text-label" role="alert">
-      <div>
+    <div className={cn("review-warning mx-[30px] mb-3 flex flex-wrap items-center justify-between gap-3 border border-[#e8ddae] bg-[#faf4df] px-4 py-3 text-sm", className)} role="alert">
+      <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
         <strong>{title}</strong>
-        <p className="mt-1 text-[#716446]">{failure.message} <span className="muted-text text-label text-[#8e9382]">({failure.code})</span></p>
+        <p className="mt-1 text-[#716446]">{failure.message} <span className="muted-text text-label text-muted-foreground">({failure.code})</span></p>
         {details.length > 0 && (
           <ul className="failure-details">
             {details.map((line) => <li key={line}>{line}</li>)}

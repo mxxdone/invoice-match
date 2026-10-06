@@ -121,3 +121,16 @@ test('a failed audit page keeps the records and shows a scoped retry', () => {
   assert.match(text, /비교 결과 생성/);
   assert.equal(text.includes('아직 감사 기록이 없습니다'), false);
 });
+
+test('audit changes retain business values without exposing internal references or budgets', () => {
+  const after = { status: 'APPROVED', amount: '9223372036854775807', supplierId: 'SUP-1',
+    nested: [{ quantity: 5, itemId: 'ITEM-A4-80', contextHash: 'private-context', graphRunId: 'private-run', graph_run_id: 'private-snake', reservedTokens: 100 }],
+    payloadHash: 'private-payload', reviewSnapshotId: 'private-snapshot' };
+  const entry = { id: 'a1', invoiceCaseId: 'c1', occurredAt: '2026-09-30T01:00:00Z', actor: 'approver', actorRoles: ['APPROVER'], action: 'APPROVE', targetType: 'CASE', targetId: 'c1', businessVersion: 2, before: null, after, requestId: 'private-request', traceId: 'private-trace' };
+  const data = baseData({ audit: { status: 'ready', data: { entries: [entry], nextCursor: null } } });
+  const text = renderText(createElement(AuditPanel, { data, entries: [entry], nextCursor: null, loadingMore: false, onMore: () => {} }));
+  for (const value of ['APPROVED', '9223372036854775807', 'SUP-1', 'ITEM-A4-80', 'quantity']) assert.ok(text.includes(value));
+  for (const value of ['private-', 'contextHash', 'payloadHash', 'reservedTokens', 'graphRunId', 'reviewSnapshotId']) assert.equal(text.includes(value), false);
+  assert.equal(after.payloadHash, 'private-payload');
+  assert.equal(after.nested[0].reservedTokens, 100);
+});

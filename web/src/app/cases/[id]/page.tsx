@@ -38,10 +38,9 @@ const EMPTY = 'empty-state flex flex-1 min-h-0 flex-col items-center justify-cen
 const EMPTY_H1 = 'm-0 text-base font-normal text-[#6f7863]';
 const EMPTY_P = 'm-0 text-label';
 const HEADING = 'section-heading mb-6 flex flex-wrap items-center justify-between gap-3';
-const NOTE = 'review-note mx-[31px] my-[26px] flex items-center gap-2 text-label text-[#838572]';
+const NOTE = 'review-note mx-[31px] my-[26px] flex items-center gap-2 text-label text-muted-foreground';
 const ACTIONS = 'dialog-actions mt-6 flex justify-end gap-2';
 const STATUS_DOT = 'status-dot inline-block h-[5px] w-[5px] shrink-0 rounded-full bg-[#828753]';
-const MUTED = 'muted-text text-label text-[#8e9382]';
 
 function Detail() {
   const params = useParams<{ id: string }>();
@@ -233,7 +232,7 @@ function Detail() {
     <Shell active="cases" preview={false}>
       <div className="case-detail flex min-w-0 flex-1 flex-col text-detail leading-[1.6]">
       <header className="page-header px-11 pb-6 pt-8 max-[1200px]:px-[30px] max-[760px]:px-5">
-        <nav className="breadcrumb mb-[18px] flex items-center gap-2.5 text-label text-[#85867a]" aria-label="현재 위치">
+        <nav className="breadcrumb mb-[18px] flex items-center gap-2.5 text-label text-muted-foreground" aria-label="현재 위치">
           <Link className="underline underline-offset-[3px] hover:text-[#4f643d]" href={listHref}><Icon name="arrow" size={12} />청구서</Link>
           <Icon name="chevron" size={12} />
           <span aria-current="page">상세</span>
@@ -249,13 +248,13 @@ function Detail() {
           <Button variant="outline" className="button" onClick={() => selectTab('evidence')}>원본 문서·제출 이력 보기</Button>
         </div>
         <dl className="case-meta mt-6 flex flex-wrap gap-x-6 gap-y-3">
-          <div className="flex items-center gap-2"><dt className="text-label text-[#85867a]">공급사 ID</dt><dd className="m-0 text-label">{data.detail.supplierId}</dd></div>
-          <div className="flex items-center gap-2"><dt className="text-label text-[#85867a]">발주번호</dt><dd className="m-0 text-label">{data.detail.purchaseOrderId}</dd></div>
-          <div className="flex items-center gap-2"><dt className="text-label text-[#85867a]">제출자</dt><dd className="m-0 text-label">{data.detail.submittedBy}</dd></div>
-          <div className="flex items-center gap-2"><dt className="text-label text-[#85867a]">청구서 변경 버전</dt><dd className="m-0 text-label">v{data.detail.version}</dd></div>
-          <div className="flex items-center gap-2"><dt className="text-label text-[#85867a]">작성 차수</dt><dd className="m-0 text-label">{data.detail.currentRevision ? `#${data.detail.currentRevision.revisionNumber}` : '—'}</dd></div>
-          <div className="flex items-center gap-2"><dt className="text-label text-[#85867a]">증빙 버전</dt><dd className="m-0 text-label">{newest ? `v${newest.version}` : '—'}</dd></div>
-          <div className="flex items-center gap-2"><dt className="text-label text-[#85867a]">제출 시각 (KST)</dt><dd className="m-0 text-label">{formatInstant(newest?.submittedAt ?? null)}</dd></div>
+          <div className="flex items-center gap-2"><dt className="text-label text-muted-foreground">공급사 ID</dt><dd className="m-0 text-label">{data.detail.supplierId}</dd></div>
+          <div className="flex items-center gap-2"><dt className="text-label text-muted-foreground">발주번호</dt><dd className="m-0 text-label">{data.detail.purchaseOrderId}</dd></div>
+          <div className="flex items-center gap-2"><dt className="text-label text-muted-foreground">제출자</dt><dd className="m-0 text-label">{data.detail.submittedBy}</dd></div>
+          <div className="flex items-center gap-2"><dt className="text-label text-muted-foreground">청구서 변경 버전</dt><dd className="m-0 text-label">v{data.detail.version}</dd></div>
+          <div className="flex items-center gap-2"><dt className="text-label text-muted-foreground">작성 차수</dt><dd className="m-0 text-label">{data.detail.currentRevision ? `#${data.detail.currentRevision.revisionNumber}` : '—'}</dd></div>
+          <div className="flex items-center gap-2"><dt className="text-label text-muted-foreground">증빙 버전</dt><dd className="m-0 text-label">{newest ? `v${newest.version}` : '—'}</dd></div>
+          <div className="flex items-center gap-2"><dt className="text-label text-muted-foreground">제출 시각 (KST)</dt><dd className="m-0 text-label">{formatInstant(newest?.submittedAt ?? null)}</dd></div>
         </dl>
       </header>
       <div className="tabs flex min-h-[58px] flex-wrap items-center gap-x-7 gap-y-3 border-b border-border px-11 max-[1200px]:px-[30px] max-[760px]:px-5" role="tablist" aria-label="청구서 상세">
@@ -266,6 +265,7 @@ function Detail() {
 
       {actions.failure && (
         <MutationFailureNotice
+          className="mx-11 max-[1200px]:mx-[30px] max-[760px]:mx-5"
           failure={actions.failure}
           onRefresh={() => { actions.clearFailure(); setReloadToken((value) => value + 1); }}
         />
@@ -277,7 +277,7 @@ function Detail() {
 
       {isOperator && tab === 'compare' && (
         <div className="toolbar flex min-h-[46px] flex-wrap items-center gap-2.5 border-b border-border bg-[#faf9f6] px-11 py-3 max-[1200px]:px-[30px] max-[760px]:px-5">
-          <span className="demo-description text-label text-[#8b8c80]">운영자 대사 실행 · 최신 제출 증빙을 대상으로 서버가 결정론적으로 대사합니다.</span>
+          <span className="demo-description text-label text-muted-foreground">운영자 대사 실행 · 최신 제출 증빙을 대상으로 서버가 결정론적으로 대사합니다.</span>
           <Button variant="outline" className="button" disabled={actionBlocked || newest === null} title={newest === null ? '제출된 증빙이 없어 대사를 실행할 수 없습니다.' : '대사 실행'} onClick={actions.runMatch}>{actions.pendingAction === 'match' ? '대사 실행 중…' : '대사 실행'}</Button>
         </div>
       )}
@@ -328,16 +328,16 @@ function Detail() {
           {subjectReady && snapshot && (
             <>
               <div className="field-grid mapper-grid grid grid-cols-2 gap-7 max-[760px]:grid-cols-1 max-[760px]:gap-[18px]">
-                <label className="text-label text-[#777f69]">매핑할 라인
+                <label className="text-label text-muted-foreground">매핑할 라인
                   <select className="mt-3 mb-2 block min-h-10 w-full rounded-sm border border-input bg-white px-3 py-2.5 text-sm text-[#424a34]" aria-label="매핑할 라인" value={mappingLine} onChange={(event) => setMappingLine(event.target.value)}>
                     <option value="">라인 선택</option>
                     {mappingRows.map((row) => <option key={row.lineNumber} value={String(row.lineNumber)}>라인 {row.lineNumber} · {row.rawItemName}{row.confirmedItemId ? ` (현재 ${row.confirmedItemId})` : ''}</option>)}
                   </select>
-                  <small className="text-label text-[#9ba18d]">서버 대사 결과의 라인만 나열합니다.</small>
+                  <small className="text-label text-muted-foreground">서버 대사 결과의 라인만 나열합니다.</small>
                 </label>
-                <label className="text-label text-[#777f69]">확정 품목 ID
+                <label className="text-label text-muted-foreground">확정 품목 ID
                   <Input className="mt-3 mb-2" maxLength={64} value={mappingItem} onChange={(event) => setMappingItem(event.target.value)} placeholder="품목 ID 직접 입력" />
-                  <small className="text-label text-[#9ba18d]">품목 후보 조회 API는 제공하지 않으므로 ID를 직접 입력하며 서버가 검증합니다.</small>
+                  <small className="text-label text-muted-foreground">구매 자료에서 확인한 품목 ID를 입력해 주세요.</small>
                 </label>
               </div>
               <div className={ACTIONS}>
@@ -353,7 +353,7 @@ function Detail() {
               </div>
 
               {reasonPanel && (
-                <label className="reason-label block text-label text-[#747d63]">{reasonPanel === 'supplement' ? '보완 요청 사유' : '청구 거절 사유'}
+                <label className="reason-label block text-label text-muted-foreground">{reasonPanel === 'supplement' ? '보완 요청 사유' : '청구 거절 사유'}
                   <Textarea className="mt-2.5 resize-y" rows={3} value={reason} onChange={(event) => setReason(event.target.value)} placeholder={reasonPanel === 'reject' ? '예: 다른 거래에 대한 청구로 확인되어 처리를 종료합니다.' : '예: 부족한 수량의 검수 근거를 추가해 주세요.'} />
                 </label>
               )}
@@ -373,7 +373,7 @@ function Detail() {
                   </>
                 )}
               </div>
-              {ownerSubmitter && <p className="panel-footnote text-label leading-[1.9] text-[#969c8b]" role="status">이 청구의 제출자 계정으로 로그인되어 있습니다. 서버는 자기 승인을 거부하며, 승인을 누르면 서버 응답으로 사유가 표시됩니다.</p>}
+              {ownerSubmitter && <p className="panel-footnote text-label leading-[1.9] text-muted-foreground" role="status">이 청구의 제출자 계정으로 로그인되어 있습니다. 서버는 자기 승인을 거부하며, 승인을 누르면 서버 응답으로 사유가 표시됩니다.</p>}
             </>
           )}
         </section>
@@ -393,10 +393,10 @@ function Detail() {
       <footer className="action-bar sticky bottom-0 z-[2] mt-auto flex min-h-[69px] flex-wrap items-center justify-between gap-5 bg-olive px-11 py-3 text-white max-[1200px]:px-[30px] max-[760px]:gap-3 max-[760px]:px-3.5">
         <HandoffSummary handoff={handoff} payment={payment} />
         <div className="action-buttons flex items-center gap-2.5">
-          <span className="footer-context mr-2 text-label text-[#d8dacc] max-[1200px]:hidden">검토 #{data.snapshot.status === 'ready' ? data.snapshot.data.snapshotNumber : '—'} · 증빙 {newest ? `v${newest.version}` : '—'}</span>
+          <span className="footer-context mr-2 text-label text-white max-[1200px]:hidden">검토 #{data.snapshot.status === 'ready' ? data.snapshot.data.snapshotNumber : '—'} · 증빙 {newest ? `v${newest.version}` : '—'}</span>
           {ownerSubmitter && data.detail.status === 'DRAFT' && <Button asChild variant="outline" className="button"><Link href={`/cases/new?case=${data.detail.id}`}>초안 편집</Link></Button>}
           {ownerSubmitter && data.detail.status === 'SUPPLEMENT_REQUIRED' && <Button asChild variant="default" className="button primary"><Link href={`/cases/new?supplement=${data.detail.id}`}>보완 작성</Link></Button>}
-          {!isApprover && !isOperator && <span className={MUTED}>이 계정은 검토 결정 권한이 없습니다. 화면 표시는 안내일 뿐 서버가 권한을 판정합니다.</span>}
+          {!isApprover && !isOperator && <span className="muted-text text-label text-white">이 계정은 검토 결정 권한이 없습니다.</span>}
         </div>
       </footer>
       </div>

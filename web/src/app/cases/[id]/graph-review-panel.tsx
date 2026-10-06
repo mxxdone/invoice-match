@@ -52,15 +52,15 @@ const RECOMMENDATION_LABELS: Record<string, string> = {
 
 const SECTION = 'form-section proposal-panel mx-11 my-6 min-w-0 [overflow-wrap:anywhere] max-[1200px]:mx-[30px] max-[760px]:mx-5';
 const HEADING = 'section-heading mb-6 flex flex-wrap items-center justify-between gap-3';
-const NOTE = 'review-note mx-[31px] my-[26px] flex items-center gap-2 text-label text-[#838572]';
+const NOTE = 'review-note mx-[31px] my-[26px] flex items-center gap-2 text-label text-muted-foreground';
 const WARNING = 'review-warning mx-0 mb-3 border border-[#e8ddae] bg-[#faf4df] px-4 py-3 text-sm text-[#716446]';
 const ENTRY = 'proposal-entry border-b border-[#e0e2d9] py-3';
 const ACTIONS = 'dialog-actions mt-6 flex justify-end gap-2';
 const CHOICE = 'proposal-choice my-4 flex items-center gap-2.5';
 const H3 = 'mt-6 text-base font-medium';
-const BLOCKQUOTE = 'my-2.5 whitespace-pre-wrap border-l-[3px] border-border bg-[#f5f6f2] px-4 py-2.5';
+const BLOCKQUOTE = 'my-2.5 whitespace-pre-wrap border-l-[3px] border-border bg-[#f5f6f2] px-4 py-2.5 text-sm text-foreground';
 const SELECT = 'block w-full min-h-9 rounded-sm border border-input bg-white px-2.5 py-2 text-sm text-[#424a34]';
-const MUTED = 'muted-text text-label text-[#8e9382]';
+const MUTED = 'muted-text text-label text-muted-foreground';
 
 function label(map: Record<string, string>, key: string): string {
   return map[key] ?? key;
@@ -208,7 +208,7 @@ function ConfirmForm({ view, pending, blocked, inFlight, onConfirm }: {
           ))}
         </tbody></Table>
       )}
-      <label className="reason-label my-4 block max-w-[580px] text-label text-[#747d63]">확인 사유
+      <label className="reason-label my-4 block max-w-[580px] text-label text-muted-foreground">확인 사유
         <Textarea className="mt-2 resize-y" rows={3} maxLength={1000} disabled={blocked} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="예: 원문과 후보를 대조한 결과를 기록합니다." />
       </label>
       <div className={ACTIONS}>

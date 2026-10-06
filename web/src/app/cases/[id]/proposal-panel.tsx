@@ -16,9 +16,9 @@ const labels: Record<string, string> = {
 };
 const SECTION = 'form-section proposal-panel mx-11 my-6 min-w-0 [overflow-wrap:anywhere] max-[1200px]:mx-[30px] max-[760px]:mx-5';
 const HEADING = 'section-heading mb-6 flex flex-wrap items-center justify-between gap-3';
-const NOTE = 'review-note mx-[31px] my-[26px] flex items-center gap-2 text-label text-[#838572]';
+const NOTE = 'review-note mx-[31px] my-[26px] flex items-center gap-2 text-label text-muted-foreground';
 const ENTRY = 'proposal-entry border-b border-[#e0e2d9] py-3';
-const BLOCKQUOTE = 'my-2.5 whitespace-pre-wrap border-l-[3px] border-border bg-[#f5f6f2] px-4 py-2.5';
+const BLOCKQUOTE = 'my-2.5 whitespace-pre-wrap border-l-[3px] border-border bg-[#f5f6f2] px-4 py-2.5 text-sm text-foreground';
 function Source({ view, source }: { view: ProposalView; source: { segmentId: string; start: number; end: number } }) {
   const proof = sourceQuote(view, source);
   return proof ? <details className="proposal-source mt-1.5 text-label"><summary>원문 위치</summary><p>{proof.location}</p><blockquote className={BLOCKQUOTE}>{proof.quote}</blockquote></details> : <p>원문 위치를 표시할 수 없습니다.</p>;
@@ -35,13 +35,13 @@ export function ProposalPanel({ load, match, canReserve, pending, blocked, onRes
   return <section className={SECTION} aria-label="AI 검토 자료">
     <div className={HEADING}><h2 className="text-lg font-medium">AI 검토 자료</h2><span className="text-label text-muted-foreground">확정 입력과 사람의 검토 결정을 유지합니다</span></div>
     <p className="my-3">추출값·품목 후보·처리 초안은 참고 자료입니다. 매핑과 승인·보완·거절은 아래 검토 동작에서 사람이 결정합니다.</p>
-    {!page.enabled && <p className="review-note mx-[31px] my-[26px] flex items-center gap-2 text-label text-[#838572]">AI 신규 분석이 비활성화되어 있습니다.</p>}
+    {!page.enabled && <p className="review-note mx-[31px] my-[26px] flex items-center gap-2 text-label text-muted-foreground">AI 신규 분석이 비활성화되어 있습니다.</p>}
     <div className="dialog-actions mt-6 flex justify-end gap-2">
       {canReserve && <Button variant="outline" className="button" disabled={blocked || !page.enabled || !match} onClick={onReserve}>{pending ? '예약 중…' : 'AI 분석 예약'}</Button>}
       <Button variant="outline" className="button" disabled={blocked} onClick={onRefresh}>분석 상태 새로 조회</Button>
     </div>
     {!view ? <p className="my-3">예약된 AI 분석이 없습니다. 파서 완료와 최신 대사 후 예약할 수 있습니다.</p> : <>
-      <div className={NOTE} role="status"><strong>{labels[view.run.status]}</strong><span>시도 {view.run.attempt} · 예약 호출 {view.run.reservedCalls} · 예약 토큰 {view.run.reservedTokens} · 도구 {view.run.toolCalls}</span></div>
+      <div className={NOTE} role="status"><strong>{labels[view.run.status]}</strong><span>시도 {view.run.attempt}</span></div>
       {view.run.errorCode && (view.run.status === 'FAILED'
         ? <p className="my-3" role="alert">분석 오류: {view.run.errorCode}. 원인을 해결하고 최신 입력을 준비해야 합니다.</p>
         : <p className="my-3">이전 시도 오류: {view.run.errorCode}. 현재 실행 상태와 누적 예산을 함께 확인하세요.</p>)}

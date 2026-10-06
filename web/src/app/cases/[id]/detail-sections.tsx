@@ -2,7 +2,7 @@
 
 // Presentational (read-only) sections of the live detail screen, split out from
 // the route so they can be rendered and asserted directly in tests. They hold no
-// fetch or navigation logic and render server DTO values verbatim.
+// fetch or navigation logic. Audit text omits internal execution references.
 
 import { Icon } from '../../ui';
 import { Button } from '@/components/ui/button';
@@ -39,19 +39,32 @@ import type { AuditFailure, CaseDetailData, SectionState } from './use-case-deta
 
 const TH = 'border-b border-border p-3 text-left text-label font-normal text-muted-foreground';
 const TD = 'border-b border-[#efefe9] px-3 py-5';
-const CTH = 'border-b border-[#eaeae3] bg-[#fcfcfa] p-[10px_11px] text-label font-normal text-[#909286]';
+const CTH = 'border-b border-[#eaeae3] bg-[#fcfcfa] p-[10px_11px] text-label font-normal text-muted-foreground';
 const CTD = 'border-b border-[#f0f0eb] p-[15px_11px] h-[66px] align-middle';
 const HEADING = 'section-heading mb-6 flex flex-wrap items-center justify-between gap-3';
 
-export function shortId(value: string | null | undefined): string {
-  if (!value) return '—';
-  return value.length > 8 ? value.slice(0, 8) : value;
+const INTERNAL_AUDIT_FIELDS = new Set([
+  'id', 'invoiceCaseId', 'caseId', 'targetId', 'requestId', 'traceId', 'eventId',
+  'documentId', 'segmentId', 'chunkId', 'runId', 'analysisRunId', 'graphRunId',
+  'graphId', 'threadId', 'interruptId', 'reviewId', 'reviewSnapshotId', 'snapshotId',
+  'evidenceBundleId', 'matchResultId', 'proposalId', 'predecessorId', 'successorId',
+  'checkpointId', 'checkpointRef', 'documentStageRef', 'mappingStageRef',
+  'resolutionStageRef', 'reviewRef', 'schemaVersion', 'checkpointSchema', 'graphVersion',
+  'reservedCalls', 'reservedTokens', 'toolCalls', 'startAttempts', 'resumeAttempts',
+].map(key => key.toLowerCase()));
+
+function auditBusinessValues(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(auditBusinessValues);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !INTERNAL_AUDIT_FIELDS.has(key.replace(/[-_]/g, '').toLowerCase()) && !key.toLowerCase().endsWith('hash'))
+    .map(([key, item]) => [key, auditBusinessValues(item)]));
 }
 
 function boundedJson(value: unknown): string {
   if (value === null || value === undefined) return '내용 없음';
   try {
-    const text = safeJsonStringify(value);
+    const text = safeJsonStringify(auditBusinessValues(value));
     if (!text) return '내용 없음';
     return text.length > 1200 ? `${text.slice(0, 1200)}…` : text;
   } catch {
@@ -85,7 +98,7 @@ function EvidenceLines({ lines }: { lines: InvoiceLineDetail[] }) {
           <tr key={line.lineNumber}>
             <td className={TD}>{line.lineNumber}</td>
             <td className={TD}>{line.rawItemName}</td>
-            <td className={`${TD} muted-text text-label text-[#8e9382]`}>{line.confirmedItemId ?? '매핑 미확정'}</td>
+            <td className={`${TD} muted-text text-label text-muted-foreground`}>{line.confirmedItemId ?? '매핑 미확정'}</td>
             <td className={`${TD} numeric text-right tabular-nums`}>{formatNumber(line.quantity)}</td>
             <td className={`${TD} numeric text-right tabular-nums`}>{formatExactInteger(line.unitPrice)}</td>
           </tr>
@@ -150,10 +163,10 @@ export function ComparePanel({ data }: { data: CaseDetailData }) {
         </SectionMessage>
       )}
       <div className="toolbar flex min-h-[46px] flex-wrap items-center gap-2.5 border-b border-border bg-[#faf9f6] px-11 py-3 max-[1200px]:px-[30px] max-[760px]:px-5">
-        <span className={`line-badge inline-flex items-center gap-1.5 rounded-full border border-transparent px-2 py-1 text-label leading-tight ${match.data.payload.normal ? 'bg-[#f2f3ee] text-[#788168]' : 'exception bg-[#f2edde] text-[#886c37]'}`}>
+        <span className={`line-badge inline-flex items-center gap-1.5 rounded-full border border-transparent px-2 py-1 text-label leading-tight ${match.data.payload.normal ? 'bg-[#f2f3ee] text-muted-foreground' : 'exception bg-[#f2edde] text-[#886c37]'}`}>
           {match.data.payload.normal ? <><Icon name="check" size={12} />당시 자료 서버판정: 정상</> : <><span className="exception-dot inline-block h-[5px] w-[5px] shrink-0 rounded-full bg-[#b18039]" />당시 자료 서버판정: 확인 필요</>}
         </span>
-        <span className="demo-description text-label text-[#8b8c80]">
+        <span className="demo-description text-label text-muted-foreground">
           비교 결과 #{match.data.resultNumber} · 증빙 v{bundleVersion} 기준{stale ? ' · 오래된 결과' : ''} · 판정 {issues}개 라인
         </span>
       </div>
@@ -185,7 +198,7 @@ export function ComparePanel({ data }: { data: CaseDetailData }) {
                 <td className={`${CTD} line-number w-11 text-center pl-5 pr-[13px]`}>{String(row.lineNumber).padStart(2, '0')}</td>
                 <td className={CTD}>
                   <strong className="item-name mb-1.5 block text-sm">{row.rawItemName}</strong>
-                  <span className="item-secondary flex items-center gap-1.5 text-label text-[#919588]">{row.confirmedItemId ?? '매핑 미확정'}<span>·</span>{row.hasPurchaseOrderLine ? '발주 라인 확정' : '발주 라인 미확정'}</span>
+                  <span className="item-secondary flex items-center gap-1.5 text-label text-muted-foreground">{row.confirmedItemId ?? '매핑 미확정'}<span>·</span>{row.hasPurchaseOrderLine ? '발주 라인 확정' : '발주 라인 미확정'}</span>
                 </td>
                 <td className={`${CTD} numeric text-right tabular-nums`}>{formatNumber(row.invoiceQuantity)}</td>
                 <td className={`${CTD} numeric text-right tabular-nums`}>{row.orderedQuantity === null ? '—' : formatNumber(row.orderedQuantity)}</td>
@@ -194,17 +207,17 @@ export function ComparePanel({ data }: { data: CaseDetailData }) {
                 <td className={`${CTD} numeric text-right tabular-nums`}>{formatExactInteger(row.invoiceUnitPrice)}</td>
                 <td className={`${CTD} numeric text-right tabular-nums`}>{row.poUnitPrice === null ? '—' : formatExactInteger(row.poUnitPrice)}</td>
                 <td className={CTD}>
-                  <span className={`line-badge inline-flex items-center gap-1.5 rounded-full border border-transparent px-2 py-1 text-label leading-tight ${row.status === 'MATCHED' && row.issues.length === 0 ? 'bg-[#f2f3ee] text-[#788168]' : 'exception bg-[#f2edde] text-[#886c37]'}`}>
+                  <span className={`line-badge inline-flex items-center gap-1.5 rounded-full border border-transparent px-2 py-1 text-label leading-tight ${row.status === 'MATCHED' && row.issues.length === 0 ? 'bg-[#f2f3ee] text-muted-foreground' : 'exception bg-[#f2edde] text-[#886c37]'}`}>
                     {row.status === 'MATCHED' && row.issues.length === 0 ? <><Icon name="check" size={12} />일치</> : <><span className="exception-dot inline-block h-[5px] w-[5px] shrink-0 rounded-full bg-[#b18039]" />{presentLineStatus(row.status)}</>}
                   </span>
-                  {row.issues.map((issue) => <span key={issue.type} className="issue-description mt-1.5 block text-label text-[#9c8049]">{issue.label}</span>)}
+                  {row.issues.map((issue) => <span key={issue.type} className="issue-description mt-1.5 block text-label text-warning">{issue.label}</span>)}
                 </td>
               </tr>
             ))}
             {rows.length === 0 && <tr><td colSpan={9} className={`${CTD} empty-table p-12 text-center text-muted-foreground`}>대사 결과에 청구 라인이 없습니다.</td></tr>}
           </tbody>
         </Table>
-        <div className="table-summary flex justify-between gap-4 border-b border-[#efefe9] px-6 py-4 text-label text-[#93968a]">
+        <div className="table-summary flex justify-between gap-4 border-b border-[#efefe9] px-6 py-4 text-label text-muted-foreground">
           <span>{rows.length}개 라인 · 검수 가용과 예상 배분은 서버 대사 결과 값입니다.</span>
         </div>
       </div>
@@ -290,8 +303,8 @@ function FreshnessBlock({ freshness }: { freshness: SectionState<ReviewFreshness
     <div className={`panel-status mt-6 border-y border-border py-5 ${detail.current ? 'text-[#66755a]' : 'warning text-[#8e733e]'}`}>
       <strong className="text-label font-medium">현재 자료와 일치 여부: {freshnessVerdict(detail)}</strong>
       {detail.current
-        ? <p className="mt-[7px] text-label leading-[1.8] text-[#97907b]">서버가 현재 사건·증빙·대사·매핑·구매 스냅샷과 일치한다고 판정했습니다.</p>
-        : <p className="mt-[7px] text-label leading-[1.8] text-[#97907b]">불일치 사유: {detail.reasons.map((reason) => presentFreshnessReason(reason)).join(' · ')}</p>}
+        ? <p className="mt-[7px] text-label leading-[1.8] text-muted-foreground">서버가 현재 사건·증빙·대사·매핑·구매 스냅샷과 일치한다고 판정했습니다.</p>
+        : <p className="mt-[7px] text-label leading-[1.8] text-muted-foreground">불일치 사유: {detail.reasons.map((reason) => presentFreshnessReason(reason)).join(' · ')}</p>}
     </div>
   );
 }
@@ -337,7 +350,7 @@ export function DecisionsPanel({ data }: { data: CaseDetailData }) {
                       <td className={TD}>{decision.decidedBy}</td>
                       <td className={TD}>#{decision.decisionNumber}</td>
                       <td className={TD}>{decisionDetail(decision)}</td>
-                      <td className={`${TD} muted-text text-label text-[#8e9382]`}>{formatInstant(decision.decidedAt)}</td>
+                      <td className={`${TD} muted-text text-label text-muted-foreground`}>{formatInstant(decision.decidedAt)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -373,7 +386,7 @@ export function AuditPanel({ data, entries, nextCursor, loadingMore, error, onMo
         <SectionMessage tone={error.kind === 'forbidden' ? 'forbidden' : 'error'}>
           <strong>{error.kind === 'forbidden' ? '감사 기록을 더 불러올 수 없습니다' : '감사 기록을 더 불러오지 못했습니다'}</strong>
           <p>{error.message}</p>
-          <p className="muted-text text-label text-[#8e9382]">지금 화면의 감사 기록과 다음 위치는 그대로 유지됩니다.</p>
+          <p className="muted-text text-label text-muted-foreground">지금 화면의 감사 기록과 다음 위치는 그대로 유지됩니다.</p>
         </SectionMessage>
       )}
       <Table className="history-table audit-table table-fixed">
@@ -387,9 +400,8 @@ export function AuditPanel({ data, entries, nextCursor, loadingMore, error, onMo
               <td className={`${TD} align-top [overflow-wrap:anywhere]`}>{presentAuditAction(entry.action)}</td>
               <td className={`${TD} align-top [overflow-wrap:anywhere]`}>
                 <details>
-                  <summary className="flex cursor-pointer list-none justify-between gap-2.5 after:content-['⌄'] after:shrink-0 [&::-webkit-details-marker]:hidden [[open]_&]:after:content-['⌃']">{entry.targetType} · 청구서 변경 버전 {entry.businessVersion}</summary>
+                  <summary className="flex cursor-pointer list-none justify-between gap-2.5 after:content-['⌄'] after:shrink-0 [&::-webkit-details-marker]:hidden [[open]_&]:after:content-['⌃']">변경 내용 · 청구서 변경 버전 {entry.businessVersion}</summary>
                   <p className="mt-3 leading-[1.8] text-[#737b65]">{boundedJson(entry.after)}</p>
-                  <p className="muted-text text-label text-[#8e9382]">요청 {shortId(entry.requestId)} · 추적 {shortId(entry.traceId)}</p>
                 </details>
               </td>
             </tr>
@@ -416,14 +428,14 @@ export function HandoffStrip({ handoff }: { handoff: SectionState<CaseHandoffSta
   const { payment } = handoff.data;
   if (!payment) {
     return (
-      <div className="review-note mx-[31px] my-[26px] flex items-center gap-2 text-label text-[#838572]">
+      <div className="review-note mx-[31px] my-[26px] flex items-center gap-2 text-label text-muted-foreground">
         <span className="status-dot inline-block h-[5px] w-[5px] shrink-0 rounded-full bg-[#828753]" />
         <span>아직 승인·인계 전입니다. 지급요청과 금액은 승인 시 서버가 생성합니다.</span>
       </div>
     );
   }
   return (
-    <div className="review-note mx-[31px] my-[26px] flex items-center gap-2 text-label text-[#838572]">
+    <div className="review-note mx-[31px] my-[26px] flex items-center gap-2 text-label text-muted-foreground">
       <span className="status-dot inline-block h-[5px] w-[5px] shrink-0 rounded-full bg-[#828753]" />
       <span>
         ERP 인계: 지급 {presentPaymentStatus(payment.paymentStatus)} · 아웃박스 {payment.outboxStatus ? presentOutboxStatus(payment.outboxStatus) : '—'} · 시도 {payment.attemptCount}회
@@ -445,7 +457,7 @@ export function HandoffSummary({ handoff, payment }: { handoff: SectionState<Cas
   return (
     <div className="action-summary flex items-center gap-4">
       <strong className="text-[17px] tracking-[.1px] tabular-nums max-[760px]:text-sm">{amount ?? (handoff.status === 'error' || handoff.status === 'forbidden' ? '인계 상태 확인 필요' : '금액 미확정')}</strong>
-      <span className="text-label text-[#d6d8cb] max-[760px]:hidden">{caption}</span>
+      <span className="text-label text-white max-[760px]:hidden">{caption}</span>
     </div>
   );
 }

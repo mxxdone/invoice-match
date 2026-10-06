@@ -1,16 +1,14 @@
 @layer theme, base, components, utilities;
 @import "tailwindcss/theme.css" layer(theme);
-@import "./globals.css" layer(components);
+@import "./globals.css" layer(base);
 @import "./screens.css" layer(components);
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
 
 @source "../";
 
-/* Keep the existing base styles; Preflight would change the reviewed screens. */
+/* Project tokens stay editable without importing Preflight. */
 @theme inline {
   --color-ink: var(--ink);
-  /* Tailwind `muted` is the surface token during the transition; the legacy
-     `--muted` text variable is unchanged for the not-yet-migrated screens. */
   --color-muted: var(--muted-surface);
   --color-muted-foreground: var(--muted-foreground);
   --color-border: var(--border);
