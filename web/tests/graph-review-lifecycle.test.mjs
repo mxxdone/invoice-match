@@ -139,7 +139,8 @@ test('the panel escapes untrusted extracted text and shows the frozen source loc
   try {
     assert.equal(panel.container.querySelector('script'), null);
     assert.match(panel.container.textContent, /<script>untrusted\(\)<\/script>/);
-    assert.match(panel.container.textContent, /문서 doc1 · 2쪽 \(OCR\)/);
+    assert.match(panel.container.textContent, /원문 · 2쪽 \(OCR\)/);
+    assert.doesNotMatch(panel.container.textContent, /doc1/);
   } finally { await panel.close(); }
 });
 

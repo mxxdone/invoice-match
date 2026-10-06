@@ -15,8 +15,8 @@ export function sourceQuote(view: { sources: ProposalSource[] }, source: Candida
   if (!segment || !Number.isInteger(source.start) || !Number.isInteger(source.end)) return null;
   const points = Array.from(segment.text);
   if (source.start < 0 || source.end <= source.start || source.end > points.length) return null;
-  return { quote: points.slice(source.start, source.end).join(''), location: segment.page !== null ? `문서 ${segment.documentId} · ${segment.page}쪽${segment.origin === 'ocr' ? ' (OCR)' : ''}`
-    : `문서 ${segment.documentId} · 시트 ${segment.sheet} · 셀 ${segment.cell}` };
+  return { quote: points.slice(source.start, source.end).join(''), location: segment.page !== null ? `원문 · ${segment.page}쪽${segment.origin === 'ocr' ? ' (OCR)' : ''}`
+    : `원문 · 시트 ${segment.sheet} · 셀 ${segment.cell}` };
 }
 export function frozenProposal(payload: unknown): SelectedProposal | null {
   if (!payload || typeof payload !== 'object' || !('proposal' in payload)) return null;

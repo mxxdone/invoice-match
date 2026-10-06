@@ -31,8 +31,8 @@ test('source spans use code points and exact frozen locations instead of UTF-16 
   const view = completed();
   view.sources = [{ id: 's1', documentId: 'd1', text: '가😀나', origin: 'ocr', page: 2, sheet: null, cell: null },
     { id: 's2', documentId: 'd2', text: '품목', origin: 'parser', page: null, sheet: 2, cell: 'B3' }];
-  assert.deepEqual(sourceQuote(view, { segmentId: 's1', start: 1, end: 2 }), { quote: '😀', location: '문서 d1 · 2쪽 (OCR)' });
-  assert.deepEqual(sourceQuote(view, { segmentId: 's2', start: 0, end: 2 }), { quote: '품목', location: '문서 d2 · 시트 2 · 셀 B3' });
+  assert.deepEqual(sourceQuote(view, { segmentId: 's1', start: 1, end: 2 }), { quote: '😀', location: '원문 · 2쪽 (OCR)' });
+  assert.deepEqual(sourceQuote(view, { segmentId: 's2', start: 0, end: 2 }), { quote: '품목', location: '원문 · 시트 2 · 셀 B3' });
   for (const source of [{ segmentId: 'unknown', start: 0, end: 1 }, { segmentId: 's1', start: -1, end: 1 },
     { segmentId: 's1', start: 0, end: 4 }, { segmentId: 's1', start: 1, end: 1 }, { segmentId: 's1', start: 0.5, end: 2 }]) {
     assert.equal(sourceQuote(view, source), null);
