@@ -1,12 +1,13 @@
 'use client';
 
+import { Notice } from '@/components/ui/notice';
 // Presentational (read-only) sections of the live detail screen, split out from
 // the route so they can be rendered and asserted directly in tests. They hold no
 // fetch or navigation logic. Audit text omits internal execution references.
 
 import { Icon } from '../../ui';
 import { Button } from '@/components/ui/button';
-import { Table } from '@/components/ui/table';
+import { Table, tableHeadStyles, tableCellStyles } from '@/components/ui/table';
 import { formatInstant } from '../../api/contract';
 import type {
   AuditEntryView,
@@ -37,10 +38,10 @@ import {
 } from './detail-model';
 import type { AuditFailure, CaseDetailData, SectionState } from './use-case-detail';
 
-const TH = 'border-b border-border p-3 text-left text-label font-normal text-muted-foreground';
-const TD = 'border-b border-[#efefe9] px-3 py-5';
-const CTH = 'border-b border-[#eaeae3] bg-[#fcfcfa] p-[10px_11px] text-label font-normal text-muted-foreground';
-const CTD = 'border-b border-[#f0f0eb] p-[15px_11px] h-[66px] align-middle';
+const TH = tableHeadStyles();
+const TD = tableCellStyles();
+const CTH = tableHeadStyles({ density: 'compact' });
+const CTD = tableCellStyles({ density: 'compact' });
 const HEADING = 'section-heading mb-6 flex flex-wrap items-center justify-between gap-3';
 
 const INTERNAL_AUDIT_FIELDS = new Set([
@@ -80,9 +81,9 @@ type MessageTone = 'notice' | 'forbidden' | 'error';
 
 export function SectionMessage({ tone, children }: { tone: MessageTone; children: React.ReactNode }) {
   return (
-    <div className="review-warning mx-0 mb-3 flex items-center justify-between gap-3 border border-[#e8ddae] bg-[#faf4df] px-4 py-3 text-sm [&_p]:mt-1 [&_p]:text-[#716446]" role={tone === 'error' ? 'alert' : 'status'}>
+    <Notice className="review-warning mx-0 mb-3 flex items-center justify-between [&_p]:mt-1" role={tone === 'error' ? 'alert' : 'status'} tone="warning">
       <div>{children}</div>
-    </div>
+    </Notice>
   );
 }
 
@@ -162,9 +163,9 @@ export function ComparePanel({ data }: { data: CaseDetailData }) {
           <p>이 비교 결과는 증빙 v{bundleVersion} 기준이며 현재 증빙은 {currentVersion === null ? '—' : `v${currentVersion}`}입니다. 현재 청구의 승인 근거로 사용할 수 없습니다.</p>
         </SectionMessage>
       )}
-      <div className="toolbar flex min-h-[46px] flex-wrap items-center gap-2.5 border-b border-border bg-[#faf9f6] px-11 py-3 max-[1200px]:px-[30px] max-[760px]:px-5">
-        <span className={`line-badge inline-flex items-center gap-1.5 rounded-full border border-transparent px-2 py-1 text-label leading-tight ${match.data.payload.normal ? 'bg-[#f2f3ee] text-muted-foreground' : 'exception bg-[#f2edde] text-[#886c37]'}`}>
-          {match.data.payload.normal ? <><Icon name="check" size={12} />당시 자료 서버판정: 정상</> : <><span className="exception-dot inline-block h-[5px] w-[5px] shrink-0 rounded-full bg-[#b18039]" />당시 자료 서버판정: 확인 필요</>}
+      <div className="toolbar flex min-h-11.5 flex-wrap items-center gap-2.5 border-b border-border bg-muted px-11 py-3 max-[1200px]:px-7.5 max-[760px]:px-5">
+        <span className={`line-badge inline-flex items-center gap-1.5 rounded-full border border-transparent px-2 py-1 text-label leading-tight ${match.data.payload.normal ? 'bg-secondary text-muted-foreground' : 'exception bg-status-attention text-status-attention-foreground'}`}>
+          {match.data.payload.normal ? <><Icon name="check" size={12} />당시 자료 서버판정: 정상</> : <><span className="exception-dot inline-block h-1.25 w-1.25 shrink-0 rounded-full bg-warning" />당시 자료 서버판정: 확인 필요</>}
         </span>
         <span className="demo-description text-label text-muted-foreground">
           비교 결과 #{match.data.resultNumber} · 증빙 v{bundleVersion} 기준{stale ? ' · 오래된 결과' : ''} · 판정 {issues}개 라인
@@ -181,7 +182,7 @@ export function ComparePanel({ data }: { data: CaseDetailData }) {
           <caption className="sr-only">발주·검수·청구 비교. 서버 대사 결과의 라인별 값을 그대로 표시합니다.</caption>
           <thead>
             <tr>
-              <th className={`${CTH} line-number w-11 text-center pl-5 pr-[13px]`}>#</th>
+              <th className={`${CTH} line-number w-11 text-center pl-5 pr-3.25`}>#</th>
               <th className={`${CTH} item-column min-w-[220px]`}>품목 / 발주 라인</th>
               <th className={`${CTH} numeric text-right tabular-nums`}>청구 수량</th>
               <th className={`${CTH} numeric text-right tabular-nums`}>발주 수량</th>
@@ -195,7 +196,7 @@ export function ComparePanel({ data }: { data: CaseDetailData }) {
           <tbody>
             {rows.map((row) => (
               <tr key={row.lineNumber}>
-                <td className={`${CTD} line-number w-11 text-center pl-5 pr-[13px]`}>{String(row.lineNumber).padStart(2, '0')}</td>
+                <td className={`${CTD} line-number w-11 text-center pl-5 pr-3.25`}>{String(row.lineNumber).padStart(2, '0')}</td>
                 <td className={CTD}>
                   <strong className="item-name mb-1.5 block text-sm">{row.rawItemName}</strong>
                   <span className="item-secondary flex items-center gap-1.5 text-label text-muted-foreground">{row.confirmedItemId ?? '매핑 미확정'}<span>·</span>{row.hasPurchaseOrderLine ? '발주 라인 확정' : '발주 라인 미확정'}</span>
@@ -207,8 +208,8 @@ export function ComparePanel({ data }: { data: CaseDetailData }) {
                 <td className={`${CTD} numeric text-right tabular-nums`}>{formatExactInteger(row.invoiceUnitPrice)}</td>
                 <td className={`${CTD} numeric text-right tabular-nums`}>{row.poUnitPrice === null ? '—' : formatExactInteger(row.poUnitPrice)}</td>
                 <td className={CTD}>
-                  <span className={`line-badge inline-flex items-center gap-1.5 rounded-full border border-transparent px-2 py-1 text-label leading-tight ${row.status === 'MATCHED' && row.issues.length === 0 ? 'bg-[#f2f3ee] text-muted-foreground' : 'exception bg-[#f2edde] text-[#886c37]'}`}>
-                    {row.status === 'MATCHED' && row.issues.length === 0 ? <><Icon name="check" size={12} />일치</> : <><span className="exception-dot inline-block h-[5px] w-[5px] shrink-0 rounded-full bg-[#b18039]" />{presentLineStatus(row.status)}</>}
+                  <span className={`line-badge inline-flex items-center gap-1.5 rounded-full border border-transparent px-2 py-1 text-label leading-tight ${row.status === 'MATCHED' && row.issues.length === 0 ? 'bg-secondary text-muted-foreground' : 'exception bg-status-attention text-status-attention-foreground'}`}>
+                    {row.status === 'MATCHED' && row.issues.length === 0 ? <><Icon name="check" size={12} />일치</> : <><span className="exception-dot inline-block h-1.25 w-1.25 shrink-0 rounded-full bg-warning" />{presentLineStatus(row.status)}</>}
                   </span>
                   {row.issues.map((issue) => <span key={issue.type} className="issue-description mt-1.5 block text-label text-warning">{issue.label}</span>)}
                 </td>
@@ -217,7 +218,7 @@ export function ComparePanel({ data }: { data: CaseDetailData }) {
             {rows.length === 0 && <tr><td colSpan={9} className={`${CTD} empty-table p-12 text-center text-muted-foreground`}>대사 결과에 청구 라인이 없습니다.</td></tr>}
           </tbody>
         </Table>
-        <div className="table-summary flex justify-between gap-4 border-b border-[#efefe9] px-6 py-4 text-label text-muted-foreground">
+        <div className="table-summary flex justify-between gap-4 border-b border-border px-6 py-4 text-label text-muted-foreground">
           <span>{rows.length}개 라인 · 검수 가용과 예상 배분은 서버 대사 결과 값입니다.</span>
         </div>
       </div>
@@ -268,7 +269,7 @@ export function EvidencePanel({ data }: { data: CaseDetailData }) {
   }
 
   return (
-    <div className="history-content p-8 max-[760px]:px-5 max-[760px]:py-[25px]">
+    <div className="history-content p-8 max-[760px]:px-5 max-[760px]:py-6.25">
       <div className={HEADING}>
         <h2 className="text-lg font-medium">제출 이력</h2>
         <span className="text-label text-muted-foreground">
@@ -300,11 +301,11 @@ function FreshnessBlock({ freshness }: { freshness: SectionState<ReviewFreshness
   }
   const detail = freshness.data;
   return (
-    <div className={`panel-status mt-6 border-y border-border py-5 ${detail.current ? 'text-[#66755a]' : 'warning text-[#8e733e]'}`}>
+    <div className={`panel-status mt-6 border-y border-border py-5 ${detail.current ? 'text-muted-foreground' : 'warning text-warning'}`}>
       <strong className="text-label font-medium">현재 자료와 일치 여부: {freshnessVerdict(detail)}</strong>
       {detail.current
-        ? <p className="mt-[7px] text-label leading-[1.8] text-muted-foreground">서버가 현재 사건·증빙·대사·매핑·구매 스냅샷과 일치한다고 판정했습니다.</p>
-        : <p className="mt-[7px] text-label leading-[1.8] text-muted-foreground">불일치 사유: {detail.reasons.map((reason) => presentFreshnessReason(reason)).join(' · ')}</p>}
+        ? <p className="mt-1.75 text-label leading-body text-muted-foreground">서버가 현재 사건·증빙·대사·매핑·구매 스냅샷과 일치한다고 판정했습니다.</p>
+        : <p className="mt-1.75 text-label leading-body text-muted-foreground">불일치 사유: {detail.reasons.map((reason) => presentFreshnessReason(reason)).join(' · ')}</p>}
     </div>
   );
 }
@@ -315,7 +316,7 @@ export function DecisionsPanel({ data }: { data: CaseDetailData }) {
   }
   const { snapshot, decisions } = data;
   return (
-    <div className="history-content p-8 max-[760px]:px-5 max-[760px]:py-[25px]">
+    <div className="history-content p-8 max-[760px]:px-5 max-[760px]:py-6.25">
       <div className={HEADING}><h2 className="text-lg font-medium">검토 대상</h2></div>
       {snapshot.status === 'empty'
         ? <SectionMessage tone="notice">아직 동결된 검토 대상(스냅샷)이 없습니다.</SectionMessage>
@@ -324,12 +325,12 @@ export function DecisionsPanel({ data }: { data: CaseDetailData }) {
           : snapshot.status === 'error'
             ? <SectionMessage tone="error">검토 대상을 불러오지 못했습니다. {snapshot.message}</SectionMessage>
             : <>
-                <dl className="receipt-data my-[22px] text-label">
-                  <div className="mb-[13px] flex justify-between"><dt>검토 대상 번호</dt><dd className="m-0">#{snapshot.data.snapshotNumber}</dd></div>
-                  <div className="mb-[13px] flex justify-between"><dt>대상 청구서 변경 버전</dt><dd className="m-0">v{snapshot.data.targetCaseVersion}</dd></div>
-                  <div className="mb-[13px] flex justify-between"><dt>증빙 버전</dt><dd className="m-0">v{snapshot.data.evidenceBundleVersion}</dd></div>
-                  <div className="mb-[13px] flex justify-between"><dt>비교 결과 번호</dt><dd className="m-0">{snapshot.data.matchResultNumber === null ? '—' : `#${snapshot.data.matchResultNumber}`}</dd></div>
-                  <div className="mb-[13px] flex justify-between"><dt>생성 시각 (KST)</dt><dd className="m-0">{formatInstant(snapshot.data.createdAt)}</dd></div>
+                <dl className="receipt-data my-5.5 text-label">
+                  <div className="mb-3.25 flex justify-between"><dt>검토 대상 번호</dt><dd className="m-0">#{snapshot.data.snapshotNumber}</dd></div>
+                  <div className="mb-3.25 flex justify-between"><dt>대상 청구서 변경 버전</dt><dd className="m-0">v{snapshot.data.targetCaseVersion}</dd></div>
+                  <div className="mb-3.25 flex justify-between"><dt>증빙 버전</dt><dd className="m-0">v{snapshot.data.evidenceBundleVersion}</dd></div>
+                  <div className="mb-3.25 flex justify-between"><dt>비교 결과 번호</dt><dd className="m-0">{snapshot.data.matchResultNumber === null ? '—' : `#${snapshot.data.matchResultNumber}`}</dd></div>
+                  <div className="mb-3.25 flex justify-between"><dt>생성 시각 (KST)</dt><dd className="m-0">{formatInstant(snapshot.data.createdAt)}</dd></div>
                 </dl>
                 <FreshnessBlock freshness={data.freshness} />
               </>}
@@ -380,7 +381,7 @@ export function AuditPanel({ data, entries, nextCursor, loadingMore, error, onMo
     return <SectionMessage tone="notice">아직 감사 기록이 없습니다.</SectionMessage>;
   }
   return (
-    <div className="history-content p-8 max-[760px]:px-5 max-[760px]:py-[25px]">
+    <div className="history-content p-8 max-[760px]:px-5 max-[760px]:py-6.25">
       <div className={HEADING}><h2 className="text-lg font-medium">감사 이력</h2><span className="text-label text-muted-foreground">서버 최신순 페이지</span></div>
       {error && (
         <SectionMessage tone={error.kind === 'forbidden' ? 'forbidden' : 'error'}>
@@ -401,7 +402,7 @@ export function AuditPanel({ data, entries, nextCursor, loadingMore, error, onMo
               <td className={`${TD} align-top [overflow-wrap:anywhere]`}>
                 <details>
                   <summary className="flex cursor-pointer list-none justify-between gap-2.5 after:content-['⌄'] after:shrink-0 [&::-webkit-details-marker]:hidden [[open]_&]:after:content-['⌃']">변경 내용 · 청구서 변경 버전 {entry.businessVersion}</summary>
-                  <p className="mt-3 leading-[1.8] text-[#737b65]">{boundedJson(entry.after)}</p>
+                  <p className="mt-3 leading-body text-muted-foreground">{boundedJson(entry.after)}</p>
                 </details>
               </td>
             </tr>
@@ -411,7 +412,7 @@ export function AuditPanel({ data, entries, nextCursor, loadingMore, error, onMo
       <div className="audit-pagination my-6 mb-4 flex min-h-9 items-center justify-center">
         {nextCursor
           ? <Button variant="outline" className="button" onClick={onMore} disabled={loadingMore}>{loadingMore ? '불러오는 중…' : error ? '이전 기록 다시 시도' : '이전 기록 더 보기'}</Button>
-          : <p className="m-0 text-label text-[#74786e]" role="status">마지막 기록입니다.</p>}
+          : <p className="m-0 text-label text-muted-foreground" role="status">마지막 기록입니다.</p>}
       </div>
     </div>
   );
@@ -428,15 +429,15 @@ export function HandoffStrip({ handoff }: { handoff: SectionState<CaseHandoffSta
   const { payment } = handoff.data;
   if (!payment) {
     return (
-      <div className="review-note mx-[31px] my-[26px] flex items-center gap-2 text-label text-muted-foreground">
-        <span className="status-dot inline-block h-[5px] w-[5px] shrink-0 rounded-full bg-[#828753]" />
+      <div className="review-note mx-7.75 my-6.5 flex items-center gap-2 text-label text-muted-foreground">
+        <span className="status-dot inline-block h-1.25 w-1.25 shrink-0 rounded-full bg-olive" />
         <span>아직 승인·인계 전입니다. 지급요청과 금액은 승인 시 서버가 생성합니다.</span>
       </div>
     );
   }
   return (
-    <div className="review-note mx-[31px] my-[26px] flex items-center gap-2 text-label text-muted-foreground">
-      <span className="status-dot inline-block h-[5px] w-[5px] shrink-0 rounded-full bg-[#828753]" />
+    <div className="review-note mx-7.75 my-6.5 flex items-center gap-2 text-label text-muted-foreground">
+      <span className="status-dot inline-block h-1.25 w-1.25 shrink-0 rounded-full bg-olive" />
       <span>
         ERP 인계: 지급 {presentPaymentStatus(payment.paymentStatus)} · 아웃박스 {payment.outboxStatus ? presentOutboxStatus(payment.outboxStatus) : '—'} · 시도 {payment.attemptCount}회
         {payment.lastErrorCode ? ` · 오류 ${payment.lastErrorCode}` : ''}
@@ -456,7 +457,7 @@ export function HandoffSummary({ handoff, payment }: { handoff: SectionState<Cas
         : '승인 전에는 서버가 지급 금액을 확정하지 않습니다.';
   return (
     <div className="action-summary flex items-center gap-4">
-      <strong className="text-[17px] tracking-[.1px] tabular-nums max-[760px]:text-sm">{amount ?? (handoff.status === 'error' || handoff.status === 'forbidden' ? '인계 상태 확인 필요' : '금액 미확정')}</strong>
+      <strong className="text-section tracking-number tabular-nums max-[760px]:text-sm">{amount ?? (handoff.status === 'error' || handoff.status === 'forbidden' ? '인계 상태 확인 필요' : '금액 미확정')}</strong>
       <span className="text-label text-white max-[760px]:hidden">{caption}</span>
     </div>
   );

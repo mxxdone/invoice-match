@@ -15,17 +15,19 @@ const buttonVariants = cva(
           "border-control-border bg-background text-foreground hover:bg-control-hover",
         secondary:
           "border-control-border-soft bg-background text-foreground hover:bg-control-hover",
-        ghost: "border-transparent hover:bg-accent hover:text-accent-foreground",
+        selected:
+          "border-selection-border bg-selection text-selection-foreground hover:bg-selection",
+        ghost: "border-transparent bg-transparent hover:bg-accent hover:text-accent-foreground",
         destructive:
           "border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/90",
-        link: "border-transparent text-olive underline-offset-4 hover:text-foreground hover:underline",
+        link: "border-transparent bg-transparent text-olive underline-offset-4 hover:text-foreground hover:underline",
       },
       size: {
         default: "h-10 px-3 py-2 text-sm",
         sm: "h-8 px-2.5 py-1 text-label",
         lg: "h-11 px-6",
         icon: "h-10 w-10",
-        "icon-sm": "h-8 w-8 p-0",
+        "icon-sm": "h-8 w-8 p-0 text-label",
         content: "min-h-10 h-auto whitespace-normal text-left",
       },
     },

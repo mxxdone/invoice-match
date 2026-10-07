@@ -7,13 +7,13 @@ import type { Credentials } from '../../api/transport';
 import { useCaseDocuments } from './use-case-documents';
 
 const TH = 'border-b border-border p-3 text-left text-label font-normal text-muted-foreground';
-const TD = 'border-b border-[#efefe9] px-3 py-5';
+const TD = 'border-b border-border px-3 py-5';
 
 export function OriginalDocuments({ credentials, sessionId, caseId, onUnauthorized, children, visible = true }: {
   credentials: Credentials; sessionId: number; caseId: string; onUnauthorized: () => void; children?: ReactNode; visible?: boolean;
 }) {
   const documents = useCaseDocuments({ credentials, sessionId, caseId, onUnauthorized });
-  return <><div className="evidence-workspace px-11 py-6 max-[1200px]:px-[30px] max-[760px]:px-5" hidden={!visible}>
+  return <><div className="evidence-workspace px-11 py-6 max-[1200px]:px-7.5 max-[760px]:px-5" hidden={!visible}>
     <div className="evidence-records min-w-0 [&>.history-content]:px-0">
     <section className="history-content original-documents min-w-0 mb-6" aria-label="원본 문서">
     <div className="section-heading mb-6 flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-medium">원본 문서</h2><Button variant="outline" className="button" onClick={documents.refresh}>목록 새로고침</Button></div>
@@ -36,7 +36,7 @@ export function OriginalDocuments({ credentials, sessionId, caseId, onUnauthoriz
     {children}
     </div>
     </div>
-    {documents.preview && <aside className="pdf-preview-drawer fixed inset-y-0 right-0 z-10 flex h-[100dvh] min-h-0 w-[var(--pdf-drawer-width,clamp(420px,34vw,760px))] flex-col border-l border-border bg-[#fafaf6] shadow-[-8px_0_24px_rgb(48_51_44_/_8%)] max-[1000px]:w-[min(100vw,640px)] animate-[pdf-drawer-in_220ms_ease] motion-reduce:animate-none" aria-label="PDF 미리보기 영역">
+    {documents.preview && <aside className="pdf-preview-drawer fixed inset-y-0 right-0 z-10 flex h-[100dvh] min-h-0 w-[var(--pdf-drawer-width,clamp(420px,34vw,760px))] flex-col border-l border-border bg-background shadow-drawer max-[1000px]:w-[min(100vw,640px)] motion-reduce:animate-none" aria-label="PDF 미리보기 영역">
       <div className="pdf-drawer-header shrink-0 border-b border-border p-5">
         <div className="section-heading mb-3 flex flex-wrap items-start justify-between gap-3"><h3 className="text-ink min-w-0 break-words text-lg font-medium">{documents.preview.fileName}</h3><Button variant="outline" className="button" aria-label="PDF 미리보기 닫기" onClick={documents.closePreview}>닫기</Button></div>
         <Button asChild variant="outline" className="button"><a href={documents.preview.url} target="_blank" rel="noopener noreferrer">PDF 새 탭에서 열기</a></Button>

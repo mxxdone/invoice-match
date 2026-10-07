@@ -44,6 +44,19 @@
   --status-complete-foreground: #48684c;
   --status-rejected: #f6eae7;
   --status-rejected-foreground: #92594c;
+  --brand: #839046;
+  --brand-rule: #cad683;
+  --table-heading: #fcfcfa;
+  --row-hover: #fafbf6;
+  --avatar: #dedfc8;
+  --notice-warning: #faf4df;
+  --notice-warning-border: #e8ddae;
+  --notice-warning-strong: #ae9157;
+  --notice-success: #f3fbf4;
+  --notice-success-border: #79a286;
+  --selection: #e7ebdc;
+  --selection-foreground: #435236;
+  --selection-border: #d1d8bf;
 }
 
 /* Retain the reviewed browser defaults without importing Preflight. */

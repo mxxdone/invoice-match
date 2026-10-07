@@ -1,5 +1,8 @@
 'use client';
 
+import { Notice } from '@/components/ui/notice';
+import { NativeSelect } from '@/components/ui/native-select';
+import { UnderlineTab } from '@/components/ui/underline-tab';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useCallback, useEffect, useState } from 'react';
@@ -34,13 +37,13 @@ import { eligibleGraphProposal } from './graph-model';
 import type { SelectedProposal } from '../../api/contract';
 
 type StatusTone = 'neutral' | 'pending' | 'attention' | 'complete' | 'rejected';
-const EMPTY = 'empty-state flex flex-1 min-h-0 flex-col items-center justify-center gap-[15px] px-5 py-10 text-center';
-const EMPTY_H1 = 'm-0 text-base font-normal text-[#6f7863]';
+const EMPTY = 'empty-state flex flex-1 min-h-0 flex-col items-center justify-center gap-3.75 px-5 py-10 text-center';
+const EMPTY_H1 = 'm-0 text-base font-normal text-muted-foreground';
 const EMPTY_P = 'm-0 text-label';
 const HEADING = 'section-heading mb-6 flex flex-wrap items-center justify-between gap-3';
-const NOTE = 'review-note mx-[31px] my-[26px] flex items-center gap-2 text-label text-muted-foreground';
+const NOTE = 'review-note mx-7.75 my-6.5 flex items-center gap-2 text-label text-muted-foreground';
 const ACTIONS = 'dialog-actions mt-6 flex justify-end gap-2';
-const STATUS_DOT = 'status-dot inline-block h-[5px] w-[5px] shrink-0 rounded-full bg-[#828753]';
+const STATUS_DOT = 'status-dot inline-block h-1.25 w-1.25 shrink-0 rounded-full bg-olive';
 
 function Detail() {
   const params = useParams<{ id: string }>();
@@ -230,19 +233,19 @@ function Detail() {
 
   return (
     <Shell active="cases" preview={false}>
-      <div className="case-detail flex min-w-0 flex-1 flex-col text-detail leading-[1.6]">
-      <header className="page-header px-11 pb-6 pt-8 max-[1200px]:px-[30px] max-[760px]:px-5">
-        <nav className="breadcrumb mb-[18px] flex items-center gap-2.5 text-label text-muted-foreground" aria-label="현재 위치">
-          <Link className="underline underline-offset-[3px] hover:text-[#4f643d]" href={listHref}><Icon name="arrow" size={12} />청구서</Link>
+      <div className="case-detail flex min-w-0 flex-1 flex-col text-detail leading-detail">
+      <header className="page-header px-11 pb-6 pt-8 max-[1200px]:px-7.5 max-[760px]:px-5">
+        <nav className="breadcrumb mb-4.5 flex items-center gap-2.5 text-label text-muted-foreground" aria-label="현재 위치">
+          <Link className="underline underline-offset-3 hover:text-olive" href={listHref}><Icon name="arrow" size={12} />청구서</Link>
           <Icon name="chevron" size={12} />
           <span aria-current="page">상세</span>
         </nav>
         <div className="title-row flex flex-wrap items-center justify-between gap-5">
           <div>
-            <h1 className="text-[32px] font-medium leading-[1.2] tracking-[-1px] max-[760px]:text-[26px]">청구서 상세</h1>
-            <p className="invoice-id mt-[13px] flex items-center gap-[13px] text-detail">
+            <h1 className="text-title font-medium leading-title tracking-title max-[760px]:text-title-sm">청구서 상세</h1>
+            <p className="invoice-id mt-3.25 flex items-center gap-3.25 text-detail">
               {data.detail.invoiceNumber}{' '}
-              <Badge variant={status.tone as StatusTone} className="case-status gap-1.5"><span className="case-status-dot h-[5px] w-[5px] rounded-full bg-current" />{status.label}</Badge>
+              <Badge variant={status.tone as StatusTone} className="case-status"><span className="case-status-dot h-1.25 w-1.25 rounded-full bg-current" />{status.label}</Badge>
             </p>
           </div>
           <Button variant="outline" className="button" onClick={() => selectTab('evidence')}>원본 문서·제출 이력 보기</Button>
@@ -257,15 +260,15 @@ function Detail() {
           <div className="flex items-center gap-2"><dt className="text-label text-muted-foreground">제출 시각 (KST)</dt><dd className="m-0 text-label">{formatInstant(newest?.submittedAt ?? null)}</dd></div>
         </dl>
       </header>
-      <div className="tabs flex min-h-[58px] flex-wrap items-center gap-x-7 gap-y-3 border-b border-border px-11 max-[1200px]:px-[30px] max-[760px]:px-5" role="tablist" aria-label="청구서 상세">
+      <div className="tabs flex min-h-14.5 flex-wrap items-center gap-x-7 gap-y-3 border-b border-border px-11 max-[1200px]:px-7.5 max-[760px]:px-5" role="tablist" aria-label="청구서 상세">
         {tabs.map(([id, label]) => (
-          <Button key={id} variant="ghost" role="tab" id={`tab-${id}`} aria-controls={`panel-${id}`} aria-selected={tab === id} className={`min-h-[58px] rounded-none border-x-0 border-t-0 border-b-2 bg-transparent px-1.5 hover:bg-transparent ${tab === id ? 'active border-b-[#686c5e] text-ink' : 'border-b-transparent text-[#858579] hover:text-ink'}`} onClick={() => selectTab(id)}>{id === 'evidence' ? '원본 문서·제출 이력' : label}</Button>
+          <UnderlineTab key={id}  role="tab" id={`tab-${id}`} aria-controls={`panel-${id}`} aria-selected={tab === id}  onClick={() => selectTab(id)} active={tab === id} density="detail">{id === 'evidence' ? '원본 문서·제출 이력' : label}</UnderlineTab>
         ))}
       </div>
 
       {actions.failure && (
         <MutationFailureNotice
-          className="mx-11 max-[1200px]:mx-[30px] max-[760px]:mx-5"
+          className="mx-11 max-[1200px]:mx-7.5 max-[760px]:mx-5"
           failure={actions.failure}
           onRefresh={() => { actions.clearFailure(); setReloadToken((value) => value + 1); }}
         />
@@ -276,7 +279,7 @@ function Detail() {
       <HandoffStrip handoff={handoff} />
 
       {isOperator && tab === 'compare' && (
-        <div className="toolbar flex min-h-[46px] flex-wrap items-center gap-2.5 border-b border-border bg-[#faf9f6] px-11 py-3 max-[1200px]:px-[30px] max-[760px]:px-5">
+        <div className="toolbar flex min-h-11.5 flex-wrap items-center gap-2.5 border-b border-border bg-muted px-11 py-3 max-[1200px]:px-7.5 max-[760px]:px-5">
           <span className="demo-description text-label text-muted-foreground">운영자 대사 실행 · 최신 제출 증빙을 대상으로 서버가 결정론적으로 대사합니다.</span>
           <Button variant="outline" className="button" disabled={actionBlocked || newest === null} title={newest === null ? '제출된 증빙이 없어 대사를 실행할 수 없습니다.' : '대사 실행'} onClick={actions.runMatch}>{actions.pendingAction === 'match' ? '대사 실행 중…' : '대사 실행'}</Button>
         </div>
@@ -292,7 +295,7 @@ function Detail() {
         proofCandidate={graphCandidateProof} proofSelected={selectedProof !== null && proposalSelection?.kind === 'graph'}
         onSelectProof={(proof) => setProposalSelection(proof ? { ...proof, identity, kind: 'graph' } : null)} />}
 
-      <div className="action-panel px-11 pt-5 max-[1200px]:px-[30px] max-[760px]:px-5">
+      <div className="action-panel px-11 pt-5 max-[1200px]:px-7.5 max-[760px]:px-5">
       {actionUnresolved && (
         <section className="form-section mb-8" aria-label="미확정 요청 복구">
           <SectionMessage tone="notice">
@@ -327,12 +330,12 @@ function Detail() {
 
           {subjectReady && snapshot && (
             <>
-              <div className="field-grid mapper-grid grid grid-cols-2 gap-7 max-[760px]:grid-cols-1 max-[760px]:gap-[18px]">
+              <div className="field-grid mapper-grid grid grid-cols-2 gap-7 max-[760px]:grid-cols-1 max-[760px]:gap-4.5">
                 <label className="text-label text-muted-foreground">매핑할 라인
-                  <select className="mt-3 mb-2 block min-h-10 w-full rounded-sm border border-input bg-white px-3 py-2.5 text-sm text-[#424a34]" aria-label="매핑할 라인" value={mappingLine} onChange={(event) => setMappingLine(event.target.value)}>
+                  <NativeSelect className="mt-3 mb-2 block w-full" aria-label="매핑할 라인" value={mappingLine} onChange={(event) => setMappingLine(event.target.value)} density="default">
                     <option value="">라인 선택</option>
                     {mappingRows.map((row) => <option key={row.lineNumber} value={String(row.lineNumber)}>라인 {row.lineNumber} · {row.rawItemName}{row.confirmedItemId ? ` (현재 ${row.confirmedItemId})` : ''}</option>)}
-                  </select>
+                  </NativeSelect>
                   <small className="text-label text-muted-foreground">서버 대사 결과의 라인만 나열합니다.</small>
                 </label>
                 <label className="text-label text-muted-foreground">확정 품목 ID
@@ -344,17 +347,17 @@ function Detail() {
                 <Button variant="outline" className="button" disabled={actionBlocked || !mappingLine || !mappingItem.trim()} onClick={doMapping}>{actions.pendingAction === 'mapping' ? '확정 중…' : '매핑 확정'}</Button>
               </div>
 
-              <div className="review-warning mx-0 mb-3 flex items-center justify-between gap-3 border border-[#e8ddae] bg-[#faf4df] px-4 py-3 text-sm [&_p]:mt-1 [&_p]:text-[#716446]" role="status">
+              <Notice className="review-warning mx-0 mb-3 flex items-center justify-between [&_p]:mt-1" role="status" tone="warning">
                 <div>
                   <strong>승인 대상 확인</strong>
                   <p>검토 #{snapshot.snapshotNumber} · 청구서 v{data.detail.version} · 현재 자료와 일치함</p>
                   <p>서버가 표시된 검토 대상과 최신성을 재검증합니다. 화면에 보이는 값으로만 결정합니다.</p>
                 </div>
-              </div>
+              </Notice>
 
               {reasonPanel && (
                 <label className="reason-label block text-label text-muted-foreground">{reasonPanel === 'supplement' ? '보완 요청 사유' : '청구 거절 사유'}
-                  <Textarea className="mt-2.5 resize-y" rows={3} value={reason} onChange={(event) => setReason(event.target.value)} placeholder={reasonPanel === 'reject' ? '예: 다른 거래에 대한 청구로 확인되어 처리를 종료합니다.' : '예: 부족한 수량의 검수 근거를 추가해 주세요.'} />
+                  <Textarea className="mt-2.5" rows={3} value={reason} onChange={(event) => setReason(event.target.value)} placeholder={reasonPanel === 'reject' ? '예: 다른 거래에 대한 청구로 확인되어 처리를 종료합니다.' : '예: 부족한 수량의 검수 근거를 추가해 주세요.'} />
                 </label>
               )}
               <div className={ACTIONS}>
@@ -373,7 +376,7 @@ function Detail() {
                   </>
                 )}
               </div>
-              {ownerSubmitter && <p className="panel-footnote text-label leading-[1.9] text-muted-foreground" role="status">이 청구의 제출자 계정으로 로그인되어 있습니다. 서버는 자기 승인을 거부하며, 승인을 누르면 서버 응답으로 사유가 표시됩니다.</p>}
+              {ownerSubmitter && <p className="panel-footnote text-label leading-roomy text-muted-foreground" role="status">이 청구의 제출자 계정으로 로그인되어 있습니다. 서버는 자기 승인을 거부하며, 승인을 누르면 서버 응답으로 사유가 표시됩니다.</p>}
             </>
           )}
         </section>
@@ -390,7 +393,7 @@ function Detail() {
         {credentials && <OriginalDocuments key={`${sessionId}:${caseId}`} credentials={credentials} sessionId={sessionId} caseId={caseId} onUnauthorized={onUnauthorized} visible={tab === 'evidence' && !unsupportedTab}><EvidencePanel data={data} /></OriginalDocuments>}
       </section>
 
-      <footer className="action-bar sticky bottom-0 z-[2] mt-auto flex min-h-[69px] flex-wrap items-center justify-between gap-5 bg-olive px-11 py-3 text-white max-[1200px]:px-[30px] max-[760px]:gap-3 max-[760px]:px-3.5">
+      <footer className="action-bar sticky bottom-0 z-[2] mt-auto flex min-h-17.25 flex-wrap items-center justify-between gap-5 bg-olive px-11 py-3 text-white max-[1200px]:px-7.5 max-[760px]:gap-3 max-[760px]:px-3.5">
         <HandoffSummary handoff={handoff} payment={payment} />
         <div className="action-buttons flex items-center gap-2.5">
           <span className="footer-context mr-2 text-label text-white max-[1200px]:hidden">검토 #{data.snapshot.status === 'ready' ? data.snapshot.data.snapshotNumber : '—'} · 증빙 {newest ? `v${newest.version}` : '—'}</span>

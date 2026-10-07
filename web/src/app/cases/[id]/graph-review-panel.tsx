@@ -1,5 +1,7 @@
 'use client';
 
+import { NativeSelect } from '@/components/ui/native-select';
+import { Notice } from '@/components/ui/notice';
 // Read/write surface for the default-off graph workflow, added next to the
 // existing advisory ProposalPanel. It never computes currentness, permissions,
 // supported versions or hashes; those come from the Core projection. The real
@@ -50,16 +52,14 @@ const RECOMMENDATION_LABELS: Record<string, string> = {
   REVIEW_REQUIRED: '사람 검토 필요', NORMAL: '정상',
 };
 
-const SECTION = 'form-section proposal-panel mx-11 my-6 min-w-0 [overflow-wrap:anywhere] max-[1200px]:mx-[30px] max-[760px]:mx-5';
+const SECTION = 'form-section proposal-panel mx-11 my-6 min-w-0 [overflow-wrap:anywhere] max-[1200px]:mx-7.5 max-[760px]:mx-5';
 const HEADING = 'section-heading mb-6 flex flex-wrap items-center justify-between gap-3';
-const NOTE = 'review-note mx-[31px] my-[26px] flex items-center gap-2 text-label text-muted-foreground';
-const WARNING = 'review-warning mx-0 mb-3 border border-[#e8ddae] bg-[#faf4df] px-4 py-3 text-sm text-[#716446]';
-const ENTRY = 'proposal-entry border-b border-[#e0e2d9] py-3';
+const NOTE = 'review-note mx-7.75 my-6.5 flex items-center gap-2 text-label text-muted-foreground';
+const ENTRY = 'proposal-entry border-b border-border py-3';
 const ACTIONS = 'dialog-actions mt-6 flex justify-end gap-2';
 const CHOICE = 'proposal-choice my-4 flex items-center gap-2.5';
 const H3 = 'mt-6 text-base font-medium';
-const BLOCKQUOTE = 'my-2.5 whitespace-pre-wrap border-l-[3px] border-border bg-[#f5f6f2] px-4 py-2.5 text-sm text-foreground';
-const SELECT = 'block w-full min-h-9 rounded-sm border border-input bg-white px-2.5 py-2 text-sm text-[#424a34]';
+const BLOCKQUOTE = 'my-2.5 whitespace-pre-wrap border-l-3 border-border bg-muted px-4 py-2.5 text-sm text-foreground';
 const MUTED = 'muted-text text-label text-muted-foreground';
 
 function label(map: Record<string, string>, key: string): string {
@@ -94,7 +94,7 @@ function RunSummary({ view, enabled, isOperator, blocked, pending, onSuccessor }
       {run.errorCode && (run.status === 'FAILED'
         ? <p className="my-3" role="alert">분석 오류: {run.errorCode}. 원인을 해결하고 최신 입력을 준비해야 합니다.</p>
         : <p className="my-3">이전 시도 오류: {run.errorCode}</p>)}
-      {oldInput && run.supported && <p className={WARNING}>이전 입력으로 만든 분석입니다. 현재 자료의 승인 근거로 사용할 수 없습니다.</p>}
+      {oldInput && run.supported && <Notice tone="warning" className="review-warning mx-0 mb-3">이전 입력으로 만든 분석입니다. 현재 자료의 승인 근거로 사용할 수 없습니다.</Notice>}
       {isOperator && canReserve && (
         <div className={ACTIONS}>
           {oldInput && <Button variant="outline" className="button" disabled={blocked} onClick={onSuccessor}>{pending ? '예약 중…' : '이 입력으로 새 분석 예약'}</Button>}
@@ -178,11 +178,11 @@ function ConfirmForm({ view, pending, blocked, inFlight, onConfirm }: {
     });
   }
   return (
-    <div className="graph-confirm mt-[18px] border-t border-border pt-[18px]">
+    <div className="graph-confirm mt-4.5 border-t border-border pt-4.5">
       <h3 className={H3}>사람 확인 저장</h3>
       <p className={MUTED}>저장하면 재개가 예약됩니다. 저장 성공은 완료가 아니며, 재개 완료는 서버 재조회로 확인합니다.</p>
       <fieldset className="my-3 rounded-sm border border-border px-3.5 py-2.5">
-        <legend className="px-1.5 text-label text-[#74786e]">문서 후보 확인</legend>
+        <legend className="px-1.5 text-label text-muted-foreground">문서 후보 확인</legend>
         {decisionOptions.map((option) => (
           <label key={option} className={CHOICE}>
             <input type="radio" name={`document-decision-${view.run.id}`} disabled={blocked} checked={documentDecision === option} onChange={() => setDocumentDecision(option)} />
@@ -197,19 +197,19 @@ function ConfirmForm({ view, pending, blocked, inFlight, onConfirm }: {
               <td>{line.lineNumber}</td>
               <td><Source view={view} source={line.source} /></td>
               <td>
-                <select className={SELECT} aria-label={`추출 순번 ${line.lineNumber} 후보 확인`} disabled={blocked} value={choices.get(line.lineNumber) ? String(line.candidates.findIndex((c) => c.itemId === choices.get(line.lineNumber)?.itemId && c.purchaseOrderLineId === choices.get(line.lineNumber)?.purchaseOrderLineId)) : ''} onChange={(event) => setChoice(line.lineNumber, event.target.value)}>
+                <NativeSelect className="block w-full" aria-label={`추출 순번 ${line.lineNumber} 후보 확인`} disabled={blocked} value={choices.get(line.lineNumber) ? String(line.candidates.findIndex((c) => c.itemId === choices.get(line.lineNumber)?.itemId && c.purchaseOrderLineId === choices.get(line.lineNumber)?.purchaseOrderLineId)) : ''} onChange={(event) => setChoice(line.lineNumber, event.target.value)} density="compact">
                   <option value="">미해결로 기록</option>
                   {line.candidates.map((candidate, index) => (
                     <option key={`${candidate.itemId}:${candidate.purchaseOrderLineId}`} value={String(index)}>{candidate.itemId} · 발주 라인 {candidate.purchaseOrderLineId}</option>
                   ))}
-                </select>
+                </NativeSelect>
               </td>
             </tr>
           ))}
         </tbody></Table>
       )}
       <label className="reason-label my-4 block max-w-[580px] text-label text-muted-foreground">확인 사유
-        <Textarea className="mt-2 resize-y" rows={3} maxLength={1000} disabled={blocked} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="예: 원문과 후보를 대조한 결과를 기록합니다." />
+        <Textarea className="mt-2" rows={3} maxLength={1000} disabled={blocked} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="예: 원문과 후보를 대조한 결과를 기록합니다." />
       </label>
       <div className={ACTIONS}>
         <Button variant="default" className="button primary" disabled={!canSubmit} onClick={submit}>{inFlight ? '저장 중…' : '사람 확인 저장'}</Button>
@@ -252,7 +252,7 @@ function CompletedPayload({ view, isApprover, proofCandidate, proofSelected, blo
       <p>{payload.resolution.result.summary}</p>
       {payload.resolution.result.warnings.length > 0 && <ul>{payload.resolution.result.warnings.map((w) => <li key={w}>{label(WARNING_LABELS, w)}</li>)}</ul>}
       <details><summary>서버 대사에서 확인한 수치</summary><dl className="proposal-facts">{Object.entries(payload.facts).map(([id, fact]) => (
-        <div key={id} className="flex justify-between gap-4 py-[.3rem]"><dt>{id.replace('invoiceQuantity', '청구 수량').replace('invoiceUnitPrice', '청구 단가').replace('availableConfirmedQuantity', '검수 잔량').replace('plannedQuantity', '예상 배분 수량').replace('invoiceAmount', '청구 금액').replace('line:', '라인 ')}</dt><dd className="m-0">{exactFact(fact.value)} {fact.unit === 'KRW' ? '원' : '개'}</dd></div>
+        <div key={id} className="flex justify-between gap-4 py-fact-row"><dt>{id.replace('invoiceQuantity', '청구 수량').replace('invoiceUnitPrice', '청구 단가').replace('availableConfirmedQuantity', '검수 잔량').replace('plannedQuantity', '예상 배분 수량').replace('invoiceAmount', '청구 금액').replace('line:', '라인 ')}</dt><dd className="m-0">{exactFact(fact.value)} {fact.unit === 'KRW' ? '원' : '개'}</dd></div>
       ))}</dl></details>
       <h3 className={H3}>문서에서 추출한 후보</h3>
       {payload.document.result.lines.map((line) => (
@@ -272,7 +272,7 @@ function CompletedPayload({ view, isApprover, proofCandidate, proofSelected, blo
         </label>
       )}
       {isApprover && !selectable && (
-        <p className={WARNING}>현재 입력의 완료 제안이 아니므로 검토 근거로 선택할 수 없습니다.</p>
+        <Notice tone="warning" className="review-warning mx-0 mb-3">현재 입력의 완료 제안이 아니므로 검토 근거로 선택할 수 없습니다.</Notice>
       )}
     </>
   );
@@ -302,8 +302,8 @@ export function GraphReviewPanel({
   onSelectProof: (proof: SelectedProposal | null) => void;
 }) {
   if (load.status === 'forbidden') return null;
-  if (load.status === 'loading') return <section className="form-section proposal-panel mx-11 my-6 min-w-0 [overflow-wrap:anywhere] max-[1200px]:mx-[30px] max-[760px]:mx-5" aria-label="AI 확인·재개"><h2 className="text-lg font-medium">AI 확인·재개</h2><p className="my-3" role="status">AI 분석 상태를 확인하고 있습니다.</p></section>;
-  if (load.status === 'error') return <section className="form-section proposal-panel mx-11 my-6 min-w-0 [overflow-wrap:anywhere] max-[1200px]:mx-[30px] max-[760px]:mx-5" aria-label="AI 확인·재개"><h2 className="text-lg font-medium">AI 확인·재개</h2><p className="my-3" role="alert">{load.message}</p><Button variant="outline" className="button" onClick={onRefresh}>다시 조회</Button></section>;
+  if (load.status === 'loading') return <section className="form-section proposal-panel mx-11 my-6 min-w-0 [overflow-wrap:anywhere] max-[1200px]:mx-7.5 max-[760px]:mx-5" aria-label="AI 확인·재개"><h2 className="text-lg font-medium">AI 확인·재개</h2><p className="my-3" role="status">AI 분석 상태를 확인하고 있습니다.</p></section>;
+  if (load.status === 'error') return <section className="form-section proposal-panel mx-11 my-6 min-w-0 [overflow-wrap:anywhere] max-[1200px]:mx-7.5 max-[760px]:mx-5" aria-label="AI 확인·재개"><h2 className="text-lg font-medium">AI 확인·재개</h2><p className="my-3" role="alert">{load.message}</p><Button variant="outline" className="button" onClick={onRefresh}>다시 조회</Button></section>;
   if (load.status !== 'ready') return null;
 
   const page: GraphPage = load.data;
@@ -323,7 +323,7 @@ export function GraphReviewPanel({
   } else if (view && view.run.supported && view.pending && !page.enabled) {
     body = <p className={NOTE}>AI 확인·재개가 비활성화되어 저장할 수 없습니다. 기존 기록만 조회합니다.</p>;
   } else if (view && view.run.supported && view.pending) {
-    body = <p className={WARNING}>현재 입력의 대기가 아니어서 확인을 저장할 수 없습니다. 최신 입력으로 다시 분석해야 합니다.</p>;
+    body = <Notice tone="warning" className="review-warning mx-0 mb-3">현재 입력의 대기가 아니어서 확인을 저장할 수 없습니다. 최신 입력으로 다시 분석해야 합니다.</Notice>;
   } else if (view && view.run.supported && view.run.status === 'COMPLETED') {
     body = <CompletedPayload view={view} isApprover={isApprover} proofCandidate={proofCandidate} proofSelected={proofSelected} blocked={blocked} onSelectProof={onSelectProof} />;
   } else if (view && view.run.supported) {
@@ -349,14 +349,14 @@ export function GraphReviewPanel({
       {view.review && <ReviewRecord review={view.review} />}
       {body}
     </> : null}
-    {lastSuccess === 'graphConfirm' && <div className={NOTE} role="status"><span className="status-dot inline-block h-[5px] w-[5px] shrink-0 rounded-full bg-[#828753]" /><span>사람 확인이 저장되어 재개가 예약되었습니다. 완료 여부는 서버 재조회로 확인합니다.</span></div>}
+    {lastSuccess === 'graphConfirm' && <div className={NOTE} role="status"><span className="status-dot inline-block h-1.25 w-1.25 shrink-0 rounded-full bg-olive" /><span>사람 확인이 저장되어 재개가 예약되었습니다. 완료 여부는 서버 재조회로 확인합니다.</span></div>}
     {history.length > 1 && (
       <details open={historySelectedId !== null}>
         <summary>AI 분석 이력</summary>
         <ul className="graph-history my-3 flex list-none flex-col items-start gap-2 p-0">
           {history.map((run) => (
             <li key={run.id}>
-              <Button variant={historySelectedId === run.id ? 'default' : 'outline'} className={`button ${historySelectedId === run.id ? 'primary' : ''} max-w-full whitespace-normal text-left`} disabled={blocked || historyLoading} onClick={() => onSelectHistory(run.id)}>
+              <Button variant={historySelectedId === run.id ? 'default' : 'outline'} size="content" className="button max-w-full" disabled={blocked || historyLoading} onClick={() => onSelectHistory(run.id)}>
                 {presentGraphStatus(run.status)} · {presentGraphSegment(run.segment)} · v{run.caseVersion}{historySelectedId === run.id ? ' · 표시 중' : ''}
               </Button>
             </li>

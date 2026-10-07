@@ -2,20 +2,21 @@ import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
 
-const noticeVariants = cva("min-w-0 [&_p]:mt-1", {
+const noticeVariants = cva("min-w-0 gap-3 [&_p]:mt-1", {
   variants: {
     tone: {
-      warning: "border-warning/30 bg-status-attention text-warning",
-      success: "border-green/40 bg-mint text-green",
+      warning: "border-notice-warning-border bg-notice-warning text-warning",
+      success: "border-notice-success-border bg-notice-success text-green",
       neutral: "border-border bg-muted text-muted-foreground",
     },
     variant: {
       boxed: "rounded-sm border px-4 py-3",
-      strip: "rounded-none border-0 border-l-2 px-5 py-4.25",
+      strip: "flex flex-col gap-2.5 rounded-none border-0 border-l-2 px-5 py-4.25",
       inline: "border-0 bg-transparent p-0",
     },
     density: { default: "text-sm", compact: "text-label" },
   },
+  compoundVariants: [{ tone: "warning", variant: "strip", className: "border-notice-warning-strong" }],
   defaultVariants: { tone: "warning", variant: "boxed", density: "default" },
 })
 
