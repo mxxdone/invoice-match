@@ -38,8 +38,10 @@ export function OriginalDocuments({ credentials, sessionId, caseId, onUnauthoriz
     </div>
     {documents.preview && <aside className="pdf-preview-drawer fixed inset-y-0 right-0 z-10 flex h-[100dvh] min-h-0 w-[var(--pdf-drawer-width,clamp(420px,34vw,760px))] flex-col border-l border-border bg-background shadow-drawer max-[1000px]:w-[min(100vw,640px)] motion-reduce:animate-none" aria-label="PDF 미리보기 영역">
       <div className="pdf-drawer-header shrink-0 border-b border-border p-5">
-        <div className="section-heading mb-3 flex flex-wrap items-start justify-between gap-3"><h3 className="text-ink min-w-0 break-words text-lg font-medium">{documents.preview.fileName}</h3><Button variant="outline" className="button" aria-label="PDF 미리보기 닫기" onClick={documents.closePreview}>닫기</Button></div>
-        <Button asChild variant="outline" className="button"><a href={documents.preview.url} target="_blank" rel="noopener noreferrer">PDF 새 탭에서 열기</a></Button>
+        <div className="section-heading flex flex-wrap items-center justify-between gap-3">
+          <Button asChild variant="outline" className="button"><a href={documents.preview.url} target="_blank" rel="noopener noreferrer">PDF 새 탭에서 열기</a></Button>
+          <Button variant="outline" className="button" aria-label="PDF 미리보기 닫기" onClick={documents.closePreview}>닫기</Button>
+        </div>
         <p className="muted-text mt-3 text-label text-muted-foreground">인쇄는 PDF 뷰어에서 할 수 있습니다.</p>
       </div>
       <div className="pdf-drawer-body flex-1 min-h-0 p-3">
