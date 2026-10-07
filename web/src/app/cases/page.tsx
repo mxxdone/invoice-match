@@ -151,7 +151,7 @@ function Cases() {
   const workbench = <div className={`review-workbench flex items-stretch border-t border-border ${selectedRow ? 'with-panel max-[760px]:block' : ''}`}>
     <div className="table-area min-w-0 flex-1">
       <Table className="work-table case-list-table w-full whitespace-nowrap text-sm max-[760px]:min-w-[710px]" aria-busy={isLoading}>
-        <caption className="sr-only">매입 청구서 목록. 서버 부분 검색과 서버 페이지 이동이 적용됩니다.</caption>
+        <caption className="sr-only">매입 청구서 목록</caption>
         <TableHeader><TableRow className="border-0"><TableHead density="list">공급사 ID / 제출자</TableHead><TableHead density="list">청구번호</TableHead><TableHead density="list">상태</TableHead><TableHead density="list">발주번호</TableHead><TableHead density="list">제출 시각 (KST)</TableHead><TableHead density="list"><span className="sr-only">선택</span></TableHead></TableRow></TableHeader>
         <TableBody>
           {rows.map(row => {
@@ -191,21 +191,21 @@ function Cases() {
         <div className="mb-3.25 flex justify-between"><dt className="text-muted-foreground">청구서 버전</dt><dd className="m-0">v{selectedRow.version}</dd></div>
       </dl>
       <div className="dialog-actions mt-6.25 flex justify-end gap-2"><Button asChild><Link href={detailHref(selectedRow.id)}>상세 열기<Icon name="chevron" size={14} /></Link></Button></div>
-      <p className="panel-footnote text-label leading-roomy text-muted-foreground">서버 목록 요약입니다. 상세는 실제 조회 화면으로 이동합니다.</p>
+      <p className="panel-footnote text-label leading-roomy text-muted-foreground">상세 화면에서 청구 내용과 증빙을 확인할 수 있습니다.</p>
     </aside>}
   </div>;
 
   const body = !isAuthenticated
     ? <section className="empty-state flex min-h-0 flex-1 flex-col items-center justify-center gap-3.75 px-5 py-10 text-center text-muted-foreground" role="status"><Icon name="clock" size={25} /><h1 className="text-base font-normal text-muted-foreground">로그인이 필요합니다</h1><p className="text-label">로그인 화면으로 이동합니다.</p></section>
     : state === 'loading' && !pageResult
-      ? <section className="empty-state flex min-h-0 flex-1 flex-col items-center justify-center gap-3.75 px-5 py-10 text-center text-muted-foreground" role="status" aria-busy="true"><Icon name="clock" size={25} /><h1 className="text-base font-normal text-muted-foreground">불러오는 중</h1><p className="text-label">청구 목록을 서버에서 확인하고 있습니다.</p></section>
+      ? <section className="empty-state flex min-h-0 flex-1 flex-col items-center justify-center gap-3.75 px-5 py-10 text-center text-muted-foreground" role="status" aria-busy="true"><Icon name="clock" size={25} /><h1 className="text-base font-normal text-muted-foreground">불러오는 중</h1><p className="text-label">청구서 목록을 불러오고 있습니다.</p></section>
       : state === 'forbidden'
         ? <section className="empty-state flex min-h-0 flex-1 flex-col items-center justify-center gap-3.75 px-5 py-10 text-center text-muted-foreground" role="status"><Icon name="document" size={25} /><h1 className="text-base font-normal text-muted-foreground">이 화면에 접근할 권한이 없습니다</h1><p className="text-label">계정 역할을 확인해 주세요.</p><Button variant="outline" onClick={retry}>다시 시도</Button></section>
         : state === 'error'
           ? <section className="empty-state flex min-h-0 flex-1 flex-col items-center justify-center gap-3.75 px-5 py-10 text-center text-muted-foreground" role="alert"><Icon name="document" size={25} /><h1 className="text-base font-normal text-muted-foreground">자료를 불러오지 못했습니다</h1><p className="text-label">{loadError}</p><Button variant="outline" onClick={retry}>다시 시도</Button></section>
           : pageResult
             ? workbench
-            : <section className="empty-state flex min-h-0 flex-1 flex-col items-center justify-center gap-3.75 px-5 py-10 text-center text-muted-foreground" role="status" aria-busy="true"><Icon name="clock" size={25} /><h1 className="text-base font-normal text-muted-foreground">불러오는 중</h1><p className="text-label">청구 목록을 서버에서 확인하고 있습니다.</p></section>;
+            : <section className="empty-state flex min-h-0 flex-1 flex-col items-center justify-center gap-3.75 px-5 py-10 text-center text-muted-foreground" role="status" aria-busy="true"><Icon name="clock" size={25} /><h1 className="text-base font-normal text-muted-foreground">불러오는 중</h1><p className="text-label">청구서 목록을 불러오고 있습니다.</p></section>;
 
   return <Shell active="cases" preview={false}>
     <PageHeader eyebrow="청구 업무" title="매입 청구서" subtitle={canSeeAllSubmitters ? '청구서와 처리 상태를 확인하세요.' : '제출한 청구서와 처리 상태를 확인하세요.'} action={<Button asChild><Link href="/cases/new"><Icon name="plus" />청구 작성</Link></Button>} />
@@ -237,7 +237,7 @@ function Cases() {
 
 export default function CasesPage() {
   return (
-    <Suspense fallback={<Shell active="cases" preview={false}><section className="empty-state flex min-h-0 flex-1 flex-col items-center justify-center gap-3.75 px-5 py-10 text-center text-muted-foreground" role="status" aria-busy="true"><Icon name="clock" size={25} /><h1 className="text-base font-normal text-muted-foreground">불러오는 중</h1><p className="text-label">청구 목록을 서버에서 확인하고 있습니다.</p></section></Shell>}>
+    <Suspense fallback={<Shell active="cases" preview={false}><section className="empty-state flex min-h-0 flex-1 flex-col items-center justify-center gap-3.75 px-5 py-10 text-center text-muted-foreground" role="status" aria-busy="true"><Icon name="clock" size={25} /><h1 className="text-base font-normal text-muted-foreground">불러오는 중</h1><p className="text-label">청구서 목록을 불러오고 있습니다.</p></section></Shell>}>
       <Cases />
     </Suspense>
   );
