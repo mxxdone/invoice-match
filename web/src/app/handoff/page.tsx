@@ -134,7 +134,7 @@ function Handoff() {
                 <small className="text-label text-muted-foreground">승인된 지급요청 금액 (서버 값)</small>
                 <strong className="my-4 mb-3.25 text-display-sm font-normal tracking-metric tabular-nums">{isExactInteger(payment.amount) ? `₩ ${formatExactInteger(payment.amount)}` : EXACT_RANGE_MESSAGE}</strong>
                 <span className="text-label text-muted-foreground">{payment.currency} · 승인 대상에 고정된 금액</span>
-                <p className="mt-6.75 text-label leading-roomy text-muted-foreground">실제 지급·송금은 외부 ERP의 업무 범위입니다.<br />이 서비스는 지급요청을 안전하게 인계합니다.</p>
+                <p className="mt-6.75 text-label leading-roomy text-muted-foreground">실제 지급·송금은 외부 ERP의 업무 범위입니다. 이 서비스는 지급요청을 안전하게 인계합니다.</p>
               </div>
             </div>
           </section>
