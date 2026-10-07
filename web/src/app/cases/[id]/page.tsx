@@ -248,7 +248,6 @@ function Detail() {
               <Badge variant={status.tone as StatusTone} className="case-status"><span className="case-status-dot h-1.25 w-1.25 rounded-full bg-current" />{status.label}</Badge>
             </p>
           </div>
-          <Button variant="outline" className="button" onClick={() => selectTab('evidence')}>원본 문서·제출 이력 보기</Button>
         </div>
         <dl className="case-meta mt-6 flex flex-wrap gap-x-6 gap-y-3">
           <div className="flex items-center gap-2"><dt className="text-label text-muted-foreground">공급사 ID</dt><dd className="m-0 text-label">{data.detail.supplierId}</dd></div>
