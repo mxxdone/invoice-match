@@ -4,11 +4,12 @@
 
 ## Read only what the task needs
 
-- 구현 작업: `project-docs/Implement.md`와 `project-docs/Plan.md`의 현재 Ticket만 읽는다. Ticket 계약이 충분하면 다른 문서를 열지 않는다.
+- 구현 작업: `project-docs/Plan.md`의 현재 Ticket만 읽는다. 빌드·실제 서비스 검증·자원 정리가 필요할 때만 `project-docs/Implement.md`를 읽는다.
+- UI 표현·시각 디자인을 변경할 때만 `project-docs/DESIGN.md`를 읽는다. 화면/API 구현 설명은 코드에서 확인한다.
 - 제품 범위·업무 흐름·상태·불변식을 변경하거나 Ticket이 모호할 때: `project-docs/Spec.md`의 관련 절만 읽는다.
 - 도메인 용어를 추가하거나 바꿀 때: `project-docs/CONTEXT.md`만 읽고 필요하면 갱신한다.
 - 기존 설계 선택을 변경할 때: 직접 관련된 `project-docs/adr/` 파일만 읽는다.
-- `project-docs/EngineeringNotes.md`는 포트폴리오·면접용 문제 해결 기록이다. 구현 중에는 읽지 말고, Ticket 인수 후 기록을 추가하거나 해당 기록을 요청받았을 때만 연다.
+- `project-docs/adr/EngineeringNotes.md`는 포트폴리오·면접용 문제 해결 기록이다. 구현 중에는 읽지 말고, Ticket 인수 후 중요한 원인·선택·교훈을 기록하거나 요청받았을 때만 연다.
 - 문서나 코드가 서로 충돌하면 임의로 해석하지 말고 충돌을 보고한다.
 
 ## Long-running processes
@@ -20,3 +21,20 @@
 - 자신이 실행한 임시 프로세스의 PID·포트·용도를 기록하고 검증 후 해당 프로세스만 정리한다. 기존 사용자 서비스는 종료하지 않는다.
 - 사용자 확인용 서버를 남길 때는 주소와 실행 상태를 보고한다. 서버 실행 중과 구현·검증 완료를 구분한다.
 - 반복 검증은 절차가 확정되면 시작·준비 확인·검증·실패 시 정리를 포함한 재사용 스크립트로 묶는다. 로그에 자격 증명을 남기지 않는다.
+
+## Test resources and disk usage
+
+- 테스트 실행 범위와 Docker 자원·캐시 운영의 상세 절차는 `project-docs/Implement.md`를 따른다.
+- 개발 중에는 변경 범위의 테스트를 우선 실행하고, Ticket 인수에 필요한 전체 테스트·실제 DB 검증·Compose 통합 검증은 생략하지 않는다.
+- 매 테스트마다 서비스 전체를 Docker로 재빌드하지 않는다. 필요한 의존 서비스만 실행하고 재사용 가능한 이미지는 유지한다.
+- 임시 컨테이너·볼륨·검증 이미지의 소유자와 용도를 기록하고 성공·실패·중단 후 정리한다. 사용자 서비스·시연 데이터·다른 작업의 자원은 보존한다.
+- C드라이브에도 도구 캐시와 Docker 데이터가 쌓인다. 큰 빌드 전 여유 공간을 확인하고, 캐시 보관량과 실행 전후 사용량을 관리한다. 디스크 부족 시 무작정 재시도하지 않는다.
+
+## 작업과 인수
+
+- 한 번에 현재 Ticket을 완료한다. 무관한 정리·미래 기능을 추가하지 않고 계약 충돌은 Head에 보고한다.
+- Head는 범위·설계·계약·diff 검수·최종 인수를, Worker는 할당된 구현·검증을 맡는다. 보고만으로 자동 인수하지 않는다.
+- 구현은 Ticket 브랜치, 위임은 격리된 worktree를 사용한다. 같은 worktree에 병렬 writer를 두지 않는다. 선행 변경 통합 후 분기한다.
+- Worker는 feature commit만 수행한다. Head가 검증·검수 후 main 병합·push와 완료 worktree/브랜치 정리를 맡는다.
+- 3레이어 책임·의존성을 지키고 Head가 실제 코드를 검수한다. 검증용으로 새로운 architecture scanner나 불필요한 계층을 만들지 않는다.
+- 문서는 요구사항·의사결정 이유·실행 전제·미완료 결정만 남긴다. API/필드/클래스·테스트 수·완료 작업 경과를 코드/Git/ignored output과 중복 관리하지 않는다.
