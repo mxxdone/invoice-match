@@ -21,7 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
  */
 @Service
 public class GraphQueryService {
-    private final GraphExecutionService execution;
+    private final GraphExecutionGuard guard;
     private final GraphStore store;
     private final GraphDeliveryStore delivery;
     private final GraphProperties properties;
@@ -29,10 +29,10 @@ public class GraphQueryService {
     private final GraphReviewValidator reviewer;
     private final AuthorizationService authorization;
     private final ObjectMapper mapper;
-    public GraphQueryService(GraphExecutionService execution,GraphStore store,GraphDeliveryStore delivery,
+    public GraphQueryService(GraphExecutionGuard guard,GraphStore store,GraphDeliveryStore delivery,
             GraphProperties properties,ProposalSourceCatalog catalog,GraphReviewValidator reviewer,
             AuthorizationService authorization,ObjectMapper mapper) {
-        this.execution=execution;this.store=store;this.delivery=delivery;this.properties=properties;
+        this.guard=guard;this.store=store;this.delivery=delivery;this.properties=properties;
         this.catalog=catalog;this.reviewer=reviewer;this.authorization=authorization;this.mapper=mapper;
     }
     private void readPermission(UUID caseId) {authorization.requireRole(Role.OPERATOR,Role.APPROVER);authorization.requireCaseRead(caseId);}
@@ -57,7 +57,7 @@ public class GraphQueryService {
         var run=store.lock(id).filter(r->r.caseId().equals(caseId)).orElseThrow(()->new AnalysisRunNotFoundException(id));
         if(run.checkpointSchema()!=GraphRun.SCHEMA)return new Resolved(run,false,false);
         if(run.status().equals("STALE"))return new Resolved(run,true,false);
-        boolean current=execution.current(run);
+        boolean current=guard.current(run);
         if(!current) {
             store.terminal(run.id(),"STALE",null);
             delivery.cancel(run.id());

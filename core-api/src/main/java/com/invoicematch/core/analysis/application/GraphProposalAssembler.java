@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.invoicematch.core.analysis.domain.GraphRun;
 import com.invoicematch.core.analysis.domain.ProposalRun;
 import com.invoicematch.core.analysis.persistence.GraphStore;
+import com.invoicematch.core.analysis.persistence.GraphCheckpointStore;
 import com.invoicematch.core.analysis.persistence.ProposalStore;
 import java.util.List;
 import org.springframework.stereotype.Component;
@@ -15,10 +16,11 @@ import org.springframework.stereotype.Component;
 public class GraphProposalAssembler {
     private final ProposalAssembler assembler;
     private final GraphStore store;
+    private final GraphCheckpointStore checkpoints;
     private final GraphPayloadValidator wire;
     private final ObjectMapper mapper;
-    public GraphProposalAssembler(ProposalAssembler assembler,GraphStore store,GraphPayloadValidator wire,ObjectMapper mapper) {
-        this.assembler=assembler;this.store=store;this.wire=wire;this.mapper=mapper;
+    public GraphProposalAssembler(ProposalAssembler assembler,GraphStore store,GraphCheckpointStore checkpoints,GraphPayloadValidator wire,ObjectMapper mapper) {
+        this.assembler=assembler;this.store=store;this.checkpoints=checkpoints;this.wire=wire;this.mapper=mapper;
     }
     public record Assembled(String canonical,String hash) {}
     public Assembled assemble(GraphRun run,ProposalRun input,List<ProposalStore.Step> steps) {
@@ -30,7 +32,7 @@ public class GraphProposalAssembler {
         result.put("schemaVersion","advisory-proposal-v2").put("graphVersion",GraphRun.GRAPH);
         if(run.segment().equals("RESUME")) {
             var review=store.review(run.id()).orElseThrow(()->GraphExecutionService.conflict("GRAPH_REVIEW_MISSING"));
-            var checkpoint=store.latest(run.id()).orElseThrow(()->GraphExecutionService.conflict("GRAPH_CHECKPOINT_MISSING"));
+            var checkpoint=checkpoints.latest(run.id()).orElseThrow(()->GraphExecutionService.conflict("GRAPH_CHECKPOINT_MISSING"));
             var values=wire.decode(parse(checkpoint.envelope()).path("body"),0,false).path("channel_values");
             var resolution=store.stages(run.id()).stream().filter(s->s.stage().equals("resolution")).findFirst()
                 .orElseThrow(()->GraphExecutionService.conflict("GRAPH_RESUME_NOT_READY"));

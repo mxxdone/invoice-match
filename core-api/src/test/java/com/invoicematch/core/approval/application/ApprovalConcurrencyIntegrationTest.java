@@ -122,6 +122,15 @@ class ApprovalConcurrencyIntegrationTest extends AbstractPostgresIntegrationTest
     @Autowired
     private PlatformTransactionManager transactionManager;
 
+    @Autowired
+    private ApprovalReceiptAllocator receiptAllocator;
+
+    @Test
+    void receiptValidationCannotAcquireLocksOutsideTheApprovalTransaction() {
+        assertThatThrownBy(() -> receiptAllocator.resolveAndLockReceiptLines(null, null, PO_ID, null))
+                .isInstanceOf(IllegalTransactionStateException.class);
+    }
+
     @BeforeEach
     void setUp() {
         INTERCEPTOR.reset();

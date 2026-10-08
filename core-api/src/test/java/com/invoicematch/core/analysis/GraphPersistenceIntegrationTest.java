@@ -169,6 +169,10 @@ class GraphPersistenceIntegrationTest extends AbstractAnalysisExecutionIntegrati
         assertDatabaseRejects("23514",()->jdbc.update("update graph_run set reserved_calls=6 where id=?",f.graph.id()));
         assertDatabaseRejects("23000",()->jdbc.update("update graph_run set context_hash=? where id=?","b".repeat(64),f.graph.id()));
         assertThat(jdbc.queryForMap("select checkpoint_count,write_count,stored_bytes from graph_run")).isEqualTo(before);
+        assertThat(graph.read(f.graph.id(),f.graph.contextHash(),claim.token(),cp).writes()).isEmpty();
+        assertThat(graph.writes(f.graph.id(),f.graph.contextHash(),claim.token(),List.of(write)).getFirst().disposition())
+                .isEqualTo("ACCEPTED");
+        assertThat(jdbc.queryForObject("select write_count from graph_run",Integer.class)).isEqualTo(1);
     }
     @Test void staleInputCannotReadWriteOrEnterHumanWaiting() {
         var f=ready();var claim=start(f);UUID cp=UUID.randomUUID();

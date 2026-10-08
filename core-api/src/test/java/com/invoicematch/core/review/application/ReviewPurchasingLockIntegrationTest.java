@@ -1,6 +1,7 @@
 package com.invoicematch.core.review.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.invoicematch.core.invoicecase.application.CreateInvoiceCaseCommand;
 import com.invoicematch.core.invoicecase.application.InvoiceCaseApplicationService;
@@ -39,6 +40,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.IllegalTransactionStateException;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
@@ -114,6 +116,40 @@ class ReviewPurchasingLockIntegrationTest extends AbstractPostgresIntegrationTes
         jdbc.execute("truncate table idempotency_record");
         jdbc.execute("truncate table purchase_order_snapshot cascade");
         STUB.respond(200, PurchasingPayloads.confirmedPartialReceipt().toJson());
+    }
+
+    @Autowired
+    private ReviewSnapshotWriter snapshotWriter;
+
+    @Test
+    void snapshotWriterRequiresTheReviewTransaction() {
+        assertThatThrownBy(
+                        () -> snapshotWriter.nextSnapshotNumber(UUID.randomUUID()))
+                .isInstanceOf(IllegalTransactionStateException.class);
+    }
+
+    @Test
+    void outerRollbackRemovesSnapshotAuditAndReplayTogether() {
+        UUID caseId = frozenCase();
+        ReviewSnapshot original = latestSnapshot(caseId);
+        long version = caseVersion(caseId);
+        int auditsBefore = count("audit_entry");
+        int requestsBefore = count("idempotency_record");
+        FreezeReviewSnapshotCommand command = new FreezeReviewSnapshotCommand(caseId, "rollback-freeze", version);
+
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            var saved = TestActors.call("approver", "APPROVER", () -> reviewService.freezeSnapshot(command));
+            assertThat(saved.body().snapshotNumber()).isEqualTo(original.snapshotNumber() + 1);
+            assertThat(count("review_snapshot")).isEqualTo(2);
+            status.setRollbackOnly();
+        });
+
+        assertThat(count("review_snapshot")).isEqualTo(1);
+        assertThat(count("audit_entry")).isEqualTo(auditsBefore);
+        assertThat(count("idempotency_record")).isEqualTo(requestsBefore);
+        assertThat(caseVersion(caseId)).isEqualTo(version);
+        var retried = TestActors.call("approver", "APPROVER", () -> reviewService.freezeSnapshot(command));
+        assertThat(retried.body().snapshotNumber()).isEqualTo(original.snapshotNumber() + 1);
     }
 
     @Test

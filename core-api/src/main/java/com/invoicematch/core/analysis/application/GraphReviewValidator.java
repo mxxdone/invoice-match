@@ -3,6 +3,7 @@ package com.invoicematch.core.analysis.application;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.invoicematch.core.analysis.domain.GraphRun;
 import com.invoicematch.core.analysis.persistence.GraphStore;
+import com.invoicematch.core.analysis.persistence.GraphCheckpointStore;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -13,10 +14,11 @@ import org.springframework.stereotype.Component;
 /** Confirms opinions about frozen candidates; never changes document values or item mappings. */
 @Component
 public class GraphReviewValidator {
+    private final GraphCheckpointStore checkpoints;
     private final ProposalStageValidator stages;
     private final GraphPayloadValidator wire;
     private final com.fasterxml.jackson.databind.ObjectMapper mapper;
-    public GraphReviewValidator(ProposalStageValidator stages,GraphPayloadValidator wire,com.fasterxml.jackson.databind.ObjectMapper mapper) {this.stages=stages;this.wire=wire;this.mapper=mapper;}
+    public GraphReviewValidator(GraphCheckpointStore checkpoints,ProposalStageValidator stages,GraphPayloadValidator wire,com.fasterxml.jackson.databind.ObjectMapper mapper) {this.checkpoints=checkpoints;this.stages=stages;this.wire=wire;this.mapper=mapper;}
     /** Frozen pending projection for reads; the same stored-stage/interrupt checks the confirm path uses. */
     public record Pending(UUID documentStageRef,UUID mappingStageRef,List<String> reasonCodes,JsonNode document,JsonNode mapping) {}
     public Pending pending(GraphRun run,GraphStore.Waiting wait,GraphStore store) {
@@ -24,7 +26,7 @@ public class GraphReviewValidator {
         var document=stage(saved,"document");var mapping=stage(saved,"mapping");
         // Revalidate the immutable outputs against their frozen original sources and server candidates.
         stages.validate("document",document.payload(),input,steps);stages.validate("mapping",mapping.payload(),input,steps);
-        var write=store.write(run.id(),wait.checkpointId(),wait.taskId(),-3,wait.writeVersion()).orElseThrow(GraphReviewValidator::invalid);
+        var write=checkpoints.write(run.id(),wait.checkpointId(),wait.taskId(),-3,wait.writeVersion()).orElseThrow(GraphReviewValidator::invalid);
         var request=wire.decode(parse(write.payload()),0,true).path(0).path("value");
         if(!request.path("documentStageRef").asText().equals(document.ref().toString())
                 || !request.path("mappingStageRef").asText().equals(mapping.ref().toString()))throw invalid();

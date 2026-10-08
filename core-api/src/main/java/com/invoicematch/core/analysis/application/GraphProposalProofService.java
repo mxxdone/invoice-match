@@ -18,15 +18,15 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class GraphProposalProofService {
     private final GraphStore store;
-    private final GraphExecutionService execution;
+    private final GraphExecutionGuard guard;
     private final GraphProposalAssembler assembler;
     private final GraphReviewValidator validator;
     private final ProposalSourceCatalog sources;
     private final PolicyCatalogStore policies;
     private final ObjectMapper mapper;
-    public GraphProposalProofService(GraphStore store,GraphExecutionService execution,GraphProposalAssembler assembler,
+    public GraphProposalProofService(GraphStore store,GraphExecutionGuard guard,GraphProposalAssembler assembler,
             GraphReviewValidator validator,ProposalSourceCatalog sources,PolicyCatalogStore policies,ObjectMapper mapper) {
-        this.store=store;this.execution=execution;this.assembler=assembler;this.validator=validator;
+        this.store=store;this.guard=guard;this.assembler=assembler;this.validator=validator;
         this.sources=sources;this.policies=policies;this.mapper=mapper;
     }
     @Transactional(propagation=Propagation.MANDATORY)
@@ -37,7 +37,7 @@ public class GraphProposalProofService {
             || run.checkpointSchema()!=GraphRun.SCHEMA || !run.status().equals("COMPLETED")) throw conflict(caseId);
         var input=store.advisoryInput(graphId);
         if(!AnalysisCanonicalJson.sha256Hex(AnalysisCanonicalJson.canonicalize(parse(input.context()))).equals(run.contextHash())) throw conflict(caseId);
-        if(!execution.current(run)) throw conflict(caseId);
+        if(!guard.current(run)) throw conflict(caseId);
         var result=store.result(graphId).orElseThrow(()->conflict(caseId));
         if(!result.hash().equals(hash)) throw conflict(caseId);
         var stored=parse(result.payload());

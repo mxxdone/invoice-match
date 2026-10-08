@@ -14,22 +14,22 @@ import org.springframework.transaction.annotation.Transactional;
 /** Short durable transactions; no SDK, Rabbit or provider I/O. */
 @Service
 public class GraphDeliveryService {
-    private final GraphExecutionService execution;
+    private final GraphExecutionGuard guard;
     private final GraphStore graphs;
     private final GraphDeliveryStore store;
     private final GraphProperties properties;
     private final ObjectMapper mapper;
-    public GraphDeliveryService(GraphExecutionService execution,GraphStore graphs,GraphDeliveryStore store,GraphProperties properties,ObjectMapper mapper) {
-        this.execution=execution;this.graphs=graphs;this.store=store;this.properties=properties;this.mapper=mapper;
+    public GraphDeliveryService(GraphExecutionGuard guard,GraphStore graphs,GraphDeliveryStore store,GraphProperties properties,ObjectMapper mapper) {
+        this.guard=guard;this.graphs=graphs;this.store=store;this.properties=properties;this.mapper=mapper;
     }
     private static final Set<String> TRANSIENT=Set.of("AI_RATE_LIMIT","AI_TIMEOUT","AI_FAILED","OCR_RATE_LIMIT","OCR_TIMEOUT","OCR_FAILED","CORE_UNAVAILABLE","CORE_TRANSIENT");
     private static final Set<String> PERMANENT=Set.of("GRAPH_SDK_FAILED","GRAPH_LIMIT","GRAPH_REPEATED_INTERRUPT","AI_CONFIGURATION","AI_SCHEMA_INVALID","AI_BUDGET_EXHAUSTED","AI_INPUT_LIMIT","AI_TOOL_DENIED","OCR_CONFIGURATION","OCR_LIMIT","OCR_INVALID_RESPONSE","SOURCE_MISMATCH","INVALID_PROTOCOL");
     public record Proof(String disposition,String runStatus) {}
     public record Resume(UUID reviewRef,UUID checkpointId,String checkpointHash,String interruptId,int reviewVersion,JsonNode confirmation) {}
     @Transactional public GraphExecutionService.Claim claimResume(UUID id,String hash,JsonNode identity) {
-        var run=execution.lock(id,hash);var event=identity(id,identity);
+        var run=guard.lock(id,hash);var event=identity(id,identity);
         if(run.terminal())return claim("ALREADY_FINISHED");
-        if(!execution.current(run)) {graphs.terminal(id,"STALE",null);store.cancel(id);return claim("STALE");}
+        if(!guard.current(run)) {graphs.terminal(id,"STALE",null);store.cancel(id);return claim("STALE");}
         if(!run.segment().equals("RESUME"))throw GraphExecutionService.conflict("GRAPH_RESUME_NOT_READY");
         if(run.leaseActive() || !store.due(id))return new GraphExecutionService.Claim("BUSY",null,run.leaseUntil(),null,null);
         if(run.attempts()>=3) {graphs.terminal(id,"FAILED","LEASE_EXPIRED");store.cancel(id);return claim("ALREADY_FINISHED");}
@@ -38,7 +38,7 @@ public class GraphDeliveryService {
         return new GraphExecutionService.Claim("CLAIMED",token,until,parse(run.context()),null);
     }
     @Transactional public Resume resume(UUID id,String hash,UUID token,JsonNode identity) {
-        var run=execution.lock(id,hash);identity(id,identity);execution.active(run,token);
+        var run=guard.lock(id,hash);identity(id,identity);guard.active(run,token);
         var review=graphs.review(id).orElseThrow(()->GraphExecutionService.conflict("GRAPH_REVIEW_MISSING"));
         if(!run.segment().equals("RESUME") || !store.consumed(id,review.id()))throw GraphExecutionService.conflict("GRAPH_RESUME_NOT_READY");
         var wait=graphs.waiting(id).orElseThrow();
@@ -50,17 +50,17 @@ public class GraphDeliveryService {
         return event;
     }
     @Transactional public Proof defer(UUID id,String hash,String segment,JsonNode identity) {
-        var run=execution.lock(id,hash);var event=event(id,segment,identity);
+        var run=guard.lock(id,hash);var event=event(id,segment,identity);
         if(run.terminal())return new Proof("CHECKPOINTED",run.status());
-        if(!execution.current(run)) {graphs.terminal(id,"STALE",null);store.cancel(id);return new Proof("CHECKPOINTED","STALE");}
+        if(!guard.current(run)) {graphs.terminal(id,"STALE",null);store.cancel(id);return new Proof("CHECKPOINTED","STALE");}
         if(!run.segment().equals(segment) || run.status().equals("WAITING_HUMAN"))return new Proof("CHECKPOINTED",run.status());
         store.defer(event,"defer:"+(run.token()==null?"queued:"+run.attempts():run.token()),Duration.ofSeconds(1));
         return new Proof("CHECKPOINTED",run.status());
     }
     @Transactional public Proof failure(UUID id,String hash,UUID token,String code) {
-        var run=execution.lock(id,hash);var recorded=store.failure(id,token);
+        var run=guard.lock(id,hash);var recorded=store.failure(id,token);
         if(recorded.isPresent() || run.terminal())return new Proof("CHECKPOINTED",run.status());
-        execution.active(run,token);
+        guard.active(run,token);
         if(!TRANSIENT.contains(code) && !PERMANENT.contains(code))throw GraphPayloadValidator.invalid();
         boolean retry=TRANSIENT.contains(code) && run.attempts()<3;
         Duration delay=Duration.ofSeconds(5L<<(run.attempts()-1));String status=retry?"QUEUED":"FAILED";
@@ -74,12 +74,12 @@ public class GraphDeliveryService {
         return store.event(id,segment).orElseThrow(()->GraphExecutionService.conflict("GRAPH_EVENT_MISSING"));
     }
     @Transactional public Optional<GraphDeliveryStore.Dispatch> claimDispatch() {
-        execution.enabled();
+        guard.enabled();
         // One case per transaction prevents carrying scope/case locks into another case.
         for(var id:store.candidates(1)) {
             var run=graphs.lock(id).orElseThrow();
             if(run.terminal() || run.status().equals("WAITING_HUMAN")) {store.cancel(id);continue;}
-            if(!execution.current(run)) {graphs.terminal(id,"STALE",null);store.cancel(id);continue;}
+            if(!guard.current(run)) {graphs.terminal(id,"STALE",null);store.cancel(id);continue;}
             store.cancelOther(id,run.segment());
             if(run.leaseActive()) {store.postpone(id,run.segment());continue;}
             var dispatch=store.claim(id,run.segment(),Duration.ofSeconds(60));

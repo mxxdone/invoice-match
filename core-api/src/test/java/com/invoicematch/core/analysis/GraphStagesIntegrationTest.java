@@ -13,7 +13,7 @@ import org.springframework.test.context.DynamicPropertySource;
 
 class GraphStagesIntegrationTest extends AbstractAnalysisExecutionIntegrationTest {
     @DynamicPropertySource static void graphProperties(DynamicPropertyRegistry r) {
-        r.add("analysis.graph.enabled",()->true);r.add("analysis.graph.cost-ceiling",()->"1");
+        r.add("analysis.ai.enabled",()->false);r.add("analysis.graph.enabled",()->true);r.add("analysis.graph.cost-ceiling",()->"1");
     }
     @Autowired GraphExecutionService graph;
     @Autowired GraphStageService stages;
@@ -30,6 +30,38 @@ class GraphStagesIntegrationTest extends AbstractAnalysisExecutionIntegrationTes
             .put("inputPricePerMillion",1).put("outputPricePerMillion",2).put("currency","USD").put("costCeiling",1)
             .put("tokenParameter","max_completion_tokens").put("promptVersion","invoice-advisory-1");plan.putNull("embedding");return plan;
     }
+    @Test
+    void graphFrozenQueriesUseTheirOwnLedgerWhileLegacyExecutionIsDisabled() {
+        var f = ready();
+        var r = f.graph();
+        var token = f.claim().token();
+        var tool = new ProposalToolService.Request(UUID.randomUUID(), "get_purchase_order", "", 3);
+        var policy = new PolicySearchService.Request(UUID.randomUUID(), "규칙", "LEXICAL", null, null, null, 3);
+
+        var toolReply = stages.tool(r.id(), r.contextHash(), token, tool);
+        var policyReply = stages.policy(r.id(), r.contextHash(), token, policy);
+        assertThat(stages.tool(r.id(), r.contextHash(), token, tool)).isEqualTo(toolReply);
+        assertThat(stages.policy(r.id(), r.contextHash(), token, policy)).isEqualTo(policyReply);
+        assertThat(toolReply.path("result").path("purchaseOrderId").asText()).isEqualTo("PO-1001");
+        assertThat(policyReply.path("status").asText()).isEqualTo("INSUFFICIENT_EVIDENCE");
+        assertThat(policyReply.path("contextHash").asText()).isEqualTo(r.contextHash());
+        assertThat(jdbc.queryForObject("select tool_calls from graph_run where id=?", Integer.class, r.id()))
+                .isEqualTo(2);
+
+        assertThatThrownBy(() -> stages.tool(r.id(), r.contextHash(), token,
+                new ProposalToolService.Request(tool.requestId(), "get_receipts", "", 3)))
+                .isInstanceOf(AnalysisConflictException.class);
+        assertThatThrownBy(() -> stages.policy(r.id(), r.contextHash(), token,
+                new PolicySearchService.Request(policy.requestId(), "다른 규칙", "LEXICAL", null, null, null, 3)))
+                .isInstanceOf(AnalysisConflictException.class);
+        assertThatThrownBy(() -> stages.policy(r.id(), r.contextHash(), UUID.randomUUID(), policy))
+                .isInstanceOf(AnalysisConflictException.class);
+        assertThat(jdbc.queryForObject("select tool_calls from graph_run where id=?", Integer.class, r.id()))
+                .isEqualTo(2);
+        assertThat(count("proposal_run")).isZero();
+        assertThat(count("proposal_step")).isZero();
+    }
+
     @Test void validatedStagesAndReservationsAreFencedImmutableAndCannotResetBudgets() {
         var f=ready();var r=f.graph();var token=f.claim().token();
         var saved=stages.save(r.id(),r.contextHash(),token,"execution",plan());

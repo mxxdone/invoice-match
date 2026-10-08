@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.invoicematch.core.analysis.domain.GraphRun;
 import com.invoicematch.core.analysis.persistence.GraphStore;
-import com.invoicematch.core.analysis.persistence.PolicyCatalogStore;
+import com.invoicematch.core.analysis.persistence.GraphCheckpointStore;
 import com.invoicematch.core.analysis.persistence.ProposalStore;
 import com.invoicematch.core.audit.application.AuditEvent;
 import com.invoicematch.core.audit.application.AuditRecorder;
@@ -17,7 +17,6 @@ import com.invoicematch.core.security.AuthorizationService;
 import com.invoicematch.core.security.Role;
 import java.time.Clock;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -30,9 +29,10 @@ import org.springframework.transaction.annotation.Transactional;
 @EnableConfigurationProperties(GraphProperties.class)
 public class GraphExecutionService {
     private final GraphStore store;
+    private final GraphCheckpointStore checkpoints;
     private final ProposalStore inputs;
     private final ProposalContextFactory contexts;
-    private final PolicyCatalogStore policies;
+    private final GraphExecutionGuard guard;
     private final GraphProperties properties;
     private final GraphPayloadValidator validator;
     private final ObjectMapper mapper;
@@ -42,12 +42,12 @@ public class GraphExecutionService {
     private final Clock clock;
     private final com.invoicematch.core.analysis.persistence.GraphDeliveryStore delivery;
     private final com.invoicematch.core.purchasingreference.application.PurchaseOrderSnapshotLock purchaseLock;
-    public GraphExecutionService(GraphStore store, ProposalStore inputs, ProposalContextFactory contexts,
-            PolicyCatalogStore policies, GraphProperties properties, GraphPayloadValidator validator,
+    public GraphExecutionService(GraphStore store, GraphCheckpointStore checkpoints, ProposalStore inputs, ProposalContextFactory contexts,
+            GraphExecutionGuard guard, GraphProperties properties, GraphPayloadValidator validator,
             ObjectMapper mapper, AuthorizationService authorization, RequestIdempotencyStore idempotency,
             AuditRecorder audit, Clock clock,com.invoicematch.core.analysis.persistence.GraphDeliveryStore delivery,
             com.invoicematch.core.purchasingreference.application.PurchaseOrderSnapshotLock purchaseLock) {
-        this.store=store;this.inputs=inputs;this.contexts=contexts;this.policies=policies;this.properties=properties;
+        this.store=store;this.checkpoints=checkpoints;this.inputs=inputs;this.contexts=contexts;this.guard=guard;this.properties=properties;
         this.validator=validator;this.mapper=mapper;this.authorization=authorization;this.idempotency=idempotency;this.audit=audit;this.clock=clock;this.delivery=delivery;
         this.purchaseLock=purchaseLock;
     }
@@ -82,9 +82,9 @@ public class GraphExecutionService {
         var begin=idempotency.begin(scope,resource,actor.username(),command.requestId(),fingerprint);
         if(begin instanceof RequestIdempotencyStore.BeginResult.Replay replay)
             return new CommandResult<>(replay.response().status(),idempotency.decode(replay.response(),Reserved.class));
-        enabled();
+        guard.enabled();
         if(state.version()!=command.expectedCaseVersion() || !java.util.Set.of("SUBMITTED","REVIEW_PENDING").contains(state.status()))throw conflict("GRAPH_INPUT_CONFLICT");
-        GraphRun parent=predecessor==null?null:reviewRun(caseId,predecessor);
+        GraphRun parent=predecessor==null?null:guard.reviewRun(caseId,predecessor);
         var source=inputs.source(caseId).orElseThrow(()->conflict("GRAPH_INPUT_CONFLICT"));
         purchaseLock.acquireXactLock(parse(source.matchPayload()).path("purchaseOrderId").asText());
         source=inputs.source(caseId).orElseThrow(()->conflict("GRAPH_INPUT_CONFLICT"));
@@ -94,7 +94,7 @@ public class GraphExecutionService {
         String canonical=AnalysisCanonicalJson.canonicalize(context),hash=AnalysisCanonicalJson.sha256Hex(canonical);
         if(parent!=null) {
             if(parent.contextHash().equals(hash))throw conflict("GRAPH_SUCCESSOR_INPUT_UNCHANGED");
-            if(current(parent))throw conflict("GRAPH_SUCCESSOR_INPUT_UNCHANGED");
+            if(guard.current(parent))throw conflict("GRAPH_SUCCESSOR_INPUT_UNCHANGED");
             if(!parent.status().equals("STALE")) {store.terminal(parent.id(),"STALE",null);delivery.cancel(parent.id());}
         } else if(store.otherInput(caseId,hash))throw conflict("GRAPH_SUCCESSOR_REQUIRED");
         var existing=store.existing(caseId,hash);Reserved response;
@@ -116,9 +116,9 @@ public class GraphExecutionService {
     }
     @Transactional
     public Claim claim(UUID id,String hash) {
-        var run=lock(id,hash);
+        var run=guard.lock(id,hash);
         if(run.terminal())return new Claim("ALREADY_FINISHED",null,null,null,null);
-        if(!current(run)) {store.terminal(id,"STALE",null);return new Claim("STALE",null,null,null,null);}
+        if(!guard.current(run)) {store.terminal(id,"STALE",null);return new Claim("STALE",null,null,null,null);}
         if(run.status().equals("WAITING_HUMAN"))return new Claim("WAITING_HUMAN",null,null,null,waiting(store.waiting(id).orElseThrow()));
         // Resume ownership is granted only by the exact review/checkpoint claim.
         if(run.segment().equals("RESUME"))return new Claim("ALREADY_FINISHED",null,null,null,null);
@@ -128,27 +128,27 @@ public class GraphExecutionService {
         return new Claim("CLAIMED",token,until,parse(run.context()),null);
     }
     @Transactional public Instant heartbeat(UUID id,String hash,UUID token) {
-        active(lock(id,hash),token);return store.heartbeat(id,token,properties.leaseDuration());
+        guard.active(guard.lock(id,hash),token);return store.heartbeat(id,token,properties.leaseDuration());
     }
     @Transactional
     public Stored checkpoint(UUID id,String hash,UUID token,GraphCommands.Checkpoint command) {
-        var run=lock(id,hash);active(run,token);validator.checkpoint(run,command);
+        var run=guard.lock(id,hash);guard.active(run,token);validator.checkpoint(run,command);
         references(id,validator.decode(command.body(),0,false).path("channel_values"));
         var envelope=mapper.valueToTree(command);String canonical=bounded(envelope),payloadHash=AnalysisCanonicalJson.sha256Hex(canonical);
-        var existing=store.checkpoint(id,command.checkpointId());
+        var existing=checkpoints.checkpoint(id,command.checkpointId());
         if(existing.isPresent()) {
             if(!existing.get().hash().equals(payloadHash))throw conflict("GRAPH_CHECKPOINT_CONFLICT");
             return new Stored("REPLAYED",payloadHash);
         }
-        var latest=store.latest(id);
-        if(!java.util.Objects.equals(command.parentId(),latest.map(GraphStore.Checkpoint::id).orElse(null)))throw conflict("GRAPH_PARENT_CONFLICT");
+        var latest=checkpoints.latest(id);
+        if(!java.util.Objects.equals(command.parentId(),latest.map(GraphCheckpointStore.Checkpoint::id).orElse(null)))throw conflict("GRAPH_PARENT_CONFLICT");
         admit(run,store.jsonBytes(canonical),1,0);
-        store.checkpoint(id,command.checkpointId(),command.parentId(),canonical,payloadHash,token);
+        checkpoints.checkpoint(id,command.checkpointId(),command.parentId(),canonical,payloadHash,token);
         return new Stored("ACCEPTED",payloadHash);
     }
     @Transactional
     public List<Stored> writes(UUID id,String hash,UUID token,List<GraphCommands.Write> commands) {
-        var run=lock(id,hash);active(run,token);
+        var run=guard.lock(id,hash);guard.active(run,token);
         if(commands==null || commands.isEmpty() || commands.size()>512)throw GraphPayloadValidator.invalid();
         bounded(mapper.valueToTree(commands));
         var result=new java.util.ArrayList<Stored>();
@@ -170,21 +170,21 @@ public class GraphExecutionService {
                 var actual=new java.util.TreeSet<String>();request.path("reasonCodes").forEach(v->actual.add(v.asText()));
                 if(!actual.equals(GraphStageService.humanReasons(store.validationSteps(id))))throw conflict("GRAPH_WAIT_CONFLICT");
             }
-            if(store.checkpoint(id,command.checkpointId()).isEmpty())throw conflict("GRAPH_CHECKPOINT_MISSING");
+            if(checkpoints.checkpoint(id,command.checkpointId()).isEmpty())throw conflict("GRAPH_CHECKPOINT_MISSING");
             String canonical=bounded(command.payload());
             String payloadHash=AnalysisCanonicalJson.sha256Hex(AnalysisCanonicalJson.canonicalize(mapper.valueToTree(command)));
-            var existing=store.write(id,command.checkpointId(),command.taskId(),command.index(),command.version());
+            var existing=checkpoints.write(id,command.checkpointId(),command.taskId(),command.index(),command.version());
             if(existing.isPresent()) {
                 if(!existing.get().hash().equals(payloadHash))throw conflict("GRAPH_WRITE_CONFLICT");
                 result.add(new Stored("REPLAYED",payloadHash));continue;
             }
-            var previous=store.writes(id,command.checkpointId()).stream()
+            var previous=checkpoints.writes(id,command.checkpointId()).stream()
                     .filter(w->w.taskId().equals(command.taskId()) && w.index()==command.index()).findFirst();
             if((command.version()==1 && previous.isPresent()) || (command.version()>1 && (previous.isEmpty()
                     || previous.get().version()!=command.version()-1 || !previous.get().hash().equals(command.previousHash())
                     || !previous.get().channel().equals(command.channel()))))throw conflict("GRAPH_WRITE_VERSION_CONFLICT");
             run=store.lock(id).orElseThrow();admit(run,store.jsonBytes(canonical),0,1);
-            store.write(id,new GraphStore.Write(command.checkpointId(),command.taskId(),command.index(),command.version(),
+            checkpoints.write(id,new GraphCheckpointStore.Write(command.checkpointId(),command.taskId(),command.index(),command.version(),
                     command.previousHash(),command.channel(),command.taskPath(),payloadHash,canonical),token);
             result.add(new Stored("ACCEPTED",payloadHash));
         }
@@ -192,55 +192,31 @@ public class GraphExecutionService {
     }
     @Transactional
     public CheckpointView read(UUID id,String hash,UUID token,UUID checkpointId) {
-        var run=lock(id,hash);active(run,token);
-        var checkpoint=(checkpointId==null?store.latest(id):store.checkpoint(id,checkpointId)).orElseThrow(()->conflict("GRAPH_CHECKPOINT_MISSING"));
+        var run=guard.lock(id,hash);guard.active(run,token);
+        var checkpoint=(checkpointId==null?checkpoints.latest(id):checkpoints.checkpoint(id,checkpointId)).orElseThrow(()->conflict("GRAPH_CHECKPOINT_MISSING"));
         return new CheckpointView(checkpoint.id(),checkpoint.parentId(),checkpoint.hash(),parse(checkpoint.envelope()),
-                store.writes(id,checkpoint.id()).stream().map(w->new WriteView(w.taskId(),w.index(),w.version(),w.previousHash(),w.hash(),w.channel(),w.taskPath(),parse(w.payload()))).toList());
+                checkpoints.writes(id,checkpoint.id()).stream().map(w->new WriteView(w.taskId(),w.index(),w.version(),w.previousHash(),w.hash(),w.channel(),w.taskPath(),parse(w.payload()))).toList());
     }
     @Transactional
     public Waiting waitForHuman(UUID id,String hash,UUID token,GraphCommands.Wait command) {
-        var run=lock(id,hash);
+        var run=guard.lock(id,hash);
         if(command==null || !GraphPayloadValidator.hash(command.checkpointHash()) || !GraphPayloadValidator.hash(command.writeHash())
                 || command.interruptId()==null || !command.interruptId().matches("[0-9a-f]{32,64}"))throw GraphPayloadValidator.invalid();
         var proof=new GraphStore.Waiting(command.interruptId(),command.checkpointId(),command.checkpointHash(),command.taskId(),
                 command.writeVersion(),command.writeHash(),1,token);
         if(run.status().equals("WAITING_HUMAN")) {
-            if(!current(run) || !store.waiting(id).orElseThrow().equals(proof))throw conflict("GRAPH_WAIT_CONFLICT");
+            if(!guard.current(run) || !store.waiting(id).orElseThrow().equals(proof))throw conflict("GRAPH_WAIT_CONFLICT");
             return waiting(proof);
         }
-        active(run,token);
+        guard.active(run,token);
         if(!run.segment().equals("START"))throw conflict("GRAPH_REPEATED_INTERRUPT");
-        var checkpoint=store.latest(id).orElseThrow(()->conflict("GRAPH_CHECKPOINT_MISSING"));
+        var checkpoint=checkpoints.latest(id).orElseThrow(()->conflict("GRAPH_CHECKPOINT_MISSING"));
         if(!checkpoint.id().equals(command.checkpointId()) || !checkpoint.hash().equals(command.checkpointHash()))throw conflict("GRAPH_WAIT_CONFLICT");
-        var write=store.writes(id,checkpoint.id()).stream().filter(w->w.taskId().equals(command.taskId()) && w.index()==-3).findFirst()
+        var write=checkpoints.writes(id,checkpoint.id()).stream().filter(w->w.taskId().equals(command.taskId()) && w.index()==-3).findFirst()
                 .orElseThrow(()->conflict("GRAPH_WAIT_CONFLICT"));
         if(write.version()!=command.writeVersion() || !write.hash().equals(command.writeHash())
                 || !write.channel().equals("__interrupt__") || !validator.interruptId(parse(write.payload())).equals(command.interruptId()))throw conflict("GRAPH_WAIT_CONFLICT");
         store.wait(id,proof);return waiting(proof);
-    }
-    GraphRun lock(UUID id,String hash) {
-        enabled();var run=store.lock(id).orElseThrow(()->new AnalysisRunNotFoundException(id));
-        if(!store.supported(id))throw conflict("GRAPH_VERSION_UNSUPPORTED");
-        if(!GraphPayloadValidator.hash(hash) || !run.contextHash().equals(hash))throw conflict("GRAPH_INPUT_MISMATCH");return run;
-    }
-    void enabled() {if(!properties.enabled())throw conflict("GRAPH_DISABLED");}
-    void active(GraphRun run,UUID token) {
-        if(run.status().equals("STALE"))throw conflict("STALE_INPUT");
-        if(!run.status().equals("RUNNING") || token==null || !token.equals(run.token()) || !run.leaseActive())throw conflict("LEASE_CONFLICT");
-        if(!current(run))throw conflict("STALE_INPUT");
-        // Scope locks can block past lease expiry. Recheck database time after acquiring them.
-        if(!store.owned(run.id(),token))throw conflict("LEASE_CONFLICT");
-    }
-    boolean current(GraphRun run) {
-        var context=parse(run.context());var match=context.path("matchResult");
-        purchaseLock.acquireXactLock(match.path("purchaseOrderId").asText());
-        policies.lockScopeRead(match.path("purchaseOrderId").asText());
-        return store.current(run) && context.path("policyDocuments").equals(mapper.valueToTree(policies.scope(context.path("companyId").asText(),
-                match.path("supplierId").asText(),match.path("purchaseOrderId").asText(),LocalDate.parse(context.path("applicableDate").asText()))));
-    }
-    GraphRun reviewRun(UUID caseId,UUID id) {
-        var run=store.lock(id).filter(r->r.caseId().equals(caseId)).orElseThrow(()->new AnalysisRunNotFoundException(id));
-        if(!store.supported(id))throw conflict("GRAPH_VERSION_UNSUPPORTED");return run;
     }
     private String bounded(JsonNode value) {
         String canonical=AnalysisCanonicalJson.canonicalize(value);

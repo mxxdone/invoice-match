@@ -30,7 +30,6 @@ import com.invoicematch.core.review.domain.ReviewSnapshot;
 import com.invoicematch.core.review.domain.ReviewStateConflictException;
 import com.invoicematch.core.review.domain.ReviewTargetInvalidException;
 import com.invoicematch.core.review.persistence.ReviewDecisionRepository;
-import com.invoicematch.core.review.persistence.ReviewSnapshotRepository;
 import com.invoicematch.core.security.Actor;
 import com.invoicematch.core.security.AuthorizationService;
 import com.invoicematch.core.security.Role;
@@ -69,12 +68,11 @@ public class ReviewService {
     private final InvoiceCaseRepository invoiceCases;
     private final EvidenceBundleRepository evidenceBundles;
     private final MatchResultRepository matchResults;
-    private final ReviewSnapshotRepository snapshots;
+    private final ReviewSnapshotWriter snapshotWriter;
     private final ReviewDecisionRepository decisions;
     private final InternalMatchRematch internalRematch;
     private final ReviewEffectiveMappingResolver mappingResolver;
     private final ReviewCurrentnessService currentness;
-    private final ReviewSnapshotPayloadBuilder payloadBuilder;
     private final EvidenceBundlePayloadHasher bundleHasher;
     private final PurchaseOrderSnapshotReader purchaseOrderSnapshots;
     private final PurchaseOrderSnapshotLock purchaseOrderLock;
@@ -92,12 +90,11 @@ public class ReviewService {
             InvoiceCaseRepository invoiceCases,
             EvidenceBundleRepository evidenceBundles,
             MatchResultRepository matchResults,
-            ReviewSnapshotRepository snapshots,
+            ReviewSnapshotWriter snapshotWriter,
             ReviewDecisionRepository decisions,
             InternalMatchRematch internalRematch,
             ReviewEffectiveMappingResolver mappingResolver,
             ReviewCurrentnessService currentness,
-            ReviewSnapshotPayloadBuilder payloadBuilder,
             EvidenceBundlePayloadHasher bundleHasher,
             PurchaseOrderSnapshotReader purchaseOrderSnapshots,
             PurchaseOrderSnapshotLock purchaseOrderLock,
@@ -110,12 +107,11 @@ public class ReviewService {
         this.invoiceCases = invoiceCases;
         this.evidenceBundles = evidenceBundles;
         this.matchResults = matchResults;
-        this.snapshots = snapshots;
+        this.snapshotWriter = snapshotWriter;
         this.decisions = decisions;
         this.internalRematch = internalRematch;
         this.mappingResolver = mappingResolver;
         this.currentness = currentness;
-        this.payloadBuilder = payloadBuilder;
         this.bundleHasher = bundleHasher;
         this.purchaseOrderSnapshots = purchaseOrderSnapshots;
         this.purchaseOrderLock = purchaseOrderLock;
@@ -152,8 +148,8 @@ public class ReviewService {
 
         if((command.proposalId()==null)!=(command.proposalHash()==null)) throw new ReviewStateConflictException(command.caseId(),"Both advisory proposal identity and hash are required");
         ProposalEvidenceReader.Reference proof=command.proposalId()==null?null:proposals.verify(command.caseId(),bundle.id(),result.id(),command.proposalId(),command.proposalHash());
-        int snapshotNumber = snapshots.maxSnapshotNumber(command.caseId()) + 1;
-        ReviewSnapshot snapshot = buildAndSaveSnapshot(
+        int snapshotNumber = snapshotWriter.nextSnapshotNumber(command.caseId());
+        ReviewSnapshot snapshot = snapshotWriter.buildAndSaveSnapshot(
                 invoiceCase,
                 bundle,
                 result,
@@ -246,8 +242,8 @@ public class ReviewService {
         MatchResult successorResult = internalRematch.append(command.caseId());
         graphs.invalidateCase(command.caseId());
 
-        int snapshotNumber = snapshots.maxSnapshotNumber(command.caseId()) + 1;
-        ReviewSnapshot successor = buildAndSaveSnapshot(
+        int snapshotNumber = snapshotWriter.nextSnapshotNumber(command.caseId());
+        ReviewSnapshot successor = snapshotWriter.buildAndSaveSnapshot(
                 invoiceCase,
                 bundle,
                 successorResult,
@@ -457,54 +453,6 @@ public class ReviewService {
                 reasonPayload(reason),
                 target.payloadHash(),
                 now);
-    }
-
-    private ReviewSnapshot buildAndSaveSnapshot(InvoiceCase invoiceCase,EvidenceBundle bundle,MatchResult result,
-            List<com.invoicematch.core.matching.application.AppliedMapping> appliedMappings,CurrentPurchaseOrderSnapshot purchasing,int snapshotNumber,Instant now) {
-        return buildAndSaveSnapshot(invoiceCase,bundle,result,appliedMappings,purchasing,snapshotNumber,now,null);
-    }
-    private ReviewSnapshot buildAndSaveSnapshot(
-            InvoiceCase invoiceCase,
-            EvidenceBundle bundle,
-            MatchResult result,
-            List<com.invoicematch.core.matching.application.AppliedMapping> appliedMappings,
-            CurrentPurchaseOrderSnapshot purchasing,
-            int snapshotNumber,
-            Instant now,ProposalEvidenceReader.Reference proof) {
-        EvidenceBundlePayload bundlePayload = bundleHasher.parse(bundle.payload());
-        ReviewSnapshotPayloadInput input = new ReviewSnapshotPayloadInput(
-                invoiceCase.id().value(),
-                invoiceCase.version(),
-                bundle.id(),
-                bundle.versionNumber(),
-                bundle.payloadHash(),
-                result.id(),
-                result.resultNumber(),
-                result.resultHash(),
-                result.mappingWatermark(),
-                result.payload(),
-                appliedMappings,
-                bundlePayload.lines(),
-                purchasing.aggregate().snapshotVersion(),
-                purchasing.aggregate().purchaseOrder().version(),
-                purchasing.payloadHash()).withProposal(proof);
-        ReviewSnapshotPayloadBuilder.CanonicalPayload canonical = payloadBuilder.canonicalize(input);
-        ReviewSnapshot snapshot = ReviewSnapshot.freeze(
-                UUID.randomUUID(),
-                invoiceCase.id().value(),
-                bundle.id(),
-                result.id(),
-                result.resultNumber(),
-                snapshotNumber,
-                invoiceCase.version(),
-                bundle.versionNumber(),
-                purchasing.aggregate().snapshotVersion(),
-                purchasing.payloadHash(),
-                result.mappingWatermark(),
-                canonical.hash(),
-                canonical.json(),
-                now);
-        return snapshots.saveAndFlush(snapshot);
     }
 
     private ReviewSnapshot requireTarget(InvoiceCase invoiceCase, UUID reviewSnapshotId, String reviewPayloadHash) {

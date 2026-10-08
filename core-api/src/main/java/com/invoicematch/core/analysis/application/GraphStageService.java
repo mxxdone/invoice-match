@@ -14,17 +14,17 @@ import org.springframework.transaction.annotation.Transactional;
 /** Graph stages reuse Core advisory validation; no SDK or external I/O in transactions. */
 @Service
 public class GraphStageService {
-    private final GraphExecutionService execution;
+    private final GraphExecutionGuard guard;
     private final GraphStore store;
     private final ProposalStageValidator validator;
     private final GraphProposalAssembler proposals;
-    private final ProposalToolService tools;
-    private final PolicySearchService policies;
+    private final FrozenProposalTools tools;
+    private final FrozenPolicySearch policies;
     private final ObjectMapper mapper;
     private final com.invoicematch.core.document.persistence.DocumentStore documents;
-    public GraphStageService(GraphExecutionService execution,GraphStore store,ProposalStageValidator validator,
-            GraphProposalAssembler proposals,ProposalToolService tools,PolicySearchService policies,ObjectMapper mapper,com.invoicematch.core.document.persistence.DocumentStore documents) {
-        this.execution=execution;this.store=store;this.validator=validator;this.proposals=proposals;this.tools=tools;this.policies=policies;this.mapper=mapper;this.documents=documents;
+    public GraphStageService(GraphExecutionGuard guard,GraphStore store,ProposalStageValidator validator,
+            GraphProposalAssembler proposals,FrozenProposalTools tools,FrozenPolicySearch policies,ObjectMapper mapper,com.invoicematch.core.document.persistence.DocumentStore documents) {
+        this.guard=guard;this.store=store;this.validator=validator;this.proposals=proposals;this.tools=tools;this.policies=policies;this.mapper=mapper;this.documents=documents;
     }
     public record Stage(UUID ref,String stage,String hash,JsonNode payload) {}
     @Transactional public List<Stage> read(UUID id,String hash,UUID token) {
@@ -75,7 +75,7 @@ public class GraphStageService {
         var result=read.get();persist(id,token,stage,result);return result;
     }
     @Transactional public GraphStore.Result complete(UUID id,String hash,UUID token) {
-        var run=execution.lock(id,hash);execution.active(run,token);
+        var run=guard.lock(id,hash);guard.active(run,token);
         var input=store.advisoryInput(id);var steps=store.validationSteps(id);
         var assembled=proposals.assemble(run,input,steps);
         bounded(assembled.canonical());store.complete(id,assembled.canonical(),assembled.hash(),token);
@@ -107,7 +107,7 @@ public class GraphStageService {
             || !u.mediaType().equals(frozen.path("mediaType").asText()) || u.sizeBytes()!=frozen.path("sizeBytes").asLong() || !u.checksum().equals(frozen.path("checksum").asText())) throw ProposalSourceCatalog.invalid();
         return new com.invoicematch.core.document.application.DocumentOriginalRequest(registered.objectKey(),u.mediaType(),u.sizeBytes(),u.checksum());
     }
-    private void active(UUID id,String hash,UUID token) {execution.active(execution.lock(id,hash),token);}
+    private void active(UUID id,String hash,UUID token) {guard.active(guard.lock(id,hash),token);}
     private Stage persist(UUID id,UUID token,String stage,JsonNode payload) {
         String canonical=AnalysisCanonicalJson.canonicalize(payload);bounded(canonical);
         String hash=AnalysisCanonicalJson.sha256Hex(canonical);UUID ref=store.stage(id,stage,canonical,hash,token);

@@ -20,7 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 /** Atomic human opinion + audit + actor-scoped response + resume intent. No SDK or broker I/O. */
 @Service
 public class GraphReviewService {
-    private final GraphExecutionService execution;
+    private final GraphExecutionGuard guard;
     private final GraphStore store;
     private final GraphReviewValidator validator;
     private final AuthorizationService authorization;
@@ -28,9 +28,9 @@ public class GraphReviewService {
     private final AuditRecorder audit;
     private final ObjectMapper mapper;
     private final Clock clock;
-    public GraphReviewService(GraphExecutionService execution,GraphStore store,GraphReviewValidator validator,
+    public GraphReviewService(GraphExecutionGuard guard,GraphStore store,GraphReviewValidator validator,
             AuthorizationService authorization,RequestIdempotencyStore idempotency,AuditRecorder audit,ObjectMapper mapper,Clock clock) {
-        this.execution=execution;this.store=store;this.validator=validator;this.authorization=authorization;
+        this.guard=guard;this.store=store;this.validator=validator;this.authorization=authorization;
         this.idempotency=idempotency;this.audit=audit;this.mapper=mapper;this.clock=clock;
     }
     public record Command(String requestId,Long expectedCaseVersion,String interruptId,String checkpointHash,
@@ -39,15 +39,15 @@ public class GraphReviewService {
             String reviewStatus,String resumeStatus) {}
     @Transactional public CommandResult<Saved> confirm(UUID caseId,UUID id,Command command) {
         authorization.requireRole(Role.OPERATOR);authorization.requireCaseRead(caseId);validate(command);
-        var run=execution.reviewRun(caseId,id);var actor=authorization.actor();
+        var run=guard.reviewRun(caseId,id);var actor=authorization.actor();
         String scope="graph:review",resource=caseId+":"+id;
         var body=mapper.valueToTree(command);((com.fasterxml.jackson.databind.node.ObjectNode)body).remove("requestId");
         String fingerprint=AnalysisCanonicalJson.sha256Hex(AnalysisCanonicalJson.canonicalize(body));
         var begin=idempotency.begin(scope,resource,actor.username(),command.requestId(),fingerprint);
         if(begin instanceof RequestIdempotencyStore.BeginResult.Replay replay)
             return new CommandResult<>(replay.response().status(),idempotency.decode(replay.response(),Saved.class));
-        execution.enabled();
-        if(!run.status().equals("WAITING_HUMAN") || run.caseVersion()!=command.expectedCaseVersion() || !execution.current(run))
+        guard.enabled();
+        if(!run.status().equals("WAITING_HUMAN") || run.caseVersion()!=command.expectedCaseVersion() || !guard.current(run))
             throw GraphExecutionService.conflict("GRAPH_REVIEW_CONFLICT");
         var wait=store.waiting(id).orElseThrow(()->GraphExecutionService.conflict("GRAPH_REVIEW_CONFLICT"));
         if(!wait.interruptId().equals(command.interruptId()) || !wait.checkpointHash().equals(command.checkpointHash())
